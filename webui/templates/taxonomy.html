@@ -1,0 +1,100 @@
+{% extends "base.html" %} {% block content %}
+<h2>Taxonomy wizard</h2>
+<p>
+  Wybierz, które buckety mają być aktywne w <code>READY TO PLAY/*</code>. Możesz
+  też dodać własne.
+</p>
+
+<form method="post" action="/taxonomy/save" class="card">
+  <h3>Aktywne buckety (READY TO PLAY/*)</h3>
+  <div class="grid">
+    {% for sect, names in grouped.items() %}
+    <section>
+      <h4>{{ sect }}</h4>
+      {% for name in names %}
+      <label class="check">
+        <input
+          type="checkbox"
+          name="ready_selected"
+          value="{{ sect }}/{{ name }}"
+          checked
+        />
+        <span>{{ name }}</span>
+      </label>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  </div>
+
+  <h3 style="margin-top: 1.5rem">Proponowane (gotowe zestawy)</h3>
+  <div class="grid">
+    <section>
+      <h4>CLUB</h4>
+      {% for c in cand_club %}
+      <label class="check">
+        <input type="checkbox" name="add_candidates" value="{{ c }}" />
+        <span>{{ c.split('/')[1] }}</span>
+      </label>
+      {% endfor %}
+    </section>
+    <section>
+      <h4>OPEN_FORMAT</h4>
+      {% for c in cand_open %}
+      <label class="check">
+        <input type="checkbox" name="add_candidates" value="{{ c }}" />
+        <span>{{ c.split('/')[1] }}</span>
+      </label>
+      {% endfor %}
+    </section>
+  </div>
+
+  {% if suggestions %}
+  <h3 style="margin-top: 1.5rem">
+    Sugestie z biblioteki (na podstawie tagu „genre”)
+  </h3>
+  <div class="grid">
+    <section>
+      <h4>Proponowane</h4>
+      {% for s in suggestions %}
+      <label class="check">
+        <input type="checkbox" name="add_suggestions" value="{{ s }}" />
+        <span>{{ s }}</span>
+      </label>
+      {% endfor %}
+    </section>
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    <button type="submit">Zapisz i utwórz foldery</button>
+  </div>
+</form>
+
+<form method="post" action="/taxonomy/add" class="card">
+  <h3>Dodaj własny bucket</h3>
+  <div class="row">
+    <label>Sekcja</label>
+    <input name="section" placeholder="np. CLUB albo OPEN FORMAT" required />
+  </div>
+  <div class="row">
+    <label>Nazwa</label>
+    <input name="name" placeholder="np. DNB, TRANCE, DISCO NUDISCO" required />
+  </div>
+  <div class="actions">
+    <button type="submit">Dodaj</button>
+  </div>
+</form>
+
+<details class="card">
+  <summary>Review buckets (REVIEW QUEUE/*)</summary>
+  <div class="grid">
+    {% for r in review %}
+    <label class="check">
+      <input type="checkbox" name="review_selected" value="{{ r }}" checked />
+      <span>{{ r }}</span>
+    </label>
+    {% endfor %}
+  </div>
+</details>
+
+{% endblock %}

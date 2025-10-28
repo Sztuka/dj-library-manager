@@ -1,0 +1,87 @@
+# Proste reguły: jeśli artysta/tytuł/genre/comment zawiera słowo-klucz → ustaw target_subfolder.
+# Pierwsza dopasowana reguła wygrywa.
+
+rules:
+  - contains: ["afro", "afrobeats", "afro house", "afro-house"]
+    target: "READY TO PLAY/CLUB/AFRO HOUSE"
+
+  - contains: ["electro swing", "parov stelar", "caravan palace"]
+    target: "READY TO PLAY/CLUB/ELECTRO SWING"
+
+  - contains: ["tech house", "tech-house"]
+    target: "READY TO PLAY/CLUB/TECH HOUSE"
+
+  - contains: ["melodic techno", "anyma", "tale of us", "afterlife"]
+    target: "READY TO PLAY/CLUB/MELODIC TECHNO"
+
+  - contains: ["techno"]
+    target: "READY TO PLAY/CLUB/TECHNO"
+
+  - contains: ["house", "piano house", "dance house", "club mix"]
+    target: "READY TO PLAY/CLUB/HOUSE"
+
+  - contains: ["r&b", "rnb"]
+    target: "READY TO PLAY/OPEN FORMAT/RNB"
+
+  - contains: ["hip hop", "hip-hop", "rap", "trap"]
+    target: "READY TO PLAY/OPEN FORMAT/HIP-HOP"
+
+  - contains: ["reggaeton", "latin", "dembow", "bachata"]
+    target: "READY TO PLAY/OPEN FORMAT/LATIN REGGAETON"
+
+  - contains:
+      [
+        "elvis",
+        "beach boys",
+        "chuck berry",
+        "bill haley",
+        "rock and roll",
+        "rock'n'roll",
+      ]
+    target: "READY TO PLAY/OPEN FORMAT/ROCKNROLL"
+
+  - contains:
+      [
+        "perfect",
+        "bajm",
+        "lady pank",
+        "kombi",
+        "kombii",
+        "łzy",
+        "lzy",
+        "kult",
+        "podsiad",
+        "podsiadło",
+        "podsiadlo",
+        "sanah",
+        "myslovitz",
+        "wilki",
+        "zalewski",
+      ]
+    target: "READY TO PLAY/OPEN FORMAT/POLISH SINGALONG"
+
+  - contains:
+      [
+        "90s",
+        "2000",
+        "00s",
+        "prodigy",
+        "snap",
+        "corona",
+        "darude",
+        "bomfunk",
+        "fatboy slim",
+        "sean paul",
+      ]
+    target: "READY TO PLAY/OPEN FORMAT/90s"
+
+  - contains: ["rock", "guitar", "kings of leon", "queen", "acdc", "ac/dc"]
+    target: "READY TO PLAY/OPEN FORMAT/ROCK CLASSICS"
+
+fallbacks:
+  # Jeżeli nic nie pasuje, ale ai_guess_bucket = CLUB_CANDIDATES → wrzuć domyślnie:
+  CLUB_CANDIDATES: "READY TO PLAY/CLUB/HOUSE"
+  # a jeśli OPEN_FORMAT_CANDIDATES:
+  OPEN_FORMAT_CANDIDATES: "READY TO PLAY/OPEN FORMAT/PARTY DANCE"
+  # inaczej:
+  default: "REVIEW QUEUE/UNDECIDED"

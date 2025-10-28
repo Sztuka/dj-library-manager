@@ -1,0 +1,11 @@
+mutagen           # czytanie/parsowanie tagów audio
+beets             # silnik biblioteki muzycznej, fingerprinty, dupe logic
+chromaprint       # fingerprint audio backend (beets/chroma używa tego)
+pyacoustid        # czasem potrzebne do AcoustID lookup przy fingerprintach
+black             # formatter kodu
+ruff              # linter (opcjonalnie)
+pyyaml            # do konfiguracji (jeśli używasz YAML)
+fastapi           # framework webowy
+uvicorn[standard] # serwer ASGI do uruchamiania FastAPI
+jinja2            # szablony HTML
+python-multipart  # obsługa formularzy w FastAPI

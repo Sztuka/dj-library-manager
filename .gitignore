@@ -1,0 +1,48 @@
+# ===== Python virtualenvs =====
+.venv/
+venv/
+
+# ===== Python artifacts =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.so
+*.dylib
+*.egg-info/
+.pytest_cache/
+
+# ===== macOS =====
+.DS_Store
+
+# ===== VSCode =====
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# ===== Project/local files =====
+library.csv
+config.local.yml
+config.local.json
+
+# ===== Data / artifacts =====
+data/
+!data/.gitkeep
+
+# ===== Audio and large binaries =====
+*.mp3
+*.flac
+*.wav
+*.aif
+*.aiff
+*.m4a
+*.ogg
+*.zip
+*.rar
+
+# ===== Build / bundle =====
+dist/
+build/
+bin/

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <title>DJ Library – {{ title or "Panel" }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="/static/style.css" rel="stylesheet" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>DJ Library Manager</h1>
+      <nav><a href="/taxonomy">Taxonomy</a></nav>
+    </header>
+    <main class="container">{% block content %}{% endblock %}</main>
+  </body>
+</html>
