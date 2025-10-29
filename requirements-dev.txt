@@ -1,0 +1,2 @@
+pytest>=8.3      # framework do testów
+pytest-cov>=5.0  # pokrycie kodu testami
