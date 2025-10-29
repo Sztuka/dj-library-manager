@@ -47,6 +47,10 @@ dist/
 build/
 bin/
 
+# ===== Test coverage artifacts =====
+.coverage
+htmlcov/
+
 # lokalne pliki konfiguracyjne i robocze
 config.yml
 taxonomy.yml

@@ -212,6 +212,9 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import platform
+import subprocess
+import shlex
 
 # ASGI app
 app = FastAPI(title="DJ Library Manager")
@@ -372,5 +375,33 @@ def taxonomy_add(section: str = Form(""), name: str = Form("")):
 
 @app.get("/api/pick")
 def api_pick(target: str | None = None):
-    # Brak natywnego pickera – zwracamy negatywną odpowiedź; UI pokaże komunikat
-    return JSONResponse({"ok": False, "path": ""})
+    """
+    macOS-only folder picker using AppleScript. Returns {ok: bool, path: str}.
+    For other OS-es or on error, returns ok: False so UI can fallback.
+    """
+    if platform.system() != "Darwin":
+        return JSONResponse({"ok": False, "path": ""})
+
+    prompt = f"Wybierz folder dla: {target or ''}"
+    # AppleScript: choose folder and return POSIX path
+    script = (
+        'tell application "System Events" to POSIX path of '
+        f'(choose folder with prompt "{prompt}")'
+    )
+    try:
+        # Run osascript synchronously; user interaction will block until selection
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if res.returncode == 0:
+            path = (res.stdout or "").strip()
+            if path:
+                return JSONResponse({"ok": True, "path": path})
+        return JSONResponse({"ok": False, "path": ""})
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"ok": False, "path": ""})
+    except Exception:
+        return JSONResponse({"ok": False, "path": ""})

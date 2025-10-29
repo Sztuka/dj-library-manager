@@ -5,7 +5,8 @@ import uvicorn
 def _open():
     # daj serwerowi chwilę na start
     time.sleep(1.2)
-    webbrowser.open("http://127.0.0.1:8000/taxonomy")
+    # Otwórz Setup Wizard (krok 1)
+    webbrowser.open("http://127.0.0.1:8000/wizard")
 
 def main() -> None:
     threading.Thread(target=_open, daemon=True).start()
