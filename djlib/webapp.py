@@ -30,21 +30,27 @@ def get_taxonomy_path() -> Path:
 
 def normalize_label(label: str) -> str:
     """
-    Normalizuje etykietę folderu/bucketu:
-    - akceptuje np. '  club  //  house  ' lub 'Open Format / Party  Dance'
-    - ucina białe znaki, kasuje puste segmenty, łączy pojedynczym '/'
-    - standaryzuje wielkość liter do UPPERCASE (spójność w projekcie/testach)
-    -> 'CLUB/HOUSE', 'OPEN FORMAT/PARTY DANCE'
+    Delikatna normalizacja etykiet:
+    - zachowuje wielkość liter i znaki (np. podkreślenia),
+    - ucina białe znaki wokół segmentów i usuwa puste segmenty,
+    - łączy pojedynczym '/',
+    - wewnątrz segmentu redukuje nadmiarowe spacje ("  funk   soul" -> "funk soul").
+    Przykłady: "tech_house" -> "tech_house", "Open  Format" -> "Open Format", "MIXES/" -> "MIXES".
     """
     if label is None:
         return ""
-    # ujednolicenie separatorów
     s = str(label).replace("\\", "/")
-    # dziel i czyść
     parts = [p.strip() for p in s.split("/") if p.strip()]
-    # redukcja podwójnych spacji wewnątrz segmentu i UPPERCASE
-    parts = [" ".join(p.split()).upper() for p in parts]
+    parts = [" ".join(p.split()) for p in parts]
     return "/".join(parts)
+
+def _canonical_key(label: str) -> str:
+    """Klucz kanoniczny do deduplikacji (case-insensitive, spacje sklejone).
+    Nie jest zapisywany – używany tylko do porównań.
+    """
+    s = normalize_label(label)
+    # Na potrzeby klucza porównujemy bez rozróżniania wielkości liter
+    return s.upper()
 
 # --- Config ---
 
@@ -70,12 +76,13 @@ def load_config() -> Dict[str, Any]:
 # --- Taxonomy ---
 
 def _normalize(items: List[str]) -> List[str]:
-    seen = set()
+    seen: set[str] = set()
     out: List[str] = []
     for raw in items or []:
         s = normalize_label(raw)
-        if s and s not in seen:
-            seen.add(s)
+        key = _canonical_key(s)
+        if s and key not in seen:
+            seen.add(key)
             out.append(s)
     return out
 
@@ -145,13 +152,11 @@ def build_ready_buckets(taxonomy: Dict[str, List[str]] | List[str] | None = None
                 norm = normalize_label(raw)
                 if not norm:
                     continue
-                # if item already contains a slash, keep as-is (normalized)
-                if "/" in norm:
-                    out = norm
-                else:
-                    out = f"{prefix}/{norm}"
-                if out not in seen:
-                    seen.add(out)
+                # jeśli item zawiera '/', pozostawiamy znormalizowaną formę
+                out = norm if "/" in norm else f"{prefix}/{norm}"
+                key = _canonical_key(out)
+                if key not in seen:
+                    seen.add(key)
                     result.append(out)
 
         _add_prefixed(club, "CLUB")
@@ -166,9 +171,12 @@ def build_ready_buckets(taxonomy: Dict[str, List[str]] | List[str] | None = None
     # Normal path: taxonomy list/dict converted to normalized strings (no prefixes)
     for raw in buckets_src:
         norm = normalize_label(raw)
-        if not norm or norm in seen:
+        if not norm:
             continue
-        seen.add(norm)
+        key = _canonical_key(norm)
+        if key in seen:
+            continue
+        seen.add(key)
         result.append(norm)
 
     return result
@@ -250,15 +258,11 @@ def get_wizard(request: Request, step: int = 1):
     step = max(1, min(3, int(step or 1)))
     cfg = load_config()
 
-    # domyślne listy dla kroku 2 – na podstawie aktualnej taksonomii (jeśli jest)
+    # Krok 2: zaczynamy z pustą listą subfolderów (użytkownik wpisze własne style)
+    # Jeśli w przyszłości chcemy ładować zapisane, można dodać tryb "edit".
     tax = load_taxonomy()
     club: List[str] = []
     openf: List[str] = []
-    for b in tax.get("ready_buckets", []):
-        if b.startswith("CLUB/"):
-            club.append(b.split("/", 1)[1])
-        elif b.startswith("OPEN FORMAT/"):
-            openf.append(b.split("/", 1)[1])
 
     return templates.TemplateResponse(
         "wizard.html",
