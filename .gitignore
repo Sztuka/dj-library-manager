@@ -46,3 +46,8 @@ data/
 dist/
 build/
 bin/
+
+# lokalne pliki konfiguracyjne i robocze
+config.yml
+taxonomy.yml
+library.csv

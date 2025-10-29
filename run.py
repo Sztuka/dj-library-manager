@@ -1,57 +1,48 @@
-#!/usr/bin/env python3
-from __future__ import annotations
-import hashlib, os, subprocess, sys
 from pathlib import Path
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
-ROOT = Path(__file__).resolve().parent
-VENV = ROOT / ".venv"
-PY = VENV / "bin" / "python"
-REQ = ROOT / "requirements.txt"
-STAMP = VENV / ".reqs_installed.sha256"
+from djlib import webapp
 
-def sha256(p: Path) -> str:
-    h = hashlib.sha256()
-    with p.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+BASE_DIR = Path(__file__).resolve().parent
+WEBUI_DIR = BASE_DIR / "webui"
+INDEX_HTML = WEBUI_DIR / "index.html"
 
-def ensure_venv():
-    if not PY.exists():
-        subprocess.check_call([sys.executable, "-m", "venv", str(VENV)])
-    # upgrade pip
-    subprocess.check_call([str(PY), "-m", "pip", "install", "-U", "pip"])
+def create_app() -> FastAPI:
+    app = FastAPI(title="DJ Library Manager")
 
-def ensure_requirements():
-    want = sha256(REQ)
-    have = STAMP.read_text().strip() if STAMP.exists() else ""
-    if want != have:
-        subprocess.check_call([str(PY), "-m", "pip", "install", "-r", str(REQ)])
-        STAMP.write_text(want)
+    # Statyki (Twoje webui/) na /static
+    if WEBUI_DIR.exists():
+        app.mount("/static", StaticFiles(directory=WEBUI_DIR), name="static")
 
-def ensure_fpcalc():
-    # odpala nasz installer; jeśli Homebrew jest -> brew, inaczej pobierze vendor
-    subprocess.check_call([str(PY), str(ROOT / "scripts" / "install_fpcalc.py")])
+    # Strona główna -> index.html (koniec z {"detail":"Not Found"})
+    @app.get("/", include_in_schema=False)
+    def root():
+        if INDEX_HTML.exists():
+            return FileResponse(INDEX_HTML)
+        # Fallback: jakby nie było index.html, to chociaż pokaż docs
+        return RedirectResponse(url="/docs")
 
-def run_tool(which: str):
-    if which == "scan":
-        script = ROOT / "scripts" / "scan_inbox.py"
-    elif which == "apply":
-        script = ROOT / "scripts" / "apply_decisions.py"
-    else:
-        print("Użycie: run.py [scan|apply]")
-        sys.exit(2)
-    subprocess.check_call([str(PY), str(script)])
+    # Prosty healthcheck
+    @app.get("/api/healthz", include_in_schema=False)
+    def healthz():
+        return {"status": "ok"}
 
-def main():
-    args = sys.argv[1:]
-    if not args:
-        print("Użycie: run.py [scan|apply]")
-        sys.exit(2)
-    ensure_venv()
-    ensure_requirements()
-    ensure_fpcalc()
-    run_tool(args[0])
+    # Endpoints pod konfigurację (Krok 0 w UI)
+    @app.get("/api/config")
+    def api_get_config():
+        return webapp.load_config()
+
+    @app.post("/api/config")
+    def api_set_config(lib_root: str, inbox: str):
+        webapp.save_config_paths(lib_root=lib_root, inbox=inbox)
+        return {"ok": True}
+
+    return app
+
+app = create_app()
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run("run:app", host="127.0.0.1", port=8000, reload=True)

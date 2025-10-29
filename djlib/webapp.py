@@ -1,146 +1,376 @@
-# djlib/webapp.py
-from __future__ import annotations
-
 from pathlib import Path
-from typing import List, Tuple
+import os
+import yaml
+from typing import Dict, Any, List, Tuple
 
-import platform
-import subprocess
+CONFIG_FILENAME = "config.yml"
+TAXONOMY_FILENAME = "taxonomy.yml"
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import RedirectResponse, JSONResponse
+# --- Ścieżki do plików (bez IO przy imporcie) ---
+
+def get_config_path() -> Path:
+    """
+    Skąd czytamy/zapisujemy config:
+    - jeśli ustawione DJLIB_CONFIG_FILE -> tam,
+    - w przeciwnym razie: ./config.yml w AKTUALNYM CWD (ważne dla testów).
+    """
+    env = os.getenv("DJLIB_CONFIG_FILE")
+    return Path(env).expanduser() if env else Path.cwd() / CONFIG_FILENAME
+
+def get_taxonomy_path() -> Path:
+    """
+    Skąd czytamy/zapisujemy taxonomy:
+    - jeśli DJLIB_TAXONOMY_FILE -> tam,
+    - w przeciwnym razie obok configu (czyli w CWD dla testów).
+    """
+    env = os.getenv("DJLIB_TAXONOMY_FILE")
+    return Path(env).expanduser() if env else get_config_path().parent / TAXONOMY_FILENAME
+
+# --- Normalizacja etykiet/bucketów ---
+
+def normalize_label(label: str) -> str:
+    """
+    Normalizuje etykietę folderu/bucketu:
+    - akceptuje np. '  club  //  house  ' lub 'Open Format / Party  Dance'
+    - ucina białe znaki, kasuje puste segmenty, łączy pojedynczym '/'
+    - standaryzuje wielkość liter do UPPERCASE (spójność w projekcie/testach)
+    -> 'CLUB/HOUSE', 'OPEN FORMAT/PARTY DANCE'
+    """
+    if label is None:
+        return ""
+    # ujednolicenie separatorów
+    s = str(label).replace("\\", "/")
+    # dziel i czyść
+    parts = [p.strip() for p in s.split("/") if p.strip()]
+    # redukcja podwójnych spacji wewnątrz segmentu i UPPERCASE
+    parts = [" ".join(p.split()).upper() for p in parts]
+    return "/".join(parts)
+
+# --- Config ---
+
+def save_config_paths(*, lib_root: str, inbox: str) -> None:
+    cfg_path = get_config_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "LIB_ROOT": str(Path(lib_root).resolve()),
+        "INBOX_UNSORTED": str(Path(inbox).resolve()),
+    }
+    tmp = cfg_path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=True, allow_unicode=True)
+    tmp.replace(cfg_path)
+
+def load_config() -> Dict[str, Any]:
+    cfg_path = get_config_path()
+    if not cfg_path.exists():
+        return {}
+    with cfg_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+# --- Taxonomy ---
+
+def _normalize(items: List[str]) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for raw in items or []:
+        s = normalize_label(raw)
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+def save_taxonomy(taxonomy: Dict[str, List[str]]) -> None:
+    """
+    Zapisuje DOKŁADNIE przekazaną taksonomię do pliku obok configu.
+    (Nie scala, nie “ucina” – UI decyduje co zapisuje. Testy też.)
+    """
+    tax_path = get_taxonomy_path()
+    tax_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "ready_buckets": _normalize(taxonomy.get("ready_buckets", [])),
+        "review_buckets": _normalize(taxonomy.get("review_buckets", [])),
+    }
+    tmp = tax_path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=True, allow_unicode=True)
+    tmp.replace(tax_path)
+
+def load_taxonomy() -> Dict[str, List[str]]:
+    tax_path = get_taxonomy_path()
+    if not tax_path.exists():
+        return {"ready_buckets": [], "review_buckets": []}
+    with tax_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return {
+        "ready_buckets": data.get("ready_buckets", []) or [],
+        "review_buckets": data.get("review_buckets", []) or [],
+    }
+
+# --- Budowanie listy bucketów READY (na potrzeby testów/IO) ---
+
+def build_ready_buckets(taxonomy: Dict[str, List[str]] | List[str] | None = None, *more: List[str], mixes: bool = False) -> List[str]:
+    """
+    Zwraca listę znormalizowanych ścieżek bucketów READY w postaci stringów:
+    - jeśli podano `taxonomy` jako dict -> bierze `ready_buckets` z dicty
+    - jeśli podano listy pozycyjnie (np. club, openf) -> traktuje je jako kategorie
+      i dodaje prefiksy: pierwsza lista -> "CLUB/<label>", druga -> "OPEN FORMAT/<label>"
+    - usuwa duplikaty po normalizacji, zachowuje kolejność
+
+    Funkcja ma elastyczną sygnaturę aby dopasować testy i UI.
+    """
+    # Jeśli pierwszy argument jest dict - zachowanie backward-compatible ale zwracamy stringi
+    buckets_src: List[str] = []
+    if isinstance(taxonomy, dict):
+        buckets_src = taxonomy.get("ready_buckets", []) or []
+    elif taxonomy is None:
+        buckets_src = []
+    elif isinstance(taxonomy, list):
+        # Jeśli przekazano listę jako jedyny argument traktujemy ją jako gotowe buckety
+        buckets_src = taxonomy
+    else:
+        # Nieznany typ -> pusty
+        buckets_src = []
+
+    result: List[str] = []
+    seen: set[str] = set()
+
+    # If additional positional lists are provided, interpret them as category buckets
+    if more:
+        # Expect pattern: build_ready_buckets(club_list, openf_list, mixes=True)
+        club = taxonomy if isinstance(taxonomy, list) else (more[0] if more else [])
+        openf = more[0] if isinstance(taxonomy, list) and more else (more[1] if len(more) > 1 else [])
+
+        def _add_prefixed(items, prefix):
+            for raw in items or []:
+                norm = normalize_label(raw)
+                if not norm:
+                    continue
+                # if item already contains a slash, keep as-is (normalized)
+                if "/" in norm:
+                    out = norm
+                else:
+                    out = f"{prefix}/{norm}"
+                if out not in seen:
+                    seen.add(out)
+                    result.append(out)
+
+        _add_prefixed(club, "CLUB")
+        _add_prefixed(openf, "OPEN FORMAT")
+
+        if mixes:
+            if "MIXES" not in seen:
+                result.append("MIXES")
+
+        return result
+
+    # Normal path: taxonomy list/dict converted to normalized strings (no prefixes)
+    for raw in buckets_src:
+        norm = normalize_label(raw)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        result.append(norm)
+
+    return result
+
+# --- Tworzenie folderów ---
+
+def ensure_base_dirs() -> None:
+    cfg = load_config()
+    lib = Path(cfg["LIB_ROOT"])
+    (lib / "READY TO PLAY").mkdir(parents=True, exist_ok=True)
+    (lib / "REVIEW QUEUE").mkdir(parents=True, exist_ok=True)
+
+def ensure_taxonomy_folders() -> None:
+    """
+    Tworzy strukturę folderów na podstawie taxonomy.yml:
+    - ready_buckets  -> LIB_ROOT/READY TO PLAY/<...>
+    - review_buckets -> LIB_ROOT/REVIEW QUEUE/<...>
+    Wspiera ścieżki wielopoziomowe rozdzielone '/'.
+    """
+    cfg = load_config()
+    lib = Path(cfg["LIB_ROOT"])
+    tax = load_taxonomy()
+
+    ready_root = lib / "READY TO PLAY"
+    review_root = lib / "REVIEW QUEUE"
+
+    def _mk(root: Path, bucket: str) -> None:
+        parts = [p.strip() for p in normalize_label(bucket).split("/") if p.strip()]
+        path = root.joinpath(*parts) if parts else root
+        path.mkdir(parents=True, exist_ok=True)
+
+    for b in tax.get("ready_buckets", []):
+        _mk(ready_root, b)
+
+    for b in tax.get("review_buckets", []):
+        _mk(review_root, b)
+
+# --- Web app (FastAPI) ---
+
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-# wewnętrzne moduły (muszą istnieć)
-from .config import load_config, save_config_paths, ensure_base_dirs
-from .taxonomy import load_taxonomy, save_taxonomy
-from .ops import ensure_taxonomy_folders
+# ASGI app
+app = FastAPI(title="DJ Library Manager")
 
-app = FastAPI()
+# Static and templates
+BASE_DIR = Path(__file__).resolve().parents[1]
+TEMPLATES_DIR = BASE_DIR / "webui" / "templates"
+STATIC_DIR = BASE_DIR / "webui" / "static"
 
-ROOT = Path(__file__).resolve().parents[1]
-TEMPLATES = ROOT / "webui" / "templates"
-STATIC = ROOT / "webui" / "static"
-
-templates = Jinja2Templates(directory=str(TEMPLATES))
-app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def flash_redirect(url: str, msg: str) -> RedirectResponse:
-    return RedirectResponse(f"{url}?msg={msg}", status_code=303)
-
-
-def normalize_label(s: str) -> str:
-    """UPPERCASE + spacje; usuń podkreślniki, zbędne ukośniki końcowe i nadmiarowe spacje."""
-    s = s.replace("_", " ").replace("\\", "/").strip().rstrip("/")
-    # zbicie wielu spacji do jednej
-    s = " ".join(s.split())
-    return s.upper()
-
-
-def split_ready_buckets(ready_paths: List[str]) -> Tuple[List[str], List[str], bool]:
-    club, openf, mixes = [], [], False
-    for p in ready_paths:
-        p = p.strip()
-        if p == "MIXES":
-            mixes = True
+def _group_ready_buckets(buckets: List[str]) -> Dict[str, List[str]]:
+    grouped: Dict[str, List[str]] = {}
+    for b in buckets:
+        norm = normalize_label(b)
+        if not norm:
             continue
-        if p.startswith("CLUB/"):
-            club.append(p.split("/", 1)[1])
-        elif p.startswith("OPEN FORMAT/"):
-            openf.append(p.split("/", 1)[1])
-    return club, openf, mixes
+        parts = norm.split("/")
+        if len(parts) == 1:
+            # top-level (np. MIXES) – pomijamy w grupowaniu sekcji
+            continue
+        sect, name = parts[0], "/".join(parts[1:])
+        grouped.setdefault(sect, []).append(name)
+    # zachowaj kolejność bez duplikatów; już zapewnione przez _normalize/build_ready_buckets
+    return grouped
 
 
-def build_ready_buckets(club: List[str], openf: List[str], mixes: bool = True) -> List[str]:
-    out: List[str] = []
-    out.extend([f"CLUB/{normalize_label(x)}" for x in club if str(x).strip()])
-    out.extend([f"OPEN FORMAT/{normalize_label(x)}" for x in openf if str(x).strip()])
-    if mixes:
-        out.append("MIXES")
-    # deduplikacja przy zachowaniu kolejności
-    seen = set()
-    dedup = []
-    for s in out:
-        if s not in seen:
-            dedup.append(s)
-            seen.add(s)
-    return dedup
+@app.get("/wizard", response_class=HTMLResponse)
+def get_wizard(request: Request, step: int = 1):
+    step = max(1, min(3, int(step or 1)))
+    cfg = load_config()
 
+    # domyślne listy dla kroku 2 – na podstawie aktualnej taksonomii (jeśli jest)
+    tax = load_taxonomy()
+    club: List[str] = []
+    openf: List[str] = []
+    for b in tax.get("ready_buckets", []):
+        if b.startswith("CLUB/"):
+            club.append(b.split("/", 1)[1])
+        elif b.startswith("OPEN FORMAT/"):
+            openf.append(b.split("/", 1)[1])
 
-# ----------------------------
-# Routes
-# ----------------------------
-@app.get("/")
-def index():
-    return RedirectResponse("/wizard", status_code=302)
-
-
-@app.get("/wizard")
-async def wizard_get(request: Request, step: int = 1, msg: str | None = None):
-    cfg = load_config()  # powinien mieć klucze: LIB_ROOT, INBOX_UNSORTED
-    tax = load_taxonomy()  # {"ready_buckets":[...], "review_buckets":[...]}
-    club, openf, mixes = split_ready_buckets(tax.get("ready_buckets", []))
-    ctx = {
-        "request": request,
-        "step": step,
-        "msg": msg,
-        "cfg": cfg,
-        "club": club,
-        "openf": openf,
-        "mixes": mixes,
-        "review": tax.get("review_buckets", ["UNDECIDED", "NEEDS EDIT"]),
-    }
-    return templates.TemplateResponse("wizard.html", ctx)
-
-
-@app.get("/api/pick")
-def api_pick(target: str = "path"):
-    """macOS: AppleScript 'choose folder' → POSIX path. Inne OS: wpis ręczny w polu."""
-    if platform.system() == "Darwin":
-        osa = 'POSIX path of (choose folder with prompt "Wybierz folder")'
-        try:
-            out = subprocess.check_output(["osascript", "-e", osa]).decode("utf-8").strip()
-            return JSONResponse({"ok": True, "path": out})
-        except Exception as e:
-            return JSONResponse({"ok": False, "err": str(e)})
-    return JSONResponse({"ok": False, "err": "picker not available on this OS"})
+    return templates.TemplateResponse(
+        "wizard.html",
+        {
+            "request": request,
+            "step": step,
+            "cfg": cfg,
+            "club": club,
+            "openf": openf,
+            "msg": None,
+        },
+    )
 
 
 @app.post("/wizard/step1")
-async def wizard_step1(
-    lib_root: str = Form(...),
-    inbox_unsorted: str = Form(...),
+def post_wizard_step1(
+    lib_root: str = Form(""), inbox_unsorted: str = Form("")
 ):
-    save_config_paths(lib_root=lib_root.strip(), inbox=inbox_unsorted.strip())
-    return flash_redirect("/wizard?step=2", "Zapisano lokalizacje (LIB_ROOT / INBOX_UNSORTED).")
+    save_config_paths(lib_root=lib_root, inbox=inbox_unsorted)
+    return RedirectResponse(url="/wizard?step=2", status_code=303)
 
 
 @app.post("/wizard/step2")
-async def wizard_step2(
-    club: List[str] = Form(default=[]),
-    openf: List[str] = Form(default=[]),
+def post_wizard_step2(
+    club: List[str] = Form(default=[]), openf: List[str] = Form(default=[])
 ):
-    club_clean = [normalize_label(s) for s in club if s and str(s).strip()]
-    openf_clean = [normalize_label(s) for s in openf if s and str(s).strip()]
-
-    ready = build_ready_buckets(club_clean, openf_clean, mixes=True)
-    review = ["UNDECIDED", "NEEDS EDIT"]  # twardo, spójnie z CSV/ops
-
-    save_taxonomy({"ready_buckets": ready, "review_buckets": review})
-    return flash_redirect("/wizard?step=3", "Zapisano taksonomię.")
+    # Zbuduj i zapisz taksonomię READY
+    ready = build_ready_buckets(club, openf, mixes=True)
+    tax_prev = load_taxonomy()
+    save_taxonomy({
+        "ready_buckets": ready,
+        "review_buckets": tax_prev.get("review_buckets", []),
+    })
+    return RedirectResponse(url="/wizard?step=3", status_code=303)
 
 
 @app.post("/wizard/step3")
-async def wizard_step3(run_scan: str | None = Form(None)):
+def post_wizard_step3(run_scan: str | None = Form(default=None)):
+    # Utwórz foldery wg taksonomii; skan opcjonalny (tu pomijamy – do uruchomienia z CLI)
     ensure_base_dirs()
     ensure_taxonomy_folders()
-    if run_scan:
-        from .cli import scan_command
-        scan_command()
-        return flash_redirect("/wizard?step=3", "Utworzono foldery i zeskanowano INBOX_UNSORTED.")
-    return flash_redirect("/wizard?step=3", "Utworzono foldery.")
+    # TODO (opcjonalnie): uruchomić asynchronicznie skan CLI
+    return RedirectResponse(url="/taxonomy", status_code=303)
+
+
+@app.get("/taxonomy", response_class=HTMLResponse)
+def taxonomy_page(request: Request):
+    tax = load_taxonomy()
+    ready = tax.get("ready_buckets", [])
+    grouped = _group_ready_buckets(ready)
+
+    # proste, statyczne propozycje – można rozwinąć według potrzeb
+    cand_club = [
+        "CLUB/HOUSE",
+        "CLUB/TECH HOUSE",
+        "CLUB/TECHNO",
+        "CLUB/TRANCE",
+        "CLUB/DNB",
+    ]
+    cand_open = [
+        "OPEN FORMAT/PARTY DANCE",
+        "OPEN FORMAT/FUNK SOUL",
+        "OPEN FORMAT/HIP-HOP",
+        "OPEN FORMAT/RNB",
+    ]
+
+    review = tax.get("review_buckets", [])
+
+    return templates.TemplateResponse(
+        "taxonomy.html",
+        {
+            "request": request,
+            "grouped": grouped,
+            "cand_club": cand_club,
+            "cand_open": cand_open,
+            "suggestions": [],
+            "review": review,
+        },
+    )
+
+
+@app.post("/taxonomy/save")
+def taxonomy_save(
+    ready_selected: List[str] = Form(default=[]),
+    add_candidates: List[str] = Form(default=[]),
+    add_suggestions: List[str] = Form(default=[]),
+):
+    all_ready = []
+    for src in (ready_selected, add_candidates, add_suggestions):
+        for b in src or []:
+            nb = normalize_label(b)
+            if nb and nb not in all_ready:
+                all_ready.append(nb)
+    prev = load_taxonomy()
+    save_taxonomy({
+        "ready_buckets": all_ready,
+        "review_buckets": prev.get("review_buckets", []),
+    })
+    return RedirectResponse(url="/taxonomy", status_code=303)
+
+
+@app.post("/taxonomy/add")
+def taxonomy_add(section: str = Form(""), name: str = Form("")):
+    bucket = normalize_label(f"{section}/{name}")
+    tax = load_taxonomy()
+    ready = tax.get("ready_buckets", [])
+    if bucket and bucket not in ready:
+        ready.append(bucket)
+    save_taxonomy({
+        "ready_buckets": ready,
+        "review_buckets": tax.get("review_buckets", []),
+    })
+    return RedirectResponse(url="/taxonomy", status_code=303)
+
+
+@app.get("/api/pick")
+def api_pick(target: str | None = None):
+    # Brak natywnego pickera – zwracamy negatywną odpowiedź; UI pokaże komunikat
+    return JSONResponse({"ok": False, "path": ""})
