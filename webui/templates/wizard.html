@@ -86,15 +86,15 @@
   <form method="post" action="/wizard/step3" class="card">
     <p>
       Utworzymy strukturę folderów wg taksonomii. Możesz też od razu zeskanować
-      INBOX_UNSORTED.
+      wybrany wcześniej folder z INBOX_UNSORTED.
     </p>
     <label class="row">
       <input type="checkbox" name="run_scan" value="1" />
-      <span>Od razu zeskanuj INBOX_UNSORTED</span>
+      <span>Od razu zeskanuj wybrany wcześniej folder</span>
     </label>
     <div class="actions">
       <a class="secondary" href="/wizard?step=2">← Wstecz</a>
-      <button type="submit">Utwórz foldery (i opcjonalnie skan)</button>
+      <button type="submit">Utwórz foldery</button>
     </div>
   </form>
   {% endif %}
@@ -102,17 +102,17 @@
 
 <script>
   async function pick(field) {
-    try {
-      const r = await fetch("/api/pick?target=" + encodeURIComponent(field));
-      const j = await r.json();
-      if (j.ok) {
-        document.querySelector(`input[name="${field}"]`).value = j.path;
-      } else {
-        alert("Picker niedostępny. Wpisz ścieżkę ręcznie.");
-      }
-    } catch (e) {
-      alert("Nie udało się otworzyć pickera.");
-    }
+      const input = document.querySelector(`input[name="${field}"]`);
+      try {
+        const r = await fetch("/api/pick?target=" + encodeURIComponent(field));
+        const j = await r.json();
+        if (j.ok && j.path) {
+          input.value = j.path;
+          return;
+        }
+      } catch (e) { /* no-op */ }
+      // Łagodne zachowanie gdy picker nie działa: fokus na polu, bez modala
+      input.focus();
   }
   function addRow(section) {
     const box = document.getElementById(section);

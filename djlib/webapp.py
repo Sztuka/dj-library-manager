@@ -212,6 +212,7 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import threading
 import platform
 import subprocess
 import shlex
@@ -276,7 +277,15 @@ def get_wizard(request: Request, step: int = 1):
 def post_wizard_step1(
     lib_root: str = Form(""), inbox_unsorted: str = Form("")
 ):
+    # Zapisz w lokalnym YAML (na potrzeby testów/UI)
     save_config_paths(lib_root=lib_root, inbox=inbox_unsorted)
+    # Upewnij się, że główny moduł konfiguracyjny (djlib.config) też jest zaktualizowany,
+    # tak aby CLI korzystało z tych samych ścieżek.
+    try:
+        from djlib import config as core_cfg
+        core_cfg.save_config_paths(lib_root=lib_root, inbox=inbox_unsorted)
+    except Exception as e:
+        print("[wizard] core config save failed:", e)
     return RedirectResponse(url="/wizard?step=2", status_code=303)
 
 
@@ -295,12 +304,158 @@ def post_wizard_step2(
 
 
 @app.post("/wizard/step3")
-def post_wizard_step3(run_scan: str | None = Form(default=None)):
-    # Utwórz foldery wg taksonomii; skan opcjonalny (tu pomijamy – do uruchomienia z CLI)
+def post_wizard_step3(request: Request, run_scan: str | None = Form(default=None)):
+    # Utwórz foldery wg taksonomii; opcjonalnie uruchom skan w tle
     ensure_base_dirs()
     ensure_taxonomy_folders()
-    # TODO (opcjonalnie): uruchomić asynchronicznie skan CLI
-    return RedirectResponse(url="/taxonomy", status_code=303)
+
+    scan_started = False
+    if run_scan:
+        try:
+            from djlib.cli import scan_command
+            threading.Thread(target=scan_command, daemon=True).start()
+            scan_started = True
+        except Exception as e:
+            print("[wizard] scan start failed:", e)
+
+    # Pokaż stronę potwierdzenia z linkami do aplikacji i CSV
+    return templates.TemplateResponse(
+        "done.html",
+        {
+            "request": request,
+            "scan_started": scan_started,
+        },
+    )
+
+# --- Dashboard i akcje ---
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request, msg: str | None = None):
+    # status konfiga i proste statystyki CSV
+    try:
+        # Pobierz aktywny config z core
+        from djlib.config import load_config as core_load
+        from djlib.config import CSV_PATH
+        from djlib.csvdb import load_records
+
+        cfg = core_load()
+        rows = []
+        if CSV_PATH.exists():
+            rows = load_records(CSV_PATH)
+        stats = {
+            "csv_rows": len(rows),
+            "csv_path": str(CSV_PATH),
+            "lib_root": cfg.get("LIB_ROOT", ""),
+            "inbox": cfg.get("INBOX_UNSORTED", ""),
+        }
+    except Exception as e:
+        cfg = {"LIB_ROOT": "", "INBOX_UNSORTED": ""}
+        stats = {"csv_rows": 0, "csv_path": "(brak)", "lib_root": "", "inbox": ""}
+        print("[dashboard] stats failed:", e)
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {"request": request, "msg": msg, "cfg": cfg, "stats": stats},
+    )
+
+
+def _run_bg(target, *args, **kwargs):
+    import threading
+    threading.Thread(target=target, args=args, kwargs=kwargs, daemon=True).start()
+
+
+@app.post("/action/scan")
+def action_scan():
+    try:
+        from djlib.cli import scan_command
+        _run_bg(scan_command)
+        return RedirectResponse("/?msg=Uruchomiono%20skan%20w%20tle", status_code=303)
+    except Exception as e:
+        print("[action] scan failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20uruchomic%20skanu", status_code=303)
+
+
+@app.post("/action/auto-decide")
+def action_auto_decide():
+    try:
+        import argparse
+        from djlib.cli import cmd_auto_decide
+        args = argparse.Namespace(rules=str(BASE_DIR / "rules.yml"), only_empty=False)
+        _run_bg(cmd_auto_decide, args)
+        return RedirectResponse("/?msg=Uruchomiono%20auto-decide%20w%20tle", status_code=303)
+    except Exception as e:
+        print("[action] auto-decide failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20auto-decide", status_code=303)
+
+
+@app.post("/action/apply-dry")
+def action_apply_dry():
+    try:
+        import argparse
+        from djlib.cli import cmd_apply
+        args = argparse.Namespace(dry_run=True)
+        _run_bg(cmd_apply, args)
+        return RedirectResponse("/?msg=Uruchomiono%20apply%20(dry-run)", status_code=303)
+    except Exception as e:
+        print("[action] apply dry failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20apply%20dry-run", status_code=303)
+
+
+@app.post("/action/apply")
+def action_apply():
+    try:
+        import argparse
+        from djlib.cli import cmd_apply
+        args = argparse.Namespace(dry_run=False)
+        _run_bg(cmd_apply, args)
+        return RedirectResponse("/?msg=Uruchomiono%20apply", status_code=303)
+    except Exception as e:
+        print("[action] apply failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20apply", status_code=303)
+
+
+@app.post("/action/undo")
+def action_undo():
+    try:
+        import argparse
+        from djlib.cli import cmd_undo
+        args = argparse.Namespace()
+        _run_bg(cmd_undo, args)
+        return RedirectResponse("/?msg=Cofanie%20ostatnich%20ruchow", status_code=303)
+    except Exception as e:
+        print("[action] undo failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20cofnac", status_code=303)
+
+
+@app.post("/action/dupes")
+def action_dupes():
+    try:
+        import argparse
+        from djlib.cli import cmd_dupes
+        args = argparse.Namespace()
+        _run_bg(cmd_dupes, args)
+        return RedirectResponse("/?msg=Generowanie%20raportu%20duplikatow", status_code=303)
+    except Exception as e:
+        print("[action] dupes failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20wygenerowac%20raportu", status_code=303)
+
+@app.get("/csv", response_class=HTMLResponse)
+def csv_view(request: Request):
+    # Prosty podgląd CSV w przeglądarce
+    try:
+        from djlib.config import CSV_PATH
+        rows = []
+        if CSV_PATH.exists():
+            import csv
+            with CSV_PATH.open("r", encoding="utf-8") as f:
+                r = csv.reader(f)
+                rows = list(r)
+        return templates.TemplateResponse(
+            "csv.html",
+            {"request": request, "rows": rows},
+        )
+    except Exception as e:
+        return HTMLResponse(f"<pre>CSV error: {e}</pre>", status_code=500)
 
 
 @app.get("/taxonomy", response_class=HTMLResponse)
@@ -382,26 +537,44 @@ def api_pick(target: str | None = None):
     if platform.system() != "Darwin":
         return JSONResponse({"ok": False, "path": ""})
 
-    prompt = f"Wybierz folder dla: {target or ''}"
-    # AppleScript: choose folder and return POSIX path
-    script = (
+    # Build AppleScript prompt and scripts
+    prompt_raw = f"Wybierz folder dla: {target or ''}"
+    prompt = prompt_raw.replace("\\", "\\\\").replace('"', '\\"')
+
+    primary_script = f'POSIX path of (choose folder with prompt "{prompt}")'
+    fallback_script = (
         'tell application "System Events" to POSIX path of '
         f'(choose folder with prompt "{prompt}")'
     )
     try:
-        # Run osascript synchronously; user interaction will block until selection
+        # Try without System Events (fewer permissions needed)
         res = subprocess.run(
-            ["osascript", "-e", script],
+            ["osascript", "-e", primary_script],
             capture_output=True,
             text=True,
             timeout=120,
         )
-        if res.returncode == 0:
-            path = (res.stdout or "").strip()
-            if path:
-                return JSONResponse({"ok": True, "path": path})
+        if res.returncode == 0 and (res.stdout or "").strip():
+            return JSONResponse({"ok": True, "path": res.stdout.strip()})
+
+        # Fallback via System Events
+        res2 = subprocess.run(
+            ["osascript", "-e", fallback_script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if res2.returncode == 0 and (res2.stdout or "").strip():
+            return JSONResponse({"ok": True, "path": res2.stdout.strip()})
+
+        # Log stderr to server console for troubleshooting; return generic failure to UI
+        if res.stderr:
+            print("[picker] stderr:", res.stderr.strip())
+        if res2.stderr:
+            print("[picker] fallback stderr:", res2.stderr.strip())
         return JSONResponse({"ok": False, "path": ""})
     except subprocess.TimeoutExpired:
         return JSONResponse({"ok": False, "path": ""})
-    except Exception:
+    except Exception as e:
+        print("[picker] exception:", e)
         return JSONResponse({"ok": False, "path": ""})

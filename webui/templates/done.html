@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+  <h1>Gotowe ✅</h1>
+  <p>Strukturę folderów utworzono pomyślnie.</p>
+  {% if scan_started %}
+  <p>Skan został uruchomiony w tle. Wyniki pojawią się w pliku CSV.</p>
+  {% endif %}
+
+  <div class="actions" style="margin-top:1rem">
+    <a class="secondary" href="/wizard?step=2">← Wróć do konfiguracji</a>
+    <a class="secondary" href="/">Przejdź do aplikacji</a>
+    <a class="secondary" href="/csv">Podgląd CSV</a>
+  </div>
+</div>
+{% endblock %}
