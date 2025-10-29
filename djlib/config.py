@@ -139,3 +139,30 @@ def ensure_base_dirs() -> None:
     """Utwórz katalogi bazowe według obecnego konfiga."""
     for p in [LIB_ROOT, INBOX_DIR, REVIEW_QUEUE_DIR, READY_TO_PLAY_DIR, LOGS_DIR]:
         p.mkdir(parents=True, exist_ok=True)
+
+def load_config() -> Dict[str, Any]:
+    """Wczytaj aktualną konfigurację i zwróć jako słownik z kluczami LIB_ROOT i INBOX_UNSORTED."""
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        cfg = _from_dict(_read_yaml(existing))
+    else:
+        cfg = _defaults()
+    return {
+        "LIB_ROOT": str(cfg.library_root),
+        "INBOX_UNSORTED": str(cfg.inbox_dir),
+    }
+
+def save_config_paths(lib_root: str, inbox: str) -> None:
+    """Zapisz ścieżki konfiguracji do pliku."""
+    cfg = AppConfig(library_root=_expand(lib_root), inbox_dir=_expand(inbox))
+    dest = _choose_config_path()
+    _write_yaml(dest, _to_dict(cfg))
+    # Aktualizuj globalne zmienne
+    global _CONFIG, LIB_ROOT, INBOX_DIR, READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR, LOGS_DIR, CSV_PATH
+    _CONFIG = cfg
+    LIB_ROOT = cfg.library_root
+    INBOX_DIR = cfg.inbox_dir
+    READY_TO_PLAY_DIR = LIB_ROOT / "READY TO PLAY"
+    REVIEW_QUEUE_DIR = LIB_ROOT / "REVIEW QUEUE"
+    LOGS_DIR = LIB_ROOT / "LOGS"
+    CSV_PATH = LIB_ROOT / "library.csv"

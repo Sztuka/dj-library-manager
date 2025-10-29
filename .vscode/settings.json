@@ -4,5 +4,7 @@
   "python.formatting.provider": "black",
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.autoImportCompletions": true,
-  "python-envs.pythonProjects": []
+  "python-envs.pythonProjects": [],
+  "cursorpyright.analysis.autoImportCompletions": true,
+  "cursorpyright.analysis.typeCheckingMode": "basic"
 }

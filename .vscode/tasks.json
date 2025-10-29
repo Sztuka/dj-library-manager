@@ -2,114 +2,101 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Setup: create venv & install deps",
+      "label": "STEP 0 — Setup: create venv & install deps",
       "type": "shell",
       "command": "/usr/bin/env bash -lc 'python3 -m venv .venv && source .venv/bin/activate && pip install -U pip && pip install -r requirements.txt && pip install -e .'",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
+
     {
-      "label": "Install fpcalc (Homebrew)",
+      "label": "TOOLS — Install fpcalc (Homebrew)",
       "type": "shell",
       "command": "/usr/bin/env bash -lc 'if command -v brew >/dev/null; then (brew list chromaprint >/dev/null 2>&1 || brew install chromaprint); else echo \"❌ Brak Homebrew\" && exit 1; fi'",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      "label": "Install fpcalc (Download vendor)",
+      "label": "TOOLS — Install fpcalc (Download vendor)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_fpcalc.py",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
 
     {
-      "label": "Configure (choose folders)",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli configure",
-      "dependsOn": "Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-
-    {
-      "label": "GUI: Taxonomy wizard (web)",
+      "label": "STEP 1 — Start Web Wizard (server)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.web_launch",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "STEP 1.1 — Open Wizard URL",
+      "type": "shell",
+      "command": "/usr/bin/env bash -lc 'open http://127.0.0.1:8000/wizard'",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
 
     {
-      "label": "Scan INBOX_UNSORTED",
+      "label": "STEP 2 — Scan INBOX_UNSORTED",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli scan",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
 
     {
-      "label": "GUI: Configure (picker)",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/gui_config.py",
-      "dependsOn": "Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-
-    {
-      "label": "Auto-decide (rules.yml) — only empty",
+      "label": "STEP 3 — Auto-decide (rules.yml) — only empty",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli auto-decide --only-empty",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
-
     {
-      "label": "Auto-decide (rules → set/suggest)",
+      "label": "STEP 3 (alt) — Auto-decide (rules → set/suggest)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/auto_decide_rules.py",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
 
     {
-      "label": "Apply decisions (dry-run)",
+      "label": "STEP 4 — Apply decisions (dry-run)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli apply --dry-run",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
-
     {
-      "label": "Apply decisions",
+      "label": "STEP 5 — Apply decisions",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli apply",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
 
     {
-      "label": "Undo last moves",
+      "label": "TOOLS — Undo last moves",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli undo",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
-
     {
-      "label": "Report duplicates",
+      "label": "TOOLS — Report duplicates",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dupes",
-      "dependsOn": "Setup: create venv & install deps",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     }

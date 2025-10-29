@@ -9,6 +9,10 @@ from djlib.csvdb import load_records, save_records
 from djlib.taxonomy import _read_taxonomy, _write_taxonomy, ensure_taxonomy_dirs, target_to_path
 from djlib.mover import move_with_rename, utc_now_str
 
+def ensure_taxonomy_folders() -> None:
+    """Utwórz wszystkie foldery z taksonomii."""
+    ensure_taxonomy_dirs()
+
 def rename_ready_bucket(old_rel: str, new_rel: str) -> None:
     """
     Zmienia nazwę bucketu READY_TO_PLAY/<old_rel> -> READY_TO_PLAY/<new_rel>.

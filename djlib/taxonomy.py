@@ -119,3 +119,13 @@ def add_review_bucket(name: str) -> None:
     if name not in review:
         review.append(name)
         _write_taxonomy(data["ready_buckets"], review)
+
+def load_taxonomy() -> Dict[str, List[str]]:
+    """Wczytaj taksonomię i zwróć jako słownik z kluczami ready_buckets i review_buckets."""
+    return _read_taxonomy()
+
+def save_taxonomy(data: Dict[str, List[str]]) -> None:
+    """Zapisz taksonomię z podanego słownika."""
+    ready = data.get("ready_buckets", [])
+    review = data.get("review_buckets", [])
+    _write_taxonomy(ready, review)

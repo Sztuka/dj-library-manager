@@ -1,140 +1,146 @@
+# djlib/webapp.py
 from __future__ import annotations
-from pathlib import Path
-from typing import List, Dict
-from collections import Counter
-import re
 
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from pathlib import Path
+from typing import List, Tuple
+
+import platform
+import subprocess
+
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from djlib.taxonomy import (
-    _read_taxonomy, _write_taxonomy, ensure_taxonomy_dirs,
-)
-from djlib.csvdb import load_records
-from djlib.config import CSV_PATH
+# wewnętrzne moduły (muszą istnieć)
+from .config import load_config, save_config_paths, ensure_base_dirs
+from .taxonomy import load_taxonomy, save_taxonomy
+from .ops import ensure_taxonomy_folders
 
-REPO = Path(__file__).resolve().parents[1]
-TEMPLATES_DIR = REPO / "webui" / "templates"
-STATIC_DIR = REPO / "webui" / "static"
+app = FastAPI()
 
-app = FastAPI(title="DJ Library Manager – Taxonomy Wizard")
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+ROOT = Path(__file__).resolve().parents[1]
+TEMPLATES = ROOT / "webui" / "templates"
+STATIC = ROOT / "webui" / "static"
 
-# Gotowe propozycje (jak w CLI-wizardzie)
-CANDIDATES_CLUB = [
-    "CLUB/DNB", "CLUB/TRANCE", "CLUB/PROGRESSIVE_HOUSE", "CLUB/INDIE_DANCE",
-    "CLUB/BREAKS", "CLUB/UK_GARAGE", "CLUB/HARD_TECHNO", "CLUB/ELECTRO",
-    "CLUB/EDM_MAINSTAGE", "CLUB/DISCO_NUDISCO", "CLUB/FUNK_SOUL",
-]
-CANDIDATES_OPEN = [
-    "OPEN FORMAT/PARTY DANCE",
-    "OPEN FORMAT/RNB",
-    "OPEN FORMAT/HIP-HOP",
-    "OPEN FORMAT/LATIN REGGAETON",
-    "OPEN FORMAT/POLISH SINGALONG",
-    "OPEN FORMAT/ROCK CLASSICS",
-    "OPEN FORMAT/ROCKNROLL",
-    "OPEN FORMAT/FUNK SOUL",
-    "OPEN FORMAT/70s",
-    "OPEN FORMAT/80s",
-    "OPEN FORMAT/90s",
-    "OPEN FORMAT/2000s",
-    "OPEN FORMAT/2010s",
-]
+templates = Jinja2Templates(directory=str(TEMPLATES))
+app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
-def _group_ready(ready: List[str]) -> Dict[str, List[str]]:
-    out: Dict[str, List[str]] = {}
-    for r in ready:
-        sect, name = (r.split("/", 1) + [""])[:2] if "/" in r else (r, "")
-        out.setdefault(sect, []).append(name)
-    for k in out:
-        out[k] = sorted(out[k])
-    return dict(sorted(out.items()))
 
-def _normalize_genre(g: str) -> str:
-    s = (g or "").strip().lower()
-    s = s.replace("-", " ").replace("_", " ")
-    s = s.replace("drum and bass", "dnb").replace("drum & bass", "dnb")
-    s = s.replace("nu disco", "disco nudisco")
-    return " ".join(s.split())
+# ----------------------------
+# Helpers
+# ----------------------------
+def flash_redirect(url: str, msg: str) -> RedirectResponse:
+    return RedirectResponse(f"{url}?msg={msg}", status_code=303)
 
-def _suggest_from_csv(threshold: int = 25) -> List[str]:
-    if not CSV_PATH.exists():
-        return []
-    rows = load_records(CSV_PATH)
-    genres = [_normalize_genre(r.get("genre", "")) for r in rows if r.get("genre")]
-    ctr = Counter([g for g in genres if g])
 
-    suggestions: List[str] = []
-    for genre, cnt in ctr.most_common():
-        key = None
-        if "dnb" in genre: key = "CLUB/DNB"
-        elif "trance" in genre: key = "CLUB/TRANCE"
-        elif "progressive" in genre: key = "CLUB/PROGRESSIVE HOUSE"
-        elif "tech house" in genre: key = "CLUB/TECH HOUSE"
-        elif "hard techno" in genre or ("techno" in genre and "hard" in genre): key = "CLUB/HARD_TECHNO"
-        elif "nudisco" in genre or "nu disco" in genre or "disco" in genre: key = "CLUB/DISCO_NUDISCO"
-        elif "uk garage" in genre or "garage" in genre: key = "CLUB/UK_GARAGE"
-        elif "breaks" in genre or "breakbeat" in genre: key = "CLUB/BREAKS"
-        elif "indie" in genre: key = "CLUB/INDIE_DANCE"
-        elif "electro" in genre: key = "CLUB/ELECTRO"
-        if key and cnt >= threshold:
-            suggestions.append(key)
-    return sorted(set(suggestions))
+def normalize_label(s: str) -> str:
+    """UPPERCASE + spacje; usuń podkreślniki, zbędne ukośniki końcowe i nadmiarowe spacje."""
+    s = s.replace("_", " ").replace("\\", "/").strip().rstrip("/")
+    # zbicie wielu spacji do jednej
+    s = " ".join(s.split())
+    return s.upper()
 
-@app.get("/", response_class=HTMLResponse)
-async def root(request: Request):
-    return RedirectResponse(url="/taxonomy")
 
-@app.get("/taxonomy", response_class=HTMLResponse)
-async def taxonomy_get(request: Request):
-    data = _read_taxonomy()
-    ready = data["ready_buckets"]
-    review = data["review_buckets"]
-    grouped = _group_ready(ready)
-    # filtruj kandydatów, żeby nie duplikować
-    cand_club = [c for c in CANDIDATES_CLUB if c not in ready]
-    cand_open = [c for c in CANDIDATES_OPEN if c not in ready]
-    suggestions = [s for s in _suggest_from_csv() if s not in ready]
-    return templates.TemplateResponse(
-        "taxonomy.html",
-        {
-            "request": request,
-            "grouped": grouped,
-            "review": sorted(review),
-            "cand_club": cand_club,
-            "cand_open": cand_open,
-            "suggestions": suggestions,
-        },
-    )
+def split_ready_buckets(ready_paths: List[str]) -> Tuple[List[str], List[str], bool]:
+    club, openf, mixes = [], [], False
+    for p in ready_paths:
+        p = p.strip()
+        if p == "MIXES":
+            mixes = True
+            continue
+        if p.startswith("CLUB/"):
+            club.append(p.split("/", 1)[1])
+        elif p.startswith("OPEN FORMAT/"):
+            openf.append(p.split("/", 1)[1])
+    return club, openf, mixes
 
-@app.post("/taxonomy/add", response_class=HTMLResponse)
-async def taxonomy_add(request: Request,
-                       section: str = Form(...),
-                       name: str = Form(...)):
-    section = section.strip().upper().strip("/")
-    name = name.strip().upper().strip("/")
-    if not section or not name or "/" in section or "/" in name:
-        return RedirectResponse(url="/taxonomy", status_code=303)
-    data = _read_taxonomy()
-    ready = set(data["ready_buckets"])
-    ready.add(f"{section}/{name}")
-    _write_taxonomy(sorted(ready), sorted(set(data["review_buckets"])))
-    ensure_taxonomy_dirs()
-    return RedirectResponse(url="/taxonomy", status_code=303)
 
-@app.post("/taxonomy/save", response_class=HTMLResponse)
-async def taxonomy_save(request: Request,
-                        ready_selected: List[str] = Form(default=[]),
-                        review_selected: List[str] = Form(default=[]),
-                        add_candidates: List[str] = Form(default=[]),
-                        add_suggestions: List[str] = Form(default=[])):
-    data = _read_taxonomy()
-    ready = set(ready_selected) | set(add_candidates) | set(add_suggestions)
-    review = set(review_selected) | set(data["review_buckets"])  # zwykle review zostawiamy jak jest
-    _write_taxonomy(sorted(ready), sorted(review))
-    ensure_taxonomy_dirs()
-    return RedirectResponse(url="/taxonomy", status_code=303)
+def build_ready_buckets(club: List[str], openf: List[str], mixes: bool = True) -> List[str]:
+    out: List[str] = []
+    out.extend([f"CLUB/{normalize_label(x)}" for x in club if str(x).strip()])
+    out.extend([f"OPEN FORMAT/{normalize_label(x)}" for x in openf if str(x).strip()])
+    if mixes:
+        out.append("MIXES")
+    # deduplikacja przy zachowaniu kolejności
+    seen = set()
+    dedup = []
+    for s in out:
+        if s not in seen:
+            dedup.append(s)
+            seen.add(s)
+    return dedup
+
+
+# ----------------------------
+# Routes
+# ----------------------------
+@app.get("/")
+def index():
+    return RedirectResponse("/wizard", status_code=302)
+
+
+@app.get("/wizard")
+async def wizard_get(request: Request, step: int = 1, msg: str | None = None):
+    cfg = load_config()  # powinien mieć klucze: LIB_ROOT, INBOX_UNSORTED
+    tax = load_taxonomy()  # {"ready_buckets":[...], "review_buckets":[...]}
+    club, openf, mixes = split_ready_buckets(tax.get("ready_buckets", []))
+    ctx = {
+        "request": request,
+        "step": step,
+        "msg": msg,
+        "cfg": cfg,
+        "club": club,
+        "openf": openf,
+        "mixes": mixes,
+        "review": tax.get("review_buckets", ["UNDECIDED", "NEEDS EDIT"]),
+    }
+    return templates.TemplateResponse("wizard.html", ctx)
+
+
+@app.get("/api/pick")
+def api_pick(target: str = "path"):
+    """macOS: AppleScript 'choose folder' → POSIX path. Inne OS: wpis ręczny w polu."""
+    if platform.system() == "Darwin":
+        osa = 'POSIX path of (choose folder with prompt "Wybierz folder")'
+        try:
+            out = subprocess.check_output(["osascript", "-e", osa]).decode("utf-8").strip()
+            return JSONResponse({"ok": True, "path": out})
+        except Exception as e:
+            return JSONResponse({"ok": False, "err": str(e)})
+    return JSONResponse({"ok": False, "err": "picker not available on this OS"})
+
+
+@app.post("/wizard/step1")
+async def wizard_step1(
+    lib_root: str = Form(...),
+    inbox_unsorted: str = Form(...),
+):
+    save_config_paths(lib_root=lib_root.strip(), inbox=inbox_unsorted.strip())
+    return flash_redirect("/wizard?step=2", "Zapisano lokalizacje (LIB_ROOT / INBOX_UNSORTED).")
+
+
+@app.post("/wizard/step2")
+async def wizard_step2(
+    club: List[str] = Form(default=[]),
+    openf: List[str] = Form(default=[]),
+):
+    club_clean = [normalize_label(s) for s in club if s and str(s).strip()]
+    openf_clean = [normalize_label(s) for s in openf if s and str(s).strip()]
+
+    ready = build_ready_buckets(club_clean, openf_clean, mixes=True)
+    review = ["UNDECIDED", "NEEDS EDIT"]  # twardo, spójnie z CSV/ops
+
+    save_taxonomy({"ready_buckets": ready, "review_buckets": review})
+    return flash_redirect("/wizard?step=3", "Zapisano taksonomię.")
+
+
+@app.post("/wizard/step3")
+async def wizard_step3(run_scan: str | None = Form(None)):
+    ensure_base_dirs()
+    ensure_taxonomy_folders()
+    if run_scan:
+        from .cli import scan_command
+        scan_command()
+        return flash_redirect("/wizard?step=3", "Utworzono foldery i zeskanowano INBOX_UNSORTED.")
+    return flash_redirect("/wizard?step=3", "Utworzono foldery.")

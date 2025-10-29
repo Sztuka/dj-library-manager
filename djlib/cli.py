@@ -188,6 +188,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
     elif not changed and not args.dry_run:
         print("Brak pozycji do przeniesienia.")
 
+def scan_command() -> None:
+    """Funkcja wywołująca skanowanie (używana przez webapp i inne moduły)."""
+    args = argparse.Namespace()
+    cmd_scan(args)
+
 def cmd_undo(_: argparse.Namespace) -> None:
     logs = sorted(LOGS_DIR.glob("moves-*.csv"))
     if not logs:

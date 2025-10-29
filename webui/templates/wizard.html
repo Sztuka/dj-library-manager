@@ -1,0 +1,125 @@
+{% extends "base.html" %} {% block content %}
+<div class="container">
+  <h1>Setup Wizard</h1>
+
+  {% if msg %}
+  <div class="flash">{{ msg }}</div>
+  {% endif %}
+
+  <div class="steps">
+    <div class="step {{ 'active' if step==1 else '' }}">1. Lokalizacja</div>
+    <div class="step {{ 'active' if step==2 else '' }}">2. Taksonomia</div>
+    <div class="step {{ 'active' if step==3 else '' }}">3. Foldery & Skan</div>
+  </div>
+
+  {# STEP 1 #} {% if step == 1 %}
+  <form method="post" action="/wizard/step1" class="card">
+    <label>LIB ROOT (gdzie powstanie „READY TO PLAY” i „REVIEW QUEUE”)</label>
+    <div class="row">
+      <input
+        type="text"
+        name="lib_root"
+        value="{{ cfg.LIB_ROOT or '' }}"
+        placeholder="/Volumes/Music/Library"
+      />
+      <button type="button" onclick="pick('lib_root')">Wybierz…</button>
+    </div>
+
+    <label>INBOX_UNSORTED (źródło plików do uporządkowania)</label>
+    <div class="row">
+      <input
+        type="text"
+        name="inbox_unsorted"
+        value="{{ cfg.INBOX_UNSORTED or '' }}"
+        placeholder="/Volumes/Music/INBOX_UNSORTED"
+      />
+      <button type="button" onclick="pick('inbox_unsorted')">Wybierz…</button>
+    </div>
+
+    <div class="actions">
+      <button type="submit">Zapisz i dalej →</button>
+    </div>
+  </form>
+  {% endif %} {# STEP 2 #} {% if step == 2 %}
+  <form method="post" action="/wizard/step2" class="card">
+    <h3>CLUB — subkategorie</h3>
+    <div id="club">
+      {% for name in club %}
+      <div class="row">
+        <input type="text" name="club" value="{{ name }}" />
+        <button type="button" onclick="this.parentElement.remove()">
+          Usuń
+        </button>
+      </div>
+      {% endfor %}
+      <div class="row">
+        <button type="button" onclick="addRow('club')">+ Dodaj</button>
+      </div>
+    </div>
+
+    <h3>OPEN FORMAT — subkategorie</h3>
+    <div id="openf">
+      {% for name in openf %}
+      <div class="row">
+        <input type="text" name="openf" value="{{ name }}" />
+        <button type="button" onclick="this.parentElement.remove()">
+          Usuń
+        </button>
+      </div>
+      {% endfor %}
+      <div class="row">
+        <button type="button" onclick="addRow('openf')">+ Dodaj</button>
+      </div>
+    </div>
+
+    <p>
+      <strong>MIXES</strong> — top-level kubełek (dodawany zawsze, bez
+      subfolderów).
+    </p>
+
+    <div class="actions">
+      <a class="secondary" href="/wizard?step=1">← Wstecz</a>
+      <button type="submit">Zapisz i dalej →</button>
+    </div>
+  </form>
+  {% endif %} {# STEP 3 #} {% if step == 3 %}
+  <form method="post" action="/wizard/step3" class="card">
+    <p>
+      Utworzymy strukturę folderów wg taksonomii. Możesz też od razu zeskanować
+      INBOX_UNSORTED.
+    </p>
+    <label class="row">
+      <input type="checkbox" name="run_scan" value="1" />
+      <span>Od razu zeskanuj INBOX_UNSORTED</span>
+    </label>
+    <div class="actions">
+      <a class="secondary" href="/wizard?step=2">← Wstecz</a>
+      <button type="submit">Utwórz foldery (i opcjonalnie skan)</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+  async function pick(field) {
+    try {
+      const r = await fetch("/api/pick?target=" + encodeURIComponent(field));
+      const j = await r.json();
+      if (j.ok) {
+        document.querySelector(`input[name="${field}"]`).value = j.path;
+      } else {
+        alert("Picker niedostępny. Wpisz ścieżkę ręcznie.");
+      }
+    } catch (e) {
+      alert("Nie udało się otworzyć pickera.");
+    }
+  }
+  function addRow(section) {
+    const box = document.getElementById(section);
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<input type="text" name="${section}" value=""/> <button type="button" onclick="this.parentElement.remove()">Usuń</button>`;
+    box.insertBefore(row, box.lastElementChild);
+  }
+</script>
+{% endblock %}
