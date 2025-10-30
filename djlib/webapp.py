@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Tuple
 
 CONFIG_FILENAME = "config.yml"
 TAXONOMY_FILENAME = "taxonomy.yml"
+SUGGESTIONS_FILENAME = "taxonomy_suggestions.yml"
 
 # --- Ścieżki do plików (bez IO przy imporcie) ---
 
@@ -25,6 +26,14 @@ def get_taxonomy_path() -> Path:
     """
     env = os.getenv("DJLIB_TAXONOMY_FILE")
     return Path(env).expanduser() if env else get_config_path().parent / TAXONOMY_FILENAME
+
+def get_suggestions_path() -> Path:
+    """
+    Lokalizacja pliku z podpowiedziami taksonomii.
+    Jeśli nie ustawiono DJLIB_TAXONOMY_SUGGESTIONS, używamy pliku obok configu.
+    """
+    env = os.getenv("DJLIB_TAXONOMY_SUGGESTIONS")
+    return Path(env).expanduser() if env else get_config_path().parent / SUGGESTIONS_FILENAME
 
 # --- Normalizacja etykiet/bucketów ---
 
@@ -52,14 +61,43 @@ def _canonical_key(label: str) -> str:
     # Na potrzeby klucza porównujemy bez rozróżniania wielkości liter
     return s.upper()
 
+def _style_segment(seg: str, style: str) -> str:
+    if style == "uppercase":
+        return seg.upper()
+    if style == "title":
+        low = seg.lower()
+        # specjalny przypadek dekad, zachowaj małe 's'
+        if low in {"70s", "80s", "90s", "2000s", "2010s"}:
+            return low
+        return " ".join((w[:1].upper() + w[1:]) if w else w for w in seg.split(" "))
+    return seg
+
+def style_label(label: str, style: str) -> str:
+    parts = [p for p in normalize_label(label).split("/") if p]
+    if not parts:
+        return ""
+    return "/".join(_style_segment(p, style) for p in parts)
+
 # --- Config ---
 
 def save_config_paths(*, lib_root: str, inbox: str) -> None:
     cfg_path = get_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    # zachowaj istniejące preferencje jeśli są
+    existing: Dict[str, Any] = {}
+    if cfg_path.exists():
+        try:
+            with cfg_path.open("r", encoding="utf-8") as f:
+                existing = yaml.safe_load(f) or {}
+        except Exception:
+            existing = {}
     data = {
         "LIB_ROOT": str(Path(lib_root).resolve()),
         "INBOX_UNSORTED": str(Path(inbox).resolve()),
+        "preferences": existing.get("preferences", {
+            "label_style": "as_is",
+            "auto_format_new_labels": False,
+        }),
     }
     tmp = cfg_path.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8") as f:
@@ -72,6 +110,28 @@ def load_config() -> Dict[str, Any]:
         return {}
     with cfg_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+def load_preferences() -> Dict[str, Any]:
+    cfg = load_config() or {}
+    p = cfg.get("preferences") or {}
+    return {
+        "label_style": p.get("label_style", "as_is"),
+        "auto_format_new_labels": bool(p.get("auto_format_new_labels", False)),
+    }
+
+def save_preferences(label_style: str | None = None, auto_format_new_labels: bool | None = None) -> None:
+    cfg_path = get_config_path()
+    data = load_config() if cfg_path.exists() else {}
+    prefs = data.get("preferences", {})
+    if label_style is not None:
+        prefs["label_style"] = label_style
+    if auto_format_new_labels is not None:
+        prefs["auto_format_new_labels"] = bool(auto_format_new_labels)
+    data["preferences"] = prefs
+    tmp = cfg_path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=True, allow_unicode=True)
+    tmp.replace(cfg_path)
 
 # --- Taxonomy ---
 
@@ -112,6 +172,22 @@ def load_taxonomy() -> Dict[str, List[str]]:
         "ready_buckets": data.get("ready_buckets", []) or [],
         "review_buckets": data.get("review_buckets", []) or [],
     }
+
+def load_suggestions() -> Dict[str, List[str]]:
+    p = get_suggestions_path()
+    if p.exists():
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                d = yaml.safe_load(f) or {}
+            return {
+                "club": d.get("club", []) or [],
+                "open_format": d.get("open_format", []) or [],
+                "top_level": d.get("top_level", []) or [],
+            }
+        except Exception as e:
+            print("[taxonomy] suggestions load failed:", e)
+    # fallback, przynajmniej MIXES jako top-level
+    return {"club": [], "open_format": [], "top_level": ["MIXES"]}
 
 # --- Budowanie listy bucketów READY (na potrzeby testów/IO) ---
 
@@ -263,6 +339,8 @@ def get_wizard(request: Request, step: int = 1):
     tax = load_taxonomy()
     club: List[str] = []
     openf: List[str] = []
+    prefs = load_preferences()
+    sugg = load_suggestions()
 
     return templates.TemplateResponse(
         "wizard.html",
@@ -272,6 +350,9 @@ def get_wizard(request: Request, step: int = 1):
             "cfg": cfg,
             "club": club,
             "openf": openf,
+            "sugg_club": sugg.get("club", []),
+            "sugg_open": sugg.get("open_format", []),
+            "prefs": prefs,
             "msg": None,
         },
     )
@@ -295,10 +376,19 @@ def post_wizard_step1(
 
 @app.post("/wizard/step2")
 def post_wizard_step2(
-    club: List[str] = Form(default=[]), openf: List[str] = Form(default=[])
+    club: List[str] = Form(default=[]), openf: List[str] = Form(default=[]), apply_style: str | None = Form(default=None)
 ):
     # Zbuduj i zapisz taksonomię READY
-    ready = build_ready_buckets(club, openf, mixes=True)
+    prefs = load_preferences()
+    style = prefs.get("label_style", "as_is")
+
+    def maybe_style(x: str) -> str:
+        return style_label(x, style) if apply_style else normalize_label(x)
+
+    club_s = [maybe_style(x) for x in club or []]
+    openf_s = [maybe_style(x) for x in openf or []]
+
+    ready = build_ready_buckets(club_s, openf_s, mixes=True)
     tax_prev = load_taxonomy()
     save_taxonomy({
         "ready_buckets": ready,
@@ -467,22 +557,11 @@ def taxonomy_page(request: Request):
     tax = load_taxonomy()
     ready = tax.get("ready_buckets", [])
     grouped = _group_ready_buckets(ready)
+    prefs = load_preferences()
+    sugg = load_suggestions()
 
-    # proste, statyczne propozycje – można rozwinąć według potrzeb
-    cand_club = [
-        "CLUB/HOUSE",
-        "CLUB/TECH HOUSE",
-        "CLUB/TECHNO",
-        "CLUB/TRANCE",
-        "CLUB/DNB",
-    ]
-    cand_open = [
-        "OPEN FORMAT/PARTY DANCE",
-        "OPEN FORMAT/FUNK SOUL",
-        "OPEN FORMAT/HIP-HOP",
-        "OPEN FORMAT/RNB",
-    ]
-
+    club_current = grouped.get("CLUB", [])
+    open_current = grouped.get("OPEN FORMAT", [])
     review = tax.get("review_buckets", [])
 
     return templates.TemplateResponse(
@@ -490,9 +569,12 @@ def taxonomy_page(request: Request):
         {
             "request": request,
             "grouped": grouped,
-            "cand_club": cand_club,
-            "cand_open": cand_open,
-            "suggestions": [],
+            "club_current": club_current,
+            "open_current": open_current,
+            "sugg_club": sugg.get("club", []),
+            "sugg_open": sugg.get("open_format", []),
+            "sugg_top": sugg.get("top_level", []),
+            "prefs": prefs,
             "review": review,
         },
     )
@@ -500,19 +582,37 @@ def taxonomy_page(request: Request):
 
 @app.post("/taxonomy/save")
 def taxonomy_save(
-    ready_selected: List[str] = Form(default=[]),
-    add_candidates: List[str] = Form(default=[]),
-    add_suggestions: List[str] = Form(default=[]),
+    club: List[str] = Form(default=[]),
+    openf: List[str] = Form(default=[]),
+    top_level: List[str] = Form(default=[]),
+    apply_style: str | None = Form(default=None),
 ):
-    all_ready = []
-    for src in (ready_selected, add_candidates, add_suggestions):
-        for b in src or []:
-            nb = normalize_label(b)
-            if nb and nb not in all_ready:
-                all_ready.append(nb)
+    prefs = load_preferences()
+    style = prefs.get("label_style", "as_is")
+    def maybe_style(x: str) -> str:
+        return style_label(x, style) if apply_style else normalize_label(x)
+
+    seen: set[str] = set()
+    out: List[str] = []
+
+    def add_prefixed(items: List[str], prefix: str | None = None):
+        for raw in items or []:
+            lab = maybe_style(raw)
+            if not lab:
+                continue
+            full = lab if (prefix is None or "/" in lab) else f"{prefix}/{lab}"
+            key = _canonical_key(full)
+            if key not in seen:
+                seen.add(key)
+                out.append(full)
+
+    add_prefixed(club, "CLUB")
+    add_prefixed(openf, "OPEN FORMAT")
+    add_prefixed(top_level, None)
+
     prev = load_taxonomy()
     save_taxonomy({
-        "ready_buckets": all_ready,
+        "ready_buckets": out,
         "review_buckets": prev.get("review_buckets", []),
     })
     return RedirectResponse(url="/taxonomy", status_code=303)

@@ -1,0 +1,28 @@
+# Editable suggestions for taxonomy building. Values are labels without section prefixes.
+club:
+  - AFRO HOUSE
+  - DEEP HOUSE
+  - DNB
+  - ELECTRO
+  - ELECTRO SWING
+  - HOUSE
+  - MELODIC TECHNO
+  - TECH HOUSE
+  - TECHNO
+  - TRANCE
+open_format:
+  - 2000s
+  - 2010s
+  - 70s
+  - 80s
+  - 90s
+  - FUNK SOUL
+  - HIP-HOP
+  - LATIN REGGAETON
+  - PARTY DANCE
+  - POLISH SINGALONG
+  - RNB
+  - ROCK CLASSICS
+  - ROCKNROLL
+top_level:
+  - MIXES

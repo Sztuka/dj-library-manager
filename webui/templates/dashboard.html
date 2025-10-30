@@ -1,28 +1,44 @@
-{% extends "base.html" %}
-{% block content %}
+{% extends "base.html" %} {% block content %}
 <div class="container">
   <h1>DJ Library — Dashboard</h1>
 
-  {% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+  {% if msg %}
+  <div class="flash">{{ msg }}</div>
+  {% endif %}
 
   <section class="card">
     <h3>Status</h3>
     <ul>
       <li><strong>LIB_ROOT:</strong> {{ stats.lib_root }}</li>
       <li><strong>INBOX_UNSORTED:</strong> {{ stats.inbox }}</li>
-      <li><strong>CSV:</strong> {{ stats.csv_path }} (wierszy: {{ stats.csv_rows }})</li>
+      <li>
+        <strong>CSV:</strong> {{ stats.csv_path }} (wierszy: {{ stats.csv_rows
+        }})
+      </li>
     </ul>
   </section>
 
   <section class="card">
     <h3>Akcje</h3>
     <div class="actions">
-      <form method="post" action="/action/scan" style="display:inline"><button>▶︎ Skanuj teraz</button></form>
-      <form method="post" action="/action/auto-decide" style="display:inline"><button>🤖 Auto-decide</button></form>
-      <form method="post" action="/action/apply-dry" style="display:inline"><button>🧪 Apply (dry-run)</button></form>
-      <form method="post" action="/action/apply" style="display:inline"><button>✅ Apply</button></form>
-      <form method="post" action="/action/undo" style="display:inline"><button>↩︎ Cofnij ostatnie</button></form>
-      <form method="post" action="/action/dupes" style="display:inline"><button>🧯 Raport duplikatów</button></form>
+      <form method="post" action="/action/scan" style="display: inline">
+        <button>▶︎ Skanuj teraz</button>
+      </form>
+      <form method="post" action="/action/auto-decide" style="display: inline">
+        <button>🤖 Auto-decide</button>
+      </form>
+      <form method="post" action="/action/apply-dry" style="display: inline">
+        <button>🧪 Apply (dry-run)</button>
+      </form>
+      <form method="post" action="/action/apply" style="display: inline">
+        <button>✅ Apply</button>
+      </form>
+      <form method="post" action="/action/undo" style="display: inline">
+        <button>↩︎ Cofnij ostatnie</button>
+      </form>
+      <form method="post" action="/action/dupes" style="display: inline">
+        <button>🧯 Raport duplikatów</button>
+      </form>
     </div>
   </section>
 

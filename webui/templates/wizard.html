@@ -42,6 +42,27 @@
   </form>
   {% endif %} {# STEP 2 #} {% if step == 2 %}
   <form method="post" action="/wizard/step2" class="card">
+    <div
+      class="row"
+      style="
+        justify-content: flex-end;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+      "
+    >
+      <small class="muted"
+        >Zastosuj preferowany styl:
+        <code>{{ (prefs.label_style or 'as_is')|upper }}</code></small
+      >
+      <button
+        type="button"
+        class="secondary"
+        onclick="window.location.reload()"
+      >
+        Odśwież
+      </button>
+    </div>
     <h3>CLUB — subkategorie</h3>
     <div id="club">
       {% for name in club %}
@@ -55,6 +76,21 @@
       <div class="row">
         <button type="button" onclick="addRow('club')">+ Dodaj</button>
       </div>
+      {% if sugg_club %}
+      <div class="chips" style="margin-top: 0.5rem">
+        {% for s in sugg_club %}
+        <button
+          type="button"
+          class="chip"
+          data-section="club"
+          data-value="{{ s }}"
+          onclick="chipToInput(this)"
+        >
+          + {{ s }}
+        </button>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
 
     <h3>OPEN FORMAT — subkategorie</h3>
@@ -70,12 +106,37 @@
       <div class="row">
         <button type="button" onclick="addRow('openf')">+ Dodaj</button>
       </div>
+      {% if sugg_open %}
+      <div class="chips" style="margin-top: 0.5rem">
+        {% for s in sugg_open %}
+        <button
+          type="button"
+          class="chip"
+          data-section="openf"
+          data-value="{{ s }}"
+          onclick="chipToInput(this)"
+        >
+          + {{ s }}
+        </button>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
 
     <p>
       <strong>MIXES</strong> — top-level kubełek (dodawany zawsze, bez
       subfolderów).
     </p>
+
+    <div class="row">
+      <label class="check">
+        <input type="checkbox" name="apply_style" value="1" />
+        <span
+          >Zastosuj preferowany styl (<code>{{ prefs.label_style }}</code
+          >)</span
+        >
+      </label>
+    </div>
 
     <div class="actions">
       <a class="secondary" href="/wizard?step=1">← Wstecz</a>
@@ -102,24 +163,40 @@
 
 <script>
   async function pick(field) {
-      const input = document.querySelector(`input[name="${field}"]`);
-      try {
-        const r = await fetch("/api/pick?target=" + encodeURIComponent(field));
-        const j = await r.json();
-        if (j.ok && j.path) {
-          input.value = j.path;
-          return;
-        }
-      } catch (e) { /* no-op */ }
-      // Łagodne zachowanie gdy picker nie działa: fokus na polu, bez modala
-      input.focus();
+    const input = document.querySelector(`input[name="${field}"]`);
+    try {
+      const r = await fetch("/api/pick?target=" + encodeURIComponent(field));
+      const j = await r.json();
+      if (j.ok && j.path) {
+        input.value = j.path;
+        return;
+      }
+    } catch (e) {
+      /* no-op */
+    }
+    // Łagodne zachowanie gdy picker nie działa: fokus na polu, bez modala
+    input.focus();
   }
-  function addRow(section) {
+  function addRow(section, initialValue = "") {
     const box = document.getElementById(section);
     const row = document.createElement("div");
     row.className = "row";
-    row.innerHTML = `<input type="text" name="${section}" value=""/> <button type="button" onclick="this.parentElement.remove()">Usuń</button>`;
+    const esc = (s) =>
+      String(s)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    row.innerHTML = `<input type="text" name="${section}" value="${esc(
+      initialValue
+    )}"/> <button type="button" onclick="this.parentElement.remove()">Usuń</button>`;
     box.insertBefore(row, box.lastElementChild);
+  }
+  function chipToInput(el) {
+    const section = el.dataset.section;
+    const value = el.dataset.value || "";
+    addRow(section, value);
+    el.remove();
   }
 </script>
 {% endblock %}

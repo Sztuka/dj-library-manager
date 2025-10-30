@@ -1,92 +1,94 @@
 {% extends "base.html" %} {% block content %}
-<h2>Taxonomy wizard</h2>
+<h2>Taxonomy</h2>
 <p>
-  Wybierz, które buckety mają być aktywne w <code>READY TO PLAY/*</code>. Możesz
-  też dodać własne.
+  Zdefiniuj własny układ bucketów. Domyślnie nic nie narzucamy — dodaj tylko to,
+  czego potrzebujesz. Deduplikujemy case-insensitive i zachowujemy Twoją
+  pisownię. Możesz też skorzystać z poniższych propozycji.
+  <br />
+  Preferowany styl: <code>{{ prefs.label_style }}</code> (<em
+    >zastosuj przy zapisie</em
+  >
+  — patrz przełącznik na dole).
 </p>
 
 <form method="post" action="/taxonomy/save" class="card">
-  <h3>Aktywne buckety (READY TO PLAY/*)</h3>
-  <div class="grid">
-    {% for sect, names in grouped.items() %}
-    <section>
-      <h4>{{ sect }}</h4>
-      {% for name in names %}
-      <label class="check">
-        <input
-          type="checkbox"
-          name="ready_selected"
-          value="{{ sect }}/{{ name }}"
-          checked
-        />
-        <span>{{ name }}</span>
-      </label>
-      {% endfor %}
-    </section>
-    {% endfor %}
-  </div>
-
-  <h3 style="margin-top: 1.5rem">Proponowane (gotowe zestawy)</h3>
+  <h3>READY TO PLAY/*</h3>
   <div class="grid">
     <section>
       <h4>CLUB</h4>
-      {% for c in cand_club %}
-      <label class="check">
-        <input type="checkbox" name="add_candidates" value="{{ c }}" />
-        <span>{{ c.split('/')[1] }}</span>
-      </label>
-      {% endfor %}
+      {% if club_current %} {% for name in club_current %}
+      <div class="row">
+        <input name="club" value="{{ name }}" />
+      </div>
+      {% endfor %} {% else %}
+      <p class="muted">Brak pozycji — dodaj własne lub wybierz z propozycji.</p>
+      {% endif %}
+      <div class="row"><input name="club" placeholder="+ dodaj" /></div>
+
+      {% if sugg_club %}
+      <div class="chips">
+        {% for s in sugg_club %}
+        <label class="chip">
+          <input type="checkbox" name="club" value="{{ s }}" />
+          <span>+ {{ s }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
     </section>
+
     <section>
-      <h4>OPEN_FORMAT</h4>
-      {% for c in cand_open %}
-      <label class="check">
-        <input type="checkbox" name="add_candidates" value="{{ c }}" />
-        <span>{{ c.split('/')[1] }}</span>
-      </label>
-      {% endfor %}
+      <h4>OPEN FORMAT</h4>
+      {% if open_current %} {% for name in open_current %}
+      <div class="row">
+        <input name="openf" value="{{ name }}" />
+      </div>
+      {% endfor %} {% else %}
+      <p class="muted">Brak pozycji — dodaj własne lub wybierz z propozycji.</p>
+      {% endif %}
+      <div class="row"><input name="openf" placeholder="+ dodaj" /></div>
+
+      {% if sugg_open %}
+      <div class="chips">
+        {% for s in sugg_open %}
+        <label class="chip">
+          <input type="checkbox" name="openf" value="{{ s }}" />
+          <span>+ {{ s }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% endif %}
     </section>
   </div>
 
-  {% if suggestions %}
-  <h3 style="margin-top: 1.5rem">
-    Sugestie z biblioteki (na podstawie tagu „genre”)
-  </h3>
-  <div class="grid">
-    <section>
-      <h4>Proponowane</h4>
-      {% for s in suggestions %}
-      <label class="check">
-        <input type="checkbox" name="add_suggestions" value="{{ s }}" />
-        <span>{{ s }}</span>
-      </label>
-      {% endfor %}
-    </section>
+  <h4 style="margin-top: 1rem">Poziom najwyższy</h4>
+  <div class="row">
+    {% for t in sugg_top %}
+    <label class="check"
+      ><input type="checkbox" name="top_level" value="{{ t }}" />
+      <span>{{ t }}</span></label
+    >
+    {% endfor %}
   </div>
-  {% endif %}
+
+  <div class="row" style="margin-top: 1rem">
+    <label class="check">
+      <input type="checkbox" name="apply_style" value="1" />
+      <span>Zastosuj preferowany styl przy zapisie</span>
+    </label>
+  </div>
 
   <div class="actions">
     <button type="submit">Zapisz i utwórz foldery</button>
   </div>
 </form>
 
-<form method="post" action="/taxonomy/add" class="card">
-  <h3>Dodaj własny bucket</h3>
-  <div class="row">
-    <label>Sekcja</label>
-    <input name="section" placeholder="np. CLUB albo OPEN FORMAT" required />
-  </div>
-  <div class="row">
-    <label>Nazwa</label>
-    <input name="name" placeholder="np. DNB, TRANCE, DISCO NUDISCO" required />
-  </div>
-  <div class="actions">
-    <button type="submit">Dodaj</button>
-  </div>
-</form>
-
 <details class="card">
   <summary>Review buckets (REVIEW QUEUE/*)</summary>
+  <p class="muted">
+    Te foldery służą do wstępnej klasyfikacji i ręcznej decyzji. Zalecamy
+    trzymać je zawsze dostępne: <code>NEEDS EDIT</code>, <code>UNDECIDED</code>.
+  </p>
   <div class="grid">
     {% for r in review %}
     <label class="check">
