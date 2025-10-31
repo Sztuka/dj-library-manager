@@ -365,6 +365,7 @@ def ensure_taxonomy_folders() -> None:
 
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import threading
@@ -822,6 +823,7 @@ def api_pending_tracks():
     try:
         from djlib.config import CSV_PATH
         from djlib.csvdb import load_records
+        from djlib.tags import read_tags
         rows = load_records(CSV_PATH)
         pending = [
             {
@@ -830,7 +832,14 @@ def api_pending_tracks():
                 "artist": r.get("artist_suggest",""),
                 "title": r.get("title_suggest",""),
                 "version": r.get("version_suggest",""),
-                "genre": r.get("genre_suggest",""),
+                # pokaż gatunek: preferuj genre_suggest; jeśli puste, spróbuj odczytać z tagów pliku (tylko do podglądu)
+                "genre": (r.get("genre_suggest","")) or (
+                    (lambda g: (g or "").strip())(
+                        (lambda p: (read_tags(p).get("genre") if p.exists() else ""))(
+                            Path(r.get("file_path",""))
+                        )
+                    )
+                ),
                 "album": r.get("album_suggest",""),
                 "year": r.get("year_suggest",""),
                 "duration": r.get("duration_suggest",""),
@@ -862,6 +871,8 @@ def review_accept(track_id: str = Form("")):
                 r["artist"] = r.get("artist_suggest","")
                 r["title"] = r.get("title_suggest","")
                 r["version_info"] = r.get("version_suggest","")
+                # przenieś gatunek do stałej kolumny 'genre' (na potrzeby reguł i późniejszej pracy)
+                r["genre"] = r.get("genre_suggest","")
                 # Możemy też w przyszłości przenieść genre/album/year/duration do stałych pól kiedy je dodamy
                 r["review_status"] = "accepted"
                 changed = True
@@ -923,6 +934,8 @@ async def review_accept_batch(request: Request):
                 r["artist"] = str(form.get(f"artist_{tid}", r.get("artist_suggest","")))
                 r["title"] = str(form.get(f"title_{tid}", r.get("title_suggest","")))
                 r["version_info"] = str(form.get(f"version_{tid}", r.get("version_suggest","")))
+                # przenieś gatunek (z formularza lub sugestii)
+                r["genre"] = str(form.get(f"genre_{tid}", r.get("genre_suggest","")))
                 # przenieś też źródła jeśli chcesz w przyszłości
                 r["review_status"] = "accepted"
                 updated += 1
@@ -1069,6 +1082,80 @@ def csv_view(request: Request):
             "csv.html",
             {"request": request, "rows": rows},
         )
+    except Exception as e:
+        return HTMLResponse(f"<pre>CSV error: {e}</pre>", status_code=500)
+
+
+@app.get("/csv/acceptance")
+def csv_acceptance():
+    """Zwróć CSV z minimalnym zestawem pól potrzebnych do akceptacji.
+    Kolumny: original artist, original title, original genres, year, bpm, key,
+    suggested artist, suggested title, suggested version, suggested genres,
+    suggested bucket, source of suggestions.
+    """
+    try:
+        from djlib.config import CSV_PATH
+        from djlib.csvdb import load_records
+        from djlib.tags import read_tags
+        import io, csv
+        rows = load_records(CSV_PATH)
+        out = io.StringIO()
+        w = csv.writer(out)
+        header = [
+            "original artist",
+            "original title",
+            "original genres",
+            "year",
+            "bpm",
+            "key",
+            "suggested artist",
+            "suggested title",
+            "suggested version",
+            "suggested genres",
+            "suggested bucket",
+            "source of suggestions",
+        ]
+        w.writerow(header)
+        for r in rows:
+            if (r.get("review_status") or "").lower() == "accepted":
+                continue
+            p = Path(r.get("file_path", ""))
+            orig_artist = r.get("artist", "")
+            orig_title = r.get("title", "")
+            # weź utrwalony genre jeśli jest; w przeciwnym razie spróbuj z tagów pliku
+            orig_genre = (r.get("genre") or "").strip()
+            if not orig_genre and p.exists():
+                try:
+                    orig_genre = (read_tags(p).get("genre") or "").strip()
+                except Exception:
+                    orig_genre = ""
+            year = (r.get("year_suggest") or "").strip()
+            bpm = r.get("bpm", "")
+            key = r.get("key_camelot", "")
+            sug_artist = r.get("artist_suggest", "")
+            sug_title = r.get("title_suggest", "")
+            sug_version = r.get("version_suggest", "")
+            sug_genres = r.get("genre_suggest", "")
+            sug_bucket = r.get("ai_guess_bucket", "")
+            source = r.get("meta_source", "")
+            w.writerow([
+                orig_artist,
+                orig_title,
+                orig_genre,
+                year,
+                bpm,
+                key,
+                sug_artist,
+                sug_title,
+                sug_version,
+                sug_genres,
+                sug_bucket,
+                source,
+            ])
+        out.seek(0)
+        return StreamingResponse(out, media_type="text/csv; charset=utf-8", headers={
+            "Content-Disposition": "attachment; filename=acceptance.csv"
+        })
     except Exception as e:
         return HTMLResponse(f"<pre>CSV error: {e}</pre>", status_code=500)
 

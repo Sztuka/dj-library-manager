@@ -54,17 +54,17 @@ def _search_recordings(q: str, limit: int = 5) -> dict:
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_recording_by_id(rid: str) -> dict:
     _throttle_mb()
-    return musicbrainzngs.get_recording_by_id(rid, includes=["tags","artists","releases","release-groups","genres"])  # type: ignore[arg-type]
+    return musicbrainzngs.get_recording_by_id(rid, includes=["tags","artists","releases"])  # type: ignore[arg-type]
 
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_release_group_by_id(rgid: str) -> dict:
     _throttle_mb()
-    return musicbrainzngs.get_release_group_by_id(rgid, includes=["tags","genres"])  # type: ignore[arg-type]
+    return musicbrainzngs.get_release_group_by_id(rgid, includes=["tags"])  # type: ignore[arg-type]
 
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_artist_by_id(aid: str) -> dict:
     _throttle_mb()
-    return musicbrainzngs.get_artist_by_id(aid, includes=["tags","genres","aliases"])  # type: ignore[arg-type]
+    return musicbrainzngs.get_artist_by_id(aid, includes=["tags","aliases"])  # type: ignore[arg-type]
 
 
 def search_recording(artist: str, title: str, duration: Optional[int] = None) -> Optional[RecordingMatch]:

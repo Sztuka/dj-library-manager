@@ -40,6 +40,17 @@ def cache_set(name: str, data: dict) -> None:
     except Exception:
         pass
 
+# --- Global external HTTP throttle (conservative: 1 request/sec) ---
+_EXT_LAST_TS: float = 0.0
+
+def _ext_throttle(min_interval: float = 1.05) -> None:
+    global _EXT_LAST_TS
+    now = time.time()
+    wait = _EXT_LAST_TS + min_interval - now
+    if wait > 0:
+        time.sleep(wait)
+    _EXT_LAST_TS = time.time()
+
 # --- Last.fm ---
 
 LASTFM_TTL = 7 * 24 * 3600  # 7 days
@@ -71,7 +82,8 @@ def lastfm_toptags(artist: str, title: str) -> Dict[str, int]:
             "api_key": api_key,
             "format": "json",
         }
-        r = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
+        _ext_throttle()
+        r = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=15, allow_redirects=True)
         tags: Dict[str, int] = {}
         if r.status_code == 200:
             data = r.json()
@@ -91,7 +103,8 @@ def lastfm_toptags(artist: str, title: str) -> Dict[str, int]:
                 "api_key": api_key,
                 "format": "json",
             }
-            r = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
+            _ext_throttle()
+            r = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=15, allow_redirects=True)
             if r.status_code == 200:
                 data = r.json()
                 for it in (data.get("toptags") or {}).get("tag", []) or []:
@@ -130,13 +143,14 @@ def _spotify_token() -> str | None:
         return None
     import requests
     try:
+        _ext_throttle()
         resp = requests.post(
             "https://accounts.spotify.com/api/token",
             data={"grant_type": "client_credentials"},
             headers={
                 "Authorization": "Basic " + base64.b64encode(f"{cid}:{sec}".encode()).decode(),
             },
-            timeout=10,
+            timeout=15,
         )
         if resp.status_code != 200:
             return None
@@ -167,11 +181,12 @@ def spotify_artist_genres(artist: str, title: str) -> List[str]:
         return cached.get("genres", []) if isinstance(cached, dict) else []
     try:
         q = " ".join([artist, title]).strip()
+        _ext_throttle()
         resp = requests.get(
             "https://api.spotify.com/v1/search",
             params={"q": q, "type": "track", "limit": 1},
             headers={"Authorization": f"Bearer {tok}"},
-            timeout=10,
+            timeout=15,
         )
         if resp.status_code != 200:
             cache_set(key, {"genres": []})
@@ -187,10 +202,11 @@ def spotify_artist_genres(artist: str, title: str) -> List[str]:
             aid = a.get("id")
             if not aid:
                 continue
+            _ext_throttle()
             r2 = requests.get(
                 f"https://api.spotify.com/v1/artists/{aid}",
                 headers={"Authorization": f"Bearer {tok}"},
-                timeout=10,
+                timeout=15,
             )
             if r2.status_code == 200:
                 genres.extend([g.lower() for g in r2.json().get("genres", []) or []])
