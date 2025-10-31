@@ -24,6 +24,16 @@ FIELDNAMES = [
     "final_filename",
     "final_path",
     "added_date",
+    # --- proposed metadata (to review/accept) ---
+    "artist_suggest",
+    "title_suggest",
+    "version_suggest",
+    "genre_suggest",
+    "album_suggest",
+    "year_suggest",
+    "duration_suggest",
+    "meta_source",
+    "review_status",
 ]
 
 def load_records(csv_path: Path) -> List[Dict[str, str]]:

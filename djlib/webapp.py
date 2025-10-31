@@ -22,10 +22,18 @@ def get_taxonomy_path() -> Path:
     """
     Skąd czytamy/zapisujemy taxonomy:
     - jeśli DJLIB_TAXONOMY_FILE -> tam,
-    - w przeciwnym razie obok configu (czyli w CWD dla testów).
+    - w przeciwnym razie domyślnie w katalogu repo (obok tego projektu),
+      aby być spójnym z djlib.taxonomy.TAXONOMY_PATH.
     """
     env = os.getenv("DJLIB_TAXONOMY_FILE")
-    return Path(env).expanduser() if env else get_config_path().parent / TAXONOMY_FILENAME
+    if env:
+        return Path(env).expanduser()
+    # domyślnie: obok repo (BASE_DIR wskazuje katalog główny projektu)
+    try:
+        return BASE_DIR / TAXONOMY_FILENAME
+    except NameError:
+        # jeśli BASE_DIR nie zainicjalizowany jeszcze na etapie importu, użyj CWD jako fallback
+        return Path.cwd() / TAXONOMY_FILENAME
 
 def get_suggestions_path() -> Path:
     """
@@ -173,6 +181,69 @@ def load_taxonomy() -> Dict[str, List[str]]:
         "review_buckets": data.get("review_buckets", []) or [],
     }
 
+def _detect_taxonomy_from_fs() -> Dict[str, List[str]]:
+    """
+    Spróbuj wykryć istniejącą taksonomię na podstawie struktury folderów w LIB_ROOT.
+    Zwraca dict z kluczami ready_buckets (np. "CLUB/HOUSE", "OPEN FORMAT/90s", "MIXES")
+    oraz review_buckets (np. "UNDECIDED", "NEEDS EDIT").
+
+    Zasady wykrywania:
+    - READY TO PLAY/CLUB/<...>  -> dodaj jako "CLUB/<...>" (zachowujemy ścieżkę względną, wielopoziomową)
+    - READY TO PLAY/OPEN FORMAT/<...> -> "OPEN FORMAT/<...>"
+    - READY TO PLAY/<INNE_TOP_LEVEL> (np. MIXES) -> dodaj jako top-level (np. "MIXES")
+    - REVIEW QUEUE/<...> -> dodaj jako review bucket w postaci nazwy względnej
+    Jeśli którejś gałęzi nie ma – zwracamy pustą listę dla niej.
+    """
+    cfg = load_config() or {}
+    lib_root = Path(cfg.get("LIB_ROOT", "")) if cfg.get("LIB_ROOT") else None
+    if not lib_root or not lib_root.exists():
+        return {"ready_buckets": [], "review_buckets": []}
+
+    ready_root = lib_root / "READY TO PLAY"
+    review_root = lib_root / "REVIEW QUEUE"
+
+    ready: List[str] = []
+    review: List[str] = []
+
+    try:
+        if ready_root.exists():
+            # sekcje znane: CLUB, OPEN FORMAT – zbierz podkatalogi (rekurencyjnie), zachowując rel ścieżkę
+            club_root = ready_root / "CLUB"
+            if club_root.exists():
+                for p in club_root.rglob("*"):
+                    if p.is_dir():
+                        rel = p.relative_to(club_root)
+                        if str(rel) != ".":
+                            bucket = normalize_label(f"CLUB/{rel.as_posix()}")
+                            if bucket and _canonical_key(bucket) not in {_canonical_key(x) for x in ready}:
+                                ready.append(bucket)
+            openf_root = ready_root / "OPEN FORMAT"
+            if openf_root.exists():
+                for p in openf_root.rglob("*"):
+                    if p.is_dir():
+                        rel = p.relative_to(openf_root)
+                        if str(rel) != ".":
+                            bucket = normalize_label(f"OPEN FORMAT/{rel.as_posix()}")
+                            if bucket and _canonical_key(bucket) not in {_canonical_key(x) for x in ready}:
+                                ready.append(bucket)
+            # inne top-level (np. MIXES) – bez podkatalogów jako pojedyncze buckety
+            for p in ready_root.iterdir() if ready_root.exists() else []:
+                if p.is_dir() and p.name not in {"CLUB", "OPEN FORMAT"}:
+                    top = normalize_label(p.name)
+                    if top and _canonical_key(top) not in {_canonical_key(x) for x in ready}:
+                        ready.append(top)
+        if review_root.exists():
+            for p in review_root.rglob("*"):
+                if p.is_dir():
+                    rel = p.relative_to(review_root)
+                    name = normalize_label(rel.as_posix())
+                    if name and _canonical_key(name) not in {_canonical_key(x) for x in review}:
+                        review.append(name)
+    except Exception as e:
+        print("[wizard] taxonomy FS detection failed:", e)
+
+    return {"ready_buckets": ready, "review_buckets": review}
+
 def load_suggestions() -> Dict[str, List[str]]:
     p = get_suggestions_path()
     if p.exists():
@@ -300,6 +371,8 @@ import threading
 import platform
 import subprocess
 import shlex
+import json
+import shutil
 
 # ASGI app
 app = FastAPI(title="DJ Library Manager")
@@ -333,14 +406,45 @@ def _group_ready_buckets(buckets: List[str]) -> Dict[str, List[str]]:
 def get_wizard(request: Request, step: int = 1):
     step = max(1, min(3, int(step or 1)))
     cfg = load_config()
+    msg: str | None = None
 
-    # Krok 2: zaczynamy z pustą listą subfolderów (użytkownik wpisze własne style)
-    # Jeśli w przyszłości chcemy ładować zapisane, można dodać tryb "edit".
+    # Krok 2: wybór źródła listy bucketów: preferuj LIB ROOT jeśli niepusty, ale pozwól przełączyć na plik taxonomy.yml
     tax = load_taxonomy()
-    club: List[str] = []
-    openf: List[str] = []
+    ready_saved = tax.get("ready_buckets", []) or []
+    review_saved = tax.get("review_buckets", []) or []
+
+    detected = _detect_taxonomy_from_fs()
+    fs_ready = detected.get("ready_buckets", []) or []
+    fs_review = detected.get("review_buckets", []) or []
+    fs_nonempty = len(fs_ready) > 0
+
+    src = (request.query_params.get("src") or ("fs" if fs_nonempty else "file")).lower()
+    if src not in {"fs", "file"}:
+        src = "fs" if fs_nonempty else "file"
+
+    if src == "fs" and fs_nonempty:
+        buckets_ready = list(fs_ready)
+        buckets_review = list(review_saved) or list(fs_review)
+        msg = "Wyświetlamy strukturę wykrytą w LIB ROOT (możesz przełączyć na taxonomy.yml)."
+    else:
+        # użyj zapisanej taksonomii z pliku
+        buckets_ready = list(ready_saved)
+        buckets_review = list(review_saved)
+        if fs_nonempty:
+            msg = "Wykryto strukturę w LIB ROOT, ale używamy taxonomy.yml (możesz przełączyć na LIB ROOT)."
+        else:
+            msg = None
+
+    # Wyprowadź do pól krok 2 (lista bez prefiksów sekcji)
+    grouped = _group_ready_buckets(buckets_ready)
+    club: List[str] = grouped.get("CLUB", [])
+    openf: List[str] = grouped.get("OPEN FORMAT", [])
+    # top-level (bez prefiksu), np. MIXES
+    top_level: List[str] = [b for b in buckets_ready if "/" not in normalize_label(b)]
     prefs = load_preferences()
     sugg = load_suggestions()
+    # fallback dla usuniętych kubełków – można zmienić na kroku 2; odczytaj z query jeśli wracamy
+    fb = str(request.query_params.get("fallback", "")) or "UNDECIDED"
 
     return templates.TemplateResponse(
         "wizard.html",
@@ -350,10 +454,16 @@ def get_wizard(request: Request, step: int = 1):
             "cfg": cfg,
             "club": club,
             "openf": openf,
+            "top_level": top_level,
             "sugg_club": sugg.get("club", []),
             "sugg_open": sugg.get("open_format", []),
             "prefs": prefs,
-            "msg": None,
+            "msg": msg,
+            "review": review_saved,
+            "removal_fallback": fb,
+            "src": src,
+            "fs_count": len(fs_ready),
+            "file_count": len(ready_saved),
         },
     )
 
@@ -371,12 +481,32 @@ def post_wizard_step1(
         core_cfg.save_config_paths(lib_root=lib_root, inbox=inbox_unsorted)
     except Exception as e:
         print("[wizard] core config save failed:", e)
+    # Po wskazaniu LIB_ROOT spróbuj automatycznie zaciągnąć istniejącą strukturę folderów
+    # do taxonomy.yml, jeśli ready_buckets są puste.
+    try:
+        current = load_taxonomy()
+        ready_now = current.get("ready_buckets", []) or []
+        review_now = current.get("review_buckets", []) or []
+        if not ready_now:
+            detected = _detect_taxonomy_from_fs()
+            det_ready = detected.get("ready_buckets", [])
+            if det_ready:
+                save_taxonomy({
+                    "ready_buckets": det_ready,
+                    "review_buckets": review_now or detected.get("review_buckets", []),
+                })
+    except Exception as e:
+        print("[wizard] taxonomy auto-detect after step1 failed:", e)
     return RedirectResponse(url="/wizard?step=2", status_code=303)
 
 
 @app.post("/wizard/step2")
 def post_wizard_step2(
-    club: List[str] = Form(default=[]), openf: List[str] = Form(default=[]), apply_style: str | None = Form(default=None)
+    club: List[str] = Form(default=[]),
+    openf: List[str] = Form(default=[]),
+    top_level: List[str] = Form(default=[]),
+    removal_fallback: str = Form(default="UNDECIDED"),
+    apply_style: str | None = Form(default=None),
 ):
     # Zbuduj i zapisz taksonomię READY
     prefs = load_preferences()
@@ -387,21 +517,42 @@ def post_wizard_step2(
 
     club_s = [maybe_style(x) for x in club or []]
     openf_s = [maybe_style(x) for x in openf or []]
+    top_s = [maybe_style(x) for x in top_level or []]
 
     ready = build_ready_buckets(club_s, openf_s, mixes=True)
+    # dołóż top-level (bez prefiksów)
+    seen = {_canonical_key(x) for x in ready}
+    for t in top_s:
+        nt = normalize_label(t)
+        if nt and "/" not in nt:
+            k = _canonical_key(nt)
+            if k not in seen:
+                seen.add(k)
+                ready.append(nt)
     tax_prev = load_taxonomy()
     save_taxonomy({
         "ready_buckets": ready,
         "review_buckets": tax_prev.get("review_buckets", []),
     })
-    return RedirectResponse(url="/wizard?step=3", status_code=303)
+    # przekaż wybrany fallback do kroku 3 (operacje porządkowe mogą go użyć)
+    from urllib.parse import quote
+    return RedirectResponse(url=f"/wizard?step=3&fallback={quote(removal_fallback)}", status_code=303)
 
 
 @app.post("/wizard/step3")
-def post_wizard_step3(request: Request, run_scan: str | None = Form(default=None)):
+def post_wizard_step3(request: Request, run_scan: str | None = Form(default=None), fallback: str | None = Form(default=None)):
     # Utwórz foldery wg taksonomii; opcjonalnie uruchom skan w tle
     ensure_base_dirs()
     ensure_taxonomy_folders()
+
+    # Jeśli użytkownik usunął kubełki w kroku 2 – przenieś ich zawartość do REVIEW QUEUE/<fallback>
+    moved_files = 0
+    moved_dirs = 0
+    try:
+        if fallback:
+            moved_dirs, moved_files = _relocate_removed_buckets_to_review(normalize_label(fallback))
+    except Exception as e:
+        print("[wizard] relocate removed buckets failed:", e)
 
     scan_started = False
     if run_scan:
@@ -418,21 +569,174 @@ def post_wizard_step3(request: Request, run_scan: str | None = Form(default=None
         {
             "request": request,
             "scan_started": scan_started,
+            "moved_dirs": moved_dirs,
+            "moved_files": moved_files,
         },
     )
+
+def _relocate_removed_buckets_to_review(fallback_review: str) -> tuple[int, int]:
+    """
+    Wykryj kubełki, które istnieją na dysku pod READY TO PLAY, ale nie ma ich już w taxonomy.yml.
+    Przenieś ich zawartość do REVIEW QUEUE/<fallback_review>/<rel> (zachowując relatywną ścieżkę),
+    rozwiązując kolizje nazw przy pomocy move_with_rename. Zaktualizuj CSV tam, gdzie to możliwe.
+
+    Zwraca: (liczba_przeniesionych_katalogów, liczba_przeniesionych_plików)
+    """
+    # ścieżki
+    try:
+        from djlib.config import load_config as core_load, CSV_PATH, READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR
+        from djlib.csvdb import load_records, save_records
+        from djlib.mover import move_with_rename
+    except Exception as e:
+        print("[wizard] relocate import failed:", e)
+        return (0, 0)
+
+    cfg = core_load()
+    ready_root = READY_TO_PLAY_DIR
+    review_root = REVIEW_QUEUE_DIR
+
+    # docelowy root
+    dest_base = review_root / fallback_review
+    dest_base.mkdir(parents=True, exist_ok=True)
+
+    # nowa taksonomia – których kubełków NIE przenosimy
+    tax = load_taxonomy()
+    new_ready = {_canonical_key(normalize_label(x)) for x in (tax.get("ready_buckets") or [])}
+
+    # aktualny stan FS – tylko poziom 1 dla CLUB/OPEN FORMAT, oraz inne top-level
+    existing: list[str] = []
+    club_root = ready_root / "CLUB"
+    if club_root.exists():
+        for d in sorted([p for p in club_root.iterdir() if p.is_dir()]):
+            existing.append(f"CLUB/{d.name}")
+    open_root = ready_root / "OPEN FORMAT"
+    if open_root.exists():
+        for d in sorted([p for p in open_root.iterdir() if p.is_dir()]):
+            existing.append(f"OPEN FORMAT/{d.name}")
+    if ready_root.exists():
+        for d in sorted([p for p in ready_root.iterdir() if p.is_dir()]):
+            if d.name not in {"CLUB", "OPEN FORMAT"}:
+                existing.append(d.name)
+
+    removed = [b for b in existing if _canonical_key(b) not in new_ready]
+    if not removed:
+        return (0, 0)
+
+    # podobnie jak w rename: zbierz mapę przesunięć do aktualizacji CSV
+    moves: list[tuple[str, str]] = []
+    moved_dirs = 0
+    moved_files = 0
+
+    for rel in removed:
+        src_dir = ready_root / rel
+        if not src_dir.exists():
+            continue
+        # docelowo zachowujemy rel ścieżkę pod fallbackiem, by uniknąć kolizji i zachować kontekst
+        dst_dir = dest_base / rel
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        # Jeśli dst_dir jest puste – spróbuj prostego przeniesienia całego katalogu
+        try:
+            if not any(dst_dir.iterdir()):
+                # przenieś cały folder
+                shutil.move(str(src_dir), str(dst_dir))
+                moved_dirs += 1
+                # zmapuj przeniesione pliki (po przeniesieniu src_dir już zmienił miejsce)
+                for sub in dst_dir.rglob("*"):
+                    if sub.is_file():
+                        # spróbuj wyznaczyć starą ścieżkę względem dawnego src_dir (teraz nieistniejącego)
+                        # nie mamy łatwego rel, więc CSV update zrobimy drugą pętlą na bazie relacji katalogów niżej
+                        moved_files += 1
+                # nic więcej dla tego bucketu
+                continue
+        except Exception:
+            # w razie problemów, przejdź do trybu per-plik
+            pass
+
+        # Merge: przenieś per-plik z obsługą kolizji
+        for sub in src_dir.rglob("*"):
+            if sub.is_file():
+                rel_path = sub.relative_to(src_dir)
+                dest_file = dst_dir / rel_path
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                final = move_with_rename(sub, dest_file.parent, dest_file.name)
+                moves.append((str(sub), str(final)))
+                moved_files += 1
+        # spróbuj posprzątać źródło
+        try:
+            shutil.rmtree(src_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    # Aktualizacja CSV: final_path i target_subfolder dla plików z przeniesionych kubełków
+    try:
+        rows = load_records(CSV_PATH)
+        updated = 0
+        # zbuduj szybki indeks katalogów źródłowych -> docelowych
+        mapping_dirs: list[tuple[Path, Path]] = []
+        for rel in removed:
+            src_dir = ready_root / rel
+            dst_dir = dest_base / rel
+            mapping_dirs.append((src_dir, dst_dir))
+
+        for r in rows:
+            fpath = r.get("final_path") or ""
+            if not fpath:
+                continue
+            try:
+                p = Path(fpath)
+                for src_dir, dst_dir in mapping_dirs:
+                    try:
+                        relp = p.resolve().relative_to(src_dir.resolve())
+                    except Exception:
+                        relp = None
+                    if relp is not None:
+                        cand = dst_dir / relp
+                        if cand.exists():
+                            r["final_path"] = str(cand)
+                            updated += 1
+                            break
+            except Exception:
+                pass
+
+            # zaktualizuj target_subfolder, jeśli był skierowany do READY TO PLAY/<...>
+            ts = r.get("target_subfolder") or ""
+            if ts.startswith("READY TO PLAY/"):
+                r["target_subfolder"] = f"REVIEW QUEUE/{fallback_review}"
+                updated += 1
+
+        if updated:
+            save_records(CSV_PATH, rows)
+    except Exception as e:
+        print("[wizard] CSV update after relocation failed:", e)
+
+    return (moved_dirs, moved_files)
 
 # --- Dashboard i akcje ---
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, msg: str | None = None):
     # status konfiga i proste statystyki CSV
     try:
         # Pobierz aktywny config z core
         from djlib.config import load_config as core_load
-        from djlib.config import CSV_PATH
+        from djlib.config import CSV_PATH, LOGS_DIR
         from djlib.csvdb import load_records
 
         cfg = core_load()
+        # First-run detection: jeśli podstawowa konfiguracja/struktura nie istnieje,
+        # przekieruj na kreator (z wyjątkiem jawnego wejścia na /dashboard).
+        try:
+            lib_ok = bool(cfg.get("LIB_ROOT")) and Path(cfg.get("LIB_ROOT", "")).exists()
+            inbox_ok = bool(cfg.get("INBOX_UNSORTED")) and Path(cfg.get("INBOX_UNSORTED", "")).exists()
+            base_dirs_ok = lib_ok and (Path(cfg.get("LIB_ROOT", "")) / "READY TO PLAY").exists() and (Path(cfg.get("LIB_ROOT", "")) / "REVIEW QUEUE").exists()
+            first_run = not (lib_ok and inbox_ok and base_dirs_ok)
+            if first_run and request.url.path != "/dashboard":
+                return RedirectResponse(url="/wizard", status_code=303)
+        except Exception:
+            if request.url.path != "/dashboard":
+                return RedirectResponse(url="/wizard", status_code=303)
         rows = []
         if CSV_PATH.exists():
             rows = load_records(CSV_PATH)
@@ -442,14 +746,36 @@ def dashboard(request: Request, msg: str | None = None):
             "lib_root": cfg.get("LIB_ROOT", ""),
             "inbox": cfg.get("INBOX_UNSORTED", ""),
         }
+        # wczytaj statusy jeśli istnieją
+        scan_status = {}
+        enrich_status = {}
+        fp_status = {}
+        try:
+            sp = LOGS_DIR / "scan_status.json"
+            if sp.exists():
+                with sp.open("r", encoding="utf-8") as f:
+                    scan_status = json.load(f)
+            ep = LOGS_DIR / "enrich_status.json"
+            if ep.exists():
+                with ep.open("r", encoding="utf-8") as f:
+                    enrich_status = json.load(f)
+            fp = LOGS_DIR / "fingerprint_status.json"
+            if fp.exists():
+                with fp.open("r", encoding="utf-8") as f:
+                    fp_status = json.load(f)
+        except Exception as e:
+            print("[dashboard] scan status read failed:", e)
     except Exception as e:
         cfg = {"LIB_ROOT": "", "INBOX_UNSORTED": ""}
         stats = {"csv_rows": 0, "csv_path": "(brak)", "lib_root": "", "inbox": ""}
+        scan_status = {}
+        enrich_status = {}
+        fp_status = {}
         print("[dashboard] stats failed:", e)
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "msg": msg, "cfg": cfg, "stats": stats},
+        {"request": request, "msg": msg, "cfg": cfg, "stats": stats, "scan": scan_status, "enrich": enrich_status, "fp": fp_status},
     )
 
 
@@ -473,13 +799,125 @@ def action_scan():
 def action_auto_decide():
     try:
         import argparse
-        from djlib.cli import cmd_auto_decide
-        args = argparse.Namespace(rules=str(BASE_DIR / "rules.yml"), only_empty=False)
-        _run_bg(cmd_auto_decide, args)
-        return RedirectResponse("/?msg=Uruchomiono%20auto-decide%20w%20tle", status_code=303)
+        from djlib.cli import cmd_auto_decide_smart
+        args = argparse.Namespace()
+        _run_bg(cmd_auto_decide_smart, args)
+        return RedirectResponse("/?msg=Uruchomiono%20auto-decide%20(smart)%20w%20tle", status_code=303)
     except Exception as e:
         print("[action] auto-decide failed:", e)
         return RedirectResponse("/?msg=Nie%20udalo%20sie%20auto-decide", status_code=303)
+
+
+@app.get("/api/pending-tracks")
+def api_pending_tracks():
+    try:
+        from djlib.config import CSV_PATH
+        from djlib.csvdb import load_records
+        rows = load_records(CSV_PATH)
+        pending = [
+            {
+                "track_id": r.get("track_id",""),
+                "file_name": Path(r.get("file_path","" )).name,
+                "artist": r.get("artist_suggest",""),
+                "title": r.get("title_suggest",""),
+                "version": r.get("version_suggest",""),
+                "genre": r.get("genre_suggest",""),
+                "album": r.get("album_suggest",""),
+                "year": r.get("year_suggest",""),
+                "duration": r.get("duration_suggest",""),
+                "bpm": r.get("bpm",""),
+                "key": r.get("key_camelot",""),
+                "source": r.get("meta_source",""),
+            }
+            for r in rows
+            if (r.get("review_status") or "").lower() != "accepted"
+        ]
+        return JSONResponse({"items": pending})
+    except Exception as e:
+        print("[api] pending-tracks failed:", e)
+        return JSONResponse({"items": []})
+
+
+@app.post("/review/accept")
+def review_accept(track_id: str = Form("")):
+    try:
+        from djlib.config import CSV_PATH
+        from djlib.csvdb import load_records, save_records
+        rows = load_records(CSV_PATH)
+        changed = False
+        for r in rows:
+            if r.get("track_id") == track_id:
+                # kopiuj suggest_* do głównych pól i oznacz jako zaakceptowane
+                r["artist"] = r.get("artist_suggest","")
+                r["title"] = r.get("title_suggest","")
+                r["version_info"] = r.get("version_suggest","")
+                # Możemy też w przyszłości przenieść genre/album/year/duration do stałych pól kiedy je dodamy
+                r["review_status"] = "accepted"
+                changed = True
+                break
+        if changed:
+            save_records(CSV_PATH, rows)
+            return RedirectResponse("/?msg=Zaakceptowano", status_code=303)
+        return RedirectResponse("/?msg=Nie%20znaleziono%20rekordu", status_code=303)
+    except Exception as e:
+        print("[review] accept failed:", e)
+        return RedirectResponse("/?msg=Blad%20zapisu", status_code=303)
+
+
+@app.post("/action/enrich-online")
+def action_enrich_online():
+    try:
+        import argparse
+        from djlib.cli import cmd_enrich_online
+        args = argparse.Namespace()
+        _run_bg(cmd_enrich_online, args)
+        return RedirectResponse("/?msg=Enrich%20online%20w%20tle", status_code=303)
+    except Exception as e:
+        print("[action] enrich-online failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20enrich%20online", status_code=303)
+
+
+@app.post("/action/fix-fingerprints")
+def action_fix_fingerprints():
+    try:
+        import argparse
+        from djlib.cli import cmd_fix_fingerprints
+        args = argparse.Namespace()
+        _run_bg(cmd_fix_fingerprints, args)
+        return RedirectResponse("/?msg=Uzupełnianie%20fingerprintow%20w%20tle", status_code=303)
+    except Exception as e:
+        print("[action] fix-fingerprints failed:", e)
+        return RedirectResponse("/?msg=Nie%20udalo%20sie%20uzupelnic%20fingerprintow", status_code=303)
+
+
+@app.post("/review/accept-batch")
+async def review_accept_batch(request: Request):
+    try:
+        from djlib.config import CSV_PATH
+        from djlib.csvdb import load_records, save_records
+        form = await request.form()
+        ids = form.getlist('ids') if hasattr(form, 'getlist') else [v for k,v in form.items() if k=='ids']
+        if not ids:
+            return RedirectResponse("/?msg=Nic%20nie%20zaznaczono", status_code=303)
+        rows = load_records(CSV_PATH)
+        updated = 0
+        for r in rows:
+            tid = r.get("track_id","")
+            if tid in ids:
+                # odczytaj edytowane pola
+                r["artist"] = str(form.get(f"artist_{tid}", r.get("artist_suggest","")))
+                r["title"] = str(form.get(f"title_{tid}", r.get("title_suggest","")))
+                r["version_info"] = str(form.get(f"version_{tid}", r.get("version_suggest","")))
+                # przenieś też źródła jeśli chcesz w przyszłości
+                r["review_status"] = "accepted"
+                updated += 1
+        if updated:
+            save_records(CSV_PATH, rows)
+            return RedirectResponse(f"/?msg=Zaakceptowano%20{updated}", status_code=303)
+        return RedirectResponse("/?msg=Brak%20dopasowanych%20ID", status_code=303)
+    except Exception as e:
+        print("[review] accept-batch failed:", e)
+        return RedirectResponse("/?msg=Blad%20zapisu", status_code=303)
 
 
 @app.post("/action/apply-dry")
@@ -532,6 +970,72 @@ def action_dupes():
     except Exception as e:
         print("[action] dupes failed:", e)
         return RedirectResponse("/?msg=Nie%20udalo%20sie%20wygenerowac%20raportu", status_code=303)
+
+@app.get("/api/scan-status")
+def api_scan_status():
+    try:
+        from djlib.config import LOGS_DIR
+        sp = LOGS_DIR / "scan_status.json"
+        if sp.exists():
+            with sp.open("r", encoding="utf-8") as f:
+                return JSONResponse(json.load(f))
+    except Exception as e:
+        print("[api] scan-status failed:", e)
+    return JSONResponse({"state": "idle"})
+
+@app.get("/api/enrich-status")
+def api_enrich_status():
+    try:
+        from djlib.config import LOGS_DIR
+        sp = LOGS_DIR / "enrich_status.json"
+        if sp.exists():
+            with sp.open("r", encoding="utf-8") as f:
+                return JSONResponse(json.load(f))
+    except Exception as e:
+        print("[api] enrich-status failed:", e)
+    return JSONResponse({"state": "idle"})
+
+@app.get("/api/fingerprint-status")
+def api_fingerprint_status():
+    try:
+        from djlib.config import LOGS_DIR
+        sp = LOGS_DIR / "fingerprint_status.json"
+        if sp.exists():
+            with sp.open("r", encoding="utf-8") as f:
+                return JSONResponse(json.load(f))
+    except Exception as e:
+        print("[api] fingerprint-status failed:", e)
+    return JSONResponse({"state": "idle"})
+
+
+# (Usunięto UI i endpoint ustawień klucza AcoustID — klucz aplikacji przechowujemy w kodzie/konfigu)
+
+@app.get("/api/fpcalc-status")
+def api_fpcalc_status():
+    """Zwróć informacje o fpcalc: wykryta ścieżka i wersja/wyjście narzędzia."""
+    try:
+        from djlib.fingerprint import ensure_fpcalc_in_env
+        p = ensure_fpcalc_in_env()
+        # Spróbuj uzyskać wersję
+        res = subprocess.run([str(p), "-version"], capture_output=True, text=True, timeout=10)
+        if res.returncode != 0 or (not res.stdout and not res.stderr):
+            res = subprocess.run([str(p)], capture_output=True, text=True, timeout=10)
+        version = ""
+        out_all = (res.stdout or "") + ("\n" + res.stderr if res.stderr else "")
+        # wyłuskaj pierwszą linię z numerem
+        for line in out_all.splitlines():
+            if "Chromaprint" in line or "fpcalc" in line or "version" in line.lower():
+                version = line.strip()
+                break
+        return JSONResponse({
+            "ok": True,
+            "path": str(p),
+            "version": version,
+            "stdout": res.stdout,
+            "stderr": res.stderr,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
 
 @app.get("/csv", response_class=HTMLResponse)
 def csv_view(request: Request):

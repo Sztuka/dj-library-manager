@@ -14,8 +14,12 @@ Lokalny pomocnik do **porządkowania biblioteki DJ-a**: skanuje INBOX, sugeruje 
 ## Wymagania
 
 - macOS (testowane), Python **3.11+** (3.13 OK).
-- `fpcalc` (Chromaprint) – przyda się później do fingerprintów.
-  - Task: **TOOLS — Install fpcalc (Homebrew)** albo **TOOLS — Install fpcalc (Download vendor)**.
+- `fpcalc` (Chromaprint) – do fingerprintów.
+  - Tryb OFFLINE: aplikacja szuka binarki najpierw w `bin/mac/fpcalc` (w repo/bundlu). Jeśli plik tam leży i ma prawa wykonywania, fingerprint działa bez internetu.
+  - Alternatywnie: ustaw zmienną `ACOUSTID_FPCALC` na pełną ścieżkę do binarki.
+  - Tryb ONLINE (opcjonalny): można skorzystać z tasków: **TOOLS — Install fpcalc (Homebrew)** lub **TOOLS — Install fpcalc (Download vendor)**.
+
+Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje zdjąć atrybut automatycznie; w razie potrzeby możesz nadać prawa wykonania ręcznie: `chmod +x bin/mac/fpcalc`.
 
 ## Szybki start (Tasks w VS Code)
 

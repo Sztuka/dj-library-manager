@@ -8,38 +8,389 @@
 
   <section class="card">
     <h3>Status</h3>
-    <ul>
-      <li><strong>LIB_ROOT:</strong> {{ stats.lib_root }}</li>
-      <li><strong>INBOX_UNSORTED:</strong> {{ stats.inbox }}</li>
-      <li>
-        <strong>CSV:</strong> {{ stats.csv_path }} (wierszy: {{ stats.csv_rows
-        }})
-      </li>
-    </ul>
+    <div class="row" style="justify-content: space-between">
+      <div>
+        <div><strong>Biblioteka:</strong> {{ stats.lib_root }}</div>
+        <div><strong>Inbox:</strong> {{ stats.inbox }}</div>
+        <div>
+          <strong>CSV:</strong> {{ stats.csv_path }} • wierszy: {{
+          stats.csv_rows }}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Status skanowania</h3>
+    {% if scan and (scan.state=='running' or scan.state=='done') %} {% set total
+    = scan.total or 0 %} {% set processed = scan.processed or 0 %} {% set
+    percent = (processed * 100 // (total or 1)) %}
+    <div class="row">
+      <div class="progress" aria-label="Postęp skanowania">
+        <div class="bar" data-pct="{{ percent }}"></div>
+      </div>
+    </div>
+    <div class="row" style="justify-content: space-between">
+      <small class="muted">{{ processed }}/{{ total }} ({{ percent }}%)</small>
+      <small class="muted"
+        >{{ 'Zakończono' if scan.state=='done' else 'W toku' }}</small
+      >
+    </div>
+    {% if scan.last_file %}
+    <div class="row">
+      <small class="muted">Ostatni plik: {{ scan.last_file }}</small>
+    </div>
+    {% endif %} {% if scan.missing_fpcalc %}
+    <div class="flash">
+      Brakowało fpcalc — próbowaliśmy zainstalować automatycznie. Skan
+      kontynuuje bez fingerprintu tam gdzie to konieczne.
+    </div>
+    {% endif %}
+    <script>
+      (function () {
+        const bar = document.querySelector(".progress .bar");
+        if (bar && bar.dataset.pct) {
+          bar.style.width = bar.dataset.pct + "%";
+        }
+        setTimeout(() => {
+          fetch("/api/scan-status")
+            .then((r) => r.json())
+            .then((j) => {
+              if (j && j.state === "running") {
+                location.reload();
+              }
+            });
+        }, 3000);
+      })();
+    </script>
+    {% else %}
+    <p class="muted">Brak aktywnego skanowania.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Status wzbogacania (online)</h3>
+    {% if enrich and (enrich.state=='running' or enrich.state=='done') %} {% set
+    total = enrich.total or 0 %} {% set processed = enrich.processed or 0 %} {%
+    set updated = enrich.updated or 0 %} {% set percent = (processed * 100 //
+    (total or 1)) %}
+    <div class="row">
+      <div class="progress" aria-label="Postęp wzbogacania">
+        <div class="bar" id="enrich-bar" data-pct="{{ percent }}"></div>
+      </div>
+    </div>
+    <div class="row" style="justify-content: space-between">
+      <small class="muted"
+        >{{ processed }}/{{ total }} ({{ percent }}%) • updated: {{ updated
+        }}</small
+      >
+      <small class="muted"
+        >{{ 'Zakończono' if enrich.state=='done' else 'W toku' }}</small
+      >
+    </div>
+    {% if enrich.last_file %}
+    <div class="row">
+      <small class="muted">Ostatni plik: {{ enrich.last_file }}</small>
+    </div>
+    {% endif %}
+    <script>
+      (function () {
+        const bar = document.getElementById("enrich-bar");
+        if (bar && bar.dataset.pct) {
+          bar.style.width = bar.dataset.pct + "%";
+        }
+        // Poll co 2s; jeśli running, odśwież pasek i tabelę pending
+        function poll() {
+          fetch("/api/enrich-status")
+            .then((r) => r.json())
+            .then((j) => {
+              if (!j || j.state === "idle") return;
+              const pct = Math.floor(
+                ((j.processed || 0) * 100) / (j.total || 1)
+              );
+              if (bar) bar.style.width = pct + "%";
+              // gdy trwa — odśwież pending co każde wywołanie; gdy skończy — jednorazowo
+              if (j.state === "running") {
+                if (window.loadPending) window.loadPending();
+                setTimeout(poll, 2000);
+              } else if (j.state === "done") {
+                if (window.loadPending) window.loadPending();
+              }
+            })
+            .catch(() => {});
+        }
+        setTimeout(poll, 1500);
+      })();
+    </script>
+    {% else %}
+    <p class="muted">Brak aktywnego procesu wzbogacania.</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h3>Status fingerprintów</h3>
+    {% if fp and (fp.state=='running' or fp.state=='done') %} {% set total =
+    fp.total or 0 %} {% set processed = fp.processed or 0 %} {% set updated =
+    fp.updated or 0 %} {% set percent = (processed * 100 // (total or 1)) %}
+    <div class="row">
+      <div class="progress" aria-label="Postęp uzupełniania fingerprintów">
+        <div class="bar" id="fp-bar" data-pct="{{ percent }}"></div>
+      </div>
+    </div>
+    <div class="row" style="justify-content: space-between">
+      <small class="muted"
+        >{{ processed }}/{{ total }} ({{ percent }}%) • updated: {{ updated
+        }}</small
+      >
+      <small class="muted"
+        >{{ 'Zakończono' if fp.state=='done' else 'W toku' }}</small
+      >
+    </div>
+    {% if fp.last_file %}
+    <div class="row">
+      <small class="muted">Ostatni plik: {{ fp.last_file }}</small>
+    </div>
+    {% endif %}
+    <script>
+      (function () {
+        const bar = document.getElementById("fp-bar");
+        if (bar && bar.dataset.pct) {
+          bar.style.width = bar.dataset.pct + "%";
+        }
+        function pollFP() {
+          fetch("/api/fingerprint-status")
+            .then((r) => r.json())
+            .then((j) => {
+              if (!j || j.state === "idle") return;
+              const pct = Math.floor(
+                ((j.processed || 0) * 100) / (j.total || 1)
+              );
+              if (bar) bar.style.width = pct + "%";
+              if (j.state === "running") setTimeout(pollFP, 2000);
+            })
+            .catch(() => {});
+        }
+        setTimeout(pollFP, 1500);
+      })();
+    </script>
+    {% else %}
+    <p class="muted">Brak aktywnego procesu uzupełniania fingerprintów.</p>
+    {% endif %}
   </section>
 
   <section class="card">
     <h3>Akcje</h3>
     <div class="actions">
       <form method="post" action="/action/scan" style="display: inline">
-        <button>▶︎ Skanuj teraz</button>
+        <button
+          title="Przeskanuj INBOX i dopisz nowe pliki do library.csv (bez zmian w plikach)"
+        >
+          ▶︎ Skanuj teraz
+        </button>
       </form>
       <form method="post" action="/action/auto-decide" style="display: inline">
-        <button>🤖 Auto-decide</button>
+        <button
+          title="Przypisz wstępne docelowe foldery według rules.yml (możesz je potem poprawić)"
+        >
+          🤖 Auto-decide
+        </button>
       </form>
       <form method="post" action="/action/apply-dry" style="display: inline">
-        <button>🧪 Apply (dry-run)</button>
+        <button
+          title="Symuluj przenoszenie plików według docelowych folderów — nic jeszcze nie zmieniamy"
+        >
+          🧪 Apply (dry-run)
+        </button>
       </form>
       <form method="post" action="/action/apply" style="display: inline">
-        <button>✅ Apply</button>
+        <button
+          title="Przenieś pliki do struktury READY TO PLAY / REVIEW QUEUE według decyzji"
+        >
+          ✅ Apply
+        </button>
       </form>
       <form method="post" action="/action/undo" style="display: inline">
-        <button>↩︎ Cofnij ostatnie</button>
+        <button title="Cofnij ostatnie przeniesienia (według ostatniego logu)">
+          ↩︎ Cofnij ostatnie
+        </button>
       </form>
       <form method="post" action="/action/dupes" style="display: inline">
-        <button>🧯 Raport duplikatów</button>
+        <button
+          title="Wygeneruj CSV z grupami potencjalnych duplikatów (po fingerprint)"
+        >
+          🧯 Raport duplikatów
+        </button>
       </form>
+      <form
+        method="post"
+        action="/action/enrich-online"
+        style="display: inline"
+      >
+        <button
+          title="Pobierz metadane online (MusicBrainz) dla pozycji oczekujących"
+        >
+          🔎 Enrich online
+        </button>
+      </form>
+      <form
+        method="post"
+        action="/action/fix-fingerprints"
+        style="display: inline"
+      >
+        <button
+          title="Uzupełnij fingerprinty dla pozycji w CSV, które ich nie mają"
+        >
+          🧩 Uzupełnij fingerprinty
+        </button>
+      </form>
+      <button
+        type="button"
+        class="secondary"
+        onclick="checkFpcalc()"
+        title="Sprawdź fpcalc: wykryta ścieżka i wersja"
+      >
+        🛠️ Check fpcalc
+      </button>
     </div>
+    <details style="margin-top: 10px">
+      <summary>Co robią te akcje?</summary>
+      <ul>
+        <li>
+          <strong>Skanuj teraz</strong> — dopisuje nowe pliki z INBOX do CSV
+          (bez zmian w plikach na dysku).
+        </li>
+        <li>
+          <strong>Auto-decide</strong> — proponuje docelowe foldery na podstawie
+          rules.yml.
+        </li>
+        <li>
+          <strong>Apply (dry-run)</strong> — symulacja przeniesień (logi w
+          konsoli), nic nie zmienia.
+        </li>
+        <li>
+          <strong>Apply</strong> — przenosi pliki do struktury według decyzji
+          (zapis do logu).
+        </li>
+        <li>
+          <strong>Cofnij ostatnie</strong> — odwraca ostatnie przeniesienia wg
+          logu.
+        </li>
+        <li>
+          <strong>Raport duplikatów</strong> — wykrywa i zapisuje grupy
+          duplikatów do LOGS/dupes.csv.
+        </li>
+      </ul>
+    </details>
+  </section>
+
+  <section class="card">
+    <h3>Nowe utwory do akceptacji</h3>
+    <div
+      id="fpcalc-box"
+      class="muted"
+      style="margin-bottom: 8px; display: none"
+    ></div>
+    <div id="review-table" class="row" style="display: block; overflow: auto">
+      <div class="muted">Ładowanie…</div>
+    </div>
+    <script>
+      (function () {
+        function esc(s) {
+          return (s || "")
+            .toString()
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+        }
+        function input(name, val) {
+          return `<input type="text" name="${name}" value="${esc(
+            val
+          )}" style="width: 140px;"/>`;
+        }
+        function rowHtml(it) {
+          const id = esc(it.track_id);
+          return `<tr>
+            <td><input type="checkbox" name="ids" value="${id}"/></td>
+            <td>${esc(it.file_name)}</td>
+            <td>${input(`artist_${id}`, it.artist)}</td>
+            <td>${input(`title_${id}`, it.title)}</td>
+            <td>${input(`version_${id}`, it.version)}</td>
+            <td>${input(`genre_${id}`, it.genre)}</td>
+            <td>${input(`album_${id}`, it.album)}</td>
+            <td>${input(`year_${id}`, it.year)}</td>
+            <td>${esc(it.duration)}</td>
+            <td>${esc(it.bpm)}</td>
+            <td>${esc(it.key)}</td>
+            <td><small class="muted">${esc(it.source || "")}</small></td>
+          </tr>`;
+        }
+        function renderPending(items) {
+          const mount = document.getElementById("review-table");
+          if (!items.length) {
+            mount.innerHTML =
+              '<div class="muted">Brak pozycji do akceptacji.</div>';
+            return;
+          }
+          const head = `<thead><tr>
+            <th><input type="checkbox" id="sel-all"/></th>
+            <th>Plik</th><th>Artysta</th><th>Tytuł</th><th>Wersja</th>
+            <th>Gatunek</th><th>Album</th><th>Rok</th><th>Czas</th>
+            <th>BPM</th><th>Key</th><th>Źródło</th>
+          </tr></thead>`;
+          const rows = items.slice(0, 200).map(rowHtml).join("");
+          mount.innerHTML = `<form method="post" action="/review/accept-batch"><div style="max-height:50vh; overflow:auto"><table>${head}<tbody>${rows}</tbody></table></div><div class="actions" style="margin-top:8px;"><button>Akceptuj zaznaczone</button></div></form>`;
+          const selAll = document.getElementById("sel-all");
+          if (selAll) {
+            selAll.addEventListener("change", () => {
+              mount
+                .querySelectorAll("input[type=checkbox][name=ids]")
+                .forEach((cb) => (cb.checked = selAll.checked));
+            });
+          }
+        }
+        function loadPending() {
+          fetch("/api/pending-tracks")
+            .then((r) => r.json())
+            .then((j) => {
+              renderPending((j && j.items) || []);
+            })
+            .catch(() => {
+              const mount = document.getElementById("review-table");
+              mount.innerHTML =
+                '<div class="muted">Nie udało się wczytać listy.</div>';
+            });
+        }
+        window.loadPending = loadPending;
+        window.checkFpcalc = function () {
+          const box = document.getElementById("fpcalc-box");
+          if (box) {
+            box.style.display = "block";
+            box.textContent = "Sprawdzanie fpcalc…";
+          }
+          fetch("/api/fpcalc-status")
+            .then((r) => r.json())
+            .then((j) => {
+              if (!box) return;
+              if (j.ok) {
+                const v =
+                  (j.version || "").trim() || "(brak informacji o wersji)";
+                box.innerHTML = `<div><strong>fpcalc</strong>: ${v}<br/><code>${
+                  j.path || ""
+                }</code></div>`;
+              } else {
+                box.innerHTML = `<div class="flash">Nie udało się: ${String(
+                  j.error || ""
+                ).replaceAll("<", "&lt;")}</div>`;
+              }
+            })
+            .catch((e) => {
+              if (box)
+                box.innerHTML = `<div class="flash">Błąd sprawdzania fpcalc</div>`;
+            });
+        };
+        loadPending();
+      })();
+    </script>
   </section>
 
   <section class="card">

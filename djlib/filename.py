@@ -17,3 +17,20 @@ def build_final_filename(artist: str, title: str, version_info: str, key_camelot
 
 def extension_for(path: Path) -> str:
     return path.suffix or ".mp3"
+
+
+def parse_from_filename(path: Path) -> tuple[str, str, str]:
+    """Próbuje wyciągnąć (artist, title, version_info) z nazwy pliku.
+    Wzorce: "Artist - Title (Version).ext", "Artist - Title.ext".
+    Jeśli się nie uda – zwraca ("", basename, "")."""
+    name = path.stem
+    m = re.match(r"^\s*(.+?)\s+-\s+(.+?)\s*\(([^)]+)\)\s*$", name)
+    if m:
+        a, t, v = m.groups()
+        return a.strip(), t.strip(), v.strip()
+    m2 = re.match(r"^\s*(.+?)\s+-\s+(.+?)\s*$", name)
+    if m2:
+        a, t = m2.groups()
+        return a.strip(), t.strip(), ""
+    # fallback – użyj nazwy bez rozszerzenia jako tytułu
+    return "", name.strip(), ""
