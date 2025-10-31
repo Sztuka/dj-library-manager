@@ -12,6 +12,7 @@ from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags
 from djlib.enrich import suggest_metadata, enrich_online_for_row
 from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
+from djlib.metadata.genre_resolver import resolve as resolve_genres
 from djlib.classify import guess_bucket
 from djlib.fingerprint import file_sha256, fingerprint_info
 from djlib.filename import build_final_filename, extension_for
@@ -500,6 +501,23 @@ def cmd_dupes(_: argparse.Namespace) -> None:
                             r.get("file_path",""), r.get("final_path",""), r.get("file_hash","")])
     print(f"Zapisano raport duplikatów: {out}")
 
+def cmd_genres_resolve(args: argparse.Namespace) -> None:
+    artist = (getattr(args, "artist", None) or "").strip()
+    title = (getattr(args, "title", None) or "").strip()
+    dur = getattr(args, "duration", None)
+    res = resolve_genres(artist, title, duration_s=dur)
+    if not res:
+        print("Brak wyników z zewnętrznych źródeł (MB/LFM/Spotify).")
+        return
+    print(f"Main: {res.main}")
+    if res.subs:
+        print(f"Subs: {', '.join(res.subs)}")
+    print(f"Confidence: {res.confidence:.2f}")
+    print("Breakdown:")
+    for src, _, local in res.breakdown:
+        parts = ", ".join(f"{k}:{v:.2f}" for k, v in sorted(local.items(), key=lambda kv: kv[1], reverse=True)[:5])
+        print(f"  - {src}: {parts}")
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -521,6 +539,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_parser("undo").set_defaults(func=cmd_undo)
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
     sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
+
+    # genres resolve (single lookup)
+    gp = sp.add_parser("genres")
+    gsp = gp.add_subparsers(dest="subcmd", required=True)
+    res = gsp.add_parser("resolve")
+    res.add_argument("--artist", required=True)
+    res.add_argument("--title", required=True)
+    res.add_argument("--duration", type=int, default=None, help="Duration in seconds (optional)")
+    res.set_defaults(func=cmd_genres_resolve)
     return p
 
 def main() -> None:

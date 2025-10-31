@@ -13,7 +13,7 @@ MB_UA = "DJLibraryManager/0.1 (+https://github.com/Sztuka/dj-library-manager)"
 def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
     """
     Zwraca proponowane metadane do akceptacji. Priorytety:
-    1) (docelowo) online lookup (MusicBrainz/Discogs/AcoustID) – TODO
+    1) (docelowo) online lookup (MusicBrainz/AcoustID) – TODO
     2) fallback: parsowanie z nazwy pliku
     3) ostatecznie: to co w tagach (tylko gdy brak czegokolwiek sensownego)
 

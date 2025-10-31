@@ -788,6 +788,15 @@ def _run_bg(target, *args, **kwargs):
 def action_scan():
     try:
         from djlib.cli import scan_command
+        from djlib.config import LOGS_DIR
+        # Wyczyść stare statusy, by UI nie wyświetlało poprzednich wyników jako bieżących
+        try:
+            for name in ("enrich_status.json", "fingerprint_status.json"):
+                p = LOGS_DIR / name
+                if p.exists():
+                    p.unlink()
+        except Exception:
+            pass
         _run_bg(scan_command)
         return RedirectResponse("/?msg=Uruchomiono%20skan%20w%20tle", status_code=303)
     except Exception as e:
@@ -843,6 +852,8 @@ def review_accept(track_id: str = Form("")):
     try:
         from djlib.config import CSV_PATH
         from djlib.csvdb import load_records, save_records
+        import argparse
+        from djlib.cli import cmd_apply
         rows = load_records(CSV_PATH)
         changed = False
         for r in rows:
@@ -857,7 +868,9 @@ def review_accept(track_id: str = Form("")):
                 break
         if changed:
             save_records(CSV_PATH, rows)
-            return RedirectResponse("/?msg=Zaakceptowano", status_code=303)
+            # od razu przenieś wg decyzji
+            _run_bg(cmd_apply, argparse.Namespace(dry_run=False))
+            return RedirectResponse("/?msg=Zaakceptowano%20%E2%80%94%20przenoszenie%20w%20toku", status_code=303)
         return RedirectResponse("/?msg=Nie%20znaleziono%20rekordu", status_code=303)
     except Exception as e:
         print("[review] accept failed:", e)
@@ -895,6 +908,8 @@ async def review_accept_batch(request: Request):
     try:
         from djlib.config import CSV_PATH
         from djlib.csvdb import load_records, save_records
+        import argparse
+        from djlib.cli import cmd_apply
         form = await request.form()
         ids = form.getlist('ids') if hasattr(form, 'getlist') else [v for k,v in form.items() if k=='ids']
         if not ids:
@@ -913,7 +928,9 @@ async def review_accept_batch(request: Request):
                 updated += 1
         if updated:
             save_records(CSV_PATH, rows)
-            return RedirectResponse(f"/?msg=Zaakceptowano%20{updated}", status_code=303)
+            # od razu przenoszenie w tle
+            _run_bg(cmd_apply, argparse.Namespace(dry_run=False))
+            return RedirectResponse(f"/?msg=Zaakceptowano%20{updated}%20%E2%80%94%20przenoszenie%20w%20toku", status_code=303)
         return RedirectResponse("/?msg=Brak%20dopasowanych%20ID", status_code=303)
     except Exception as e:
         print("[review] accept-batch failed:", e)

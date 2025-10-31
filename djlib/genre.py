@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Tuple, List
 import re
-from djlib.extern import lastfm_toptags, spotify_artist_genres, discogs_genres_styles
+from djlib.extern import lastfm_toptags, spotify_artist_genres
 from djlib.webapp import normalize_label  # reuse normalization
 from pathlib import Path
 import yaml
@@ -60,14 +60,7 @@ def external_genre_votes(artist: str, title: str) -> Dict[str, float]:
     for g in sp or []:
         x = _simplify(g)
         votes[x] = votes.get(x, 0.0) + 0.6
-    # Discogs genres/styles (styles a bit stronger)
-    dg_genres, dg_styles = discogs_genres_styles(artist, title)
-    for g in dg_genres or []:
-        x = _simplify(g)
-        votes[x] = votes.get(x, 0.0) + 0.5
-    for s in dg_styles or []:
-        x = _simplify(s)
-        votes[x] = votes.get(x, 0.0) + 0.8
+    # Discogs removed
     # normalize small noise
     return {k: v for k, v in votes.items() if v >= 0.2}
 
