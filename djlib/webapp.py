@@ -29,11 +29,7 @@ def get_taxonomy_path() -> Path:
     if env:
         return Path(env).expanduser()
     # domyślnie: obok repo (BASE_DIR wskazuje katalog główny projektu)
-    try:
-        return BASE_DIR / TAXONOMY_FILENAME
-    except NameError:
-        # jeśli BASE_DIR nie zainicjalizowany jeszcze na etapie importu, użyj CWD jako fallback
-        return Path.cwd() / TAXONOMY_FILENAME
+    return Path.cwd() / TAXONOMY_FILENAME
 
 def get_suggestions_path() -> Path:
     """
