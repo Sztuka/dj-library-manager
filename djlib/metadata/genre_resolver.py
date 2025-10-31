@@ -7,7 +7,7 @@ import djlib.metadata  # noqa: F401
 
 from . import mb_client
 from . import lastfm
-from . import spotify_fallback
+from ..extern import spotify_artist_genres
 
 
 def _norm(tag: str) -> str:
@@ -84,7 +84,7 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None) -> GenreR
 
     # Spotify
     sp_w = 1.0
-    tags_sp = spotify_fallback.artist_genres_by_track(artist, title)
+    tags_sp = spotify_artist_genres(artist, title)
     if tags_sp:
         local: Dict[str, float] = {}
         for name in tags_sp:
