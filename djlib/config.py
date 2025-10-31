@@ -59,11 +59,14 @@ def _write_yaml(p: Path, data: Dict[str, Any]) -> None:
     with p.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
-def _to_dict(cfg: AppConfig) -> Dict[str, Any]:
-    return {
+def _to_dict(cfg: AppConfig, extras: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    base = {
         "library_root": str(cfg.library_root),
         "inbox_dir": str(cfg.inbox_dir),
     }
+    if extras:
+        base.update(extras)
+    return base
 
 def _from_dict(d: Dict[str, Any]) -> AppConfig:
     lib = _expand(d.get("library_root", "~/Music_DJ"))
@@ -156,13 +159,81 @@ def save_config_paths(lib_root: str, inbox: str) -> None:
     """Zapisz ścieżki konfiguracji do pliku."""
     cfg = AppConfig(library_root=_expand(lib_root), inbox_dir=_expand(inbox))
     dest = _choose_config_path()
-    _write_yaml(dest, _to_dict(cfg))
-    # Aktualizuj globalne zmienne
-    global _CONFIG, LIB_ROOT, INBOX_DIR, READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR, LOGS_DIR, CSV_PATH
-    _CONFIG = cfg
-    LIB_ROOT = cfg.library_root
-    INBOX_DIR = cfg.inbox_dir
-    READY_TO_PLAY_DIR = LIB_ROOT / "READY TO PLAY"
-    REVIEW_QUEUE_DIR = LIB_ROOT / "REVIEW QUEUE"
-    LOGS_DIR = LIB_ROOT / "LOGS"
-    CSV_PATH = LIB_ROOT / "library.csv"
+    existing = {}
+    if dest.exists():
+        existing = _read_yaml(dest)
+    extras = {}
+    # zachowaj inne klucze (np. acoustid_api_key)
+    for k in ("acoustid_api_key",):
+        if k in existing:
+            extras[k] = existing[k]
+    _write_yaml(dest, _to_dict(cfg, extras))
+
+# ---------------------------
+# Dodatkowe ustawienia (API Keys)
+# ---------------------------
+
+def set_acoustid_api_key(key: str) -> None:
+    dest = _choose_config_path()
+    # scal z istniejącymi danymi
+    d = _read_yaml(dest) if dest.exists() else {}
+    d["acoustid_api_key"] = str(key)
+    _write_yaml(dest, d)
+
+# Domyślny klucz aplikacji AcoustID (Application API key) – używany do lookup,
+# NIE jest to User API key. Można nadpisać w config.local.yml lub przez env.
+DEFAULT_ACOUSTID_APP_KEY = "ZQGds2YbFx"
+
+def get_acoustid_api_key() -> str:
+    """Zwraca klucz aplikacji AcoustID z configu, a jeśli go brak – wartość domyślną.
+    Uwaga: do lookup wymagany jest Application API key (client), nie User API key.
+    """
+    # Najpierw spróbuj z plików konfiguracyjnych
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("acoustid_api_key", "") or "").strip()
+        if val:
+            return val
+    # W przeciwnym razie – domyślny klucz aplikacji
+    return DEFAULT_ACOUSTID_APP_KEY
+
+# Last.fm API
+def get_lastfm_api_key() -> str:
+    # ENV first
+    env = os.getenv("DJLIB_LASTFM_API_KEY")
+    if env:
+        return env.strip()
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("lastfm_api_key", "") or "").strip()
+        if val:
+            return val
+    return ""
+
+# Spotify API (Client Credentials)
+def get_spotify_credentials() -> tuple[str, str]:
+    cid = (os.getenv("DJLIB_SPOTIFY_CLIENT_ID") or "").strip()
+    secret = (os.getenv("DJLIB_SPOTIFY_CLIENT_SECRET") or "").strip()
+    if cid and secret:
+        return cid, secret
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        cid = str(d.get("spotify_client_id", "") or "").strip()
+        secret = str(d.get("spotify_client_secret", "") or "").strip()
+    return cid, secret
+
+# Discogs API token (optional, improves rate limits)
+def get_discogs_token() -> str:
+    tok = (os.getenv("DJLIB_DISCOGS_TOKEN") or "").strip()
+    if tok:
+        return tok
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("discogs_token", "") or "").strip()
+        if val:
+            return val
+    return ""

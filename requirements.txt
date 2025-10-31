@@ -9,3 +9,4 @@ fastapi           # framework webowy
 uvicorn[standard] # serwer ASGI do uruchamiania FastAPI
 jinja2            # szablony HTML
 python-multipart  # obsługa formularzy w FastAPI
+requests          # online enrichment (MusicBrainz)

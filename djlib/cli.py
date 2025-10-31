@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, csv, time, os
+import argparse, csv, time, os, json
 from pathlib import Path
 from typing import Dict, Any
 
@@ -10,11 +10,14 @@ from djlib.config import (
 )
 from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags
+from djlib.enrich import suggest_metadata, enrich_online_for_row
+from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 from djlib.classify import guess_bucket
-from djlib.fingerprint import file_sha256, audio_fingerprint
+from djlib.fingerprint import file_sha256, fingerprint_info
 from djlib.filename import build_final_filename, extension_for
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 from djlib.buckets import is_valid_target
+from djlib.placement import decide_bucket
 
 # --- Pomocnicze ---
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -34,30 +37,71 @@ def cmd_scan(_: argparse.Namespace) -> None:
     known_hashes = {r.get("file_hash", "") for r in rows if r.get("file_hash")}
     known_fps    = {r.get("fingerprint", "") for r in rows if r.get("fingerprint")}
 
-    new_rows = []
-    for p in INBOX_DIR.glob("**/*"):
-        if not p.is_file() or p.suffix.lower() not in AUDIO_EXTS:
-            continue
+    # przygotuj plik statusu skanowania
+    status_path = LOGS_DIR / "scan_status.json"
+    def _write_status(data: Dict[str, Any]) -> None:
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with status_path.open("w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
 
+    all_files = [p for p in INBOX_DIR.glob("**/*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
+    total = len(all_files)
+    processed = 0
+    added = 0
+    errors = 0
+    missing_fpcalc = False
+    _write_status({
+        "state": "running",
+        "total": total,
+        "processed": 0,
+        "added": 0,
+        "errors": 0,
+        "last_file": "",
+    })
+
+    new_rows = []
+    for p in all_files:
         fhash = file_sha256(p)
         if fhash in known_hashes:
+            processed += 1
+            _write_status({"state": "running", "total": total, "processed": processed, "added": added, "errors": errors, "last_file": str(p)})
             continue
 
         tags = read_tags(p)
-        fp = audio_fingerprint(p)
+        try:
+            dur, fp = fingerprint_info(p)
+        except Exception as e:
+            fp = ""
+            dur = 0
+            errors += 1
+            if "fpcalc" in str(e).lower():
+                missing_fpcalc = True
+
         is_dup = "true" if (fp and fp in known_fps) else "false"
 
         ai_bucket, ai_comment = guess_bucket(
             tags["artist"], tags["title"], tags["bpm"], tags["genre"], tags["comment"]
         )
 
+        # Proponowane metadane (preferuj online w przyszłości; teraz filename+fallback)
+        sugg = suggest_metadata(p, tags)
+        # jeśli nie mamy duration z online, wstaw lokalny czas z fingerprintu
+        if (sugg.get("duration_suggest") or "").strip() == "" and dur:
+            mm = dur // 60
+            ss = dur % 60
+            sugg["duration_suggest"] = f"{mm}:{ss:02d}"
+
         track_id = f"{fhash[:12]}_{int(time.time())}"
         rec = {
             "track_id": track_id,
             "file_path": str(p),
-            "artist": tags["artist"],
-            "title": tags["title"],
-            "version_info": tags["version_info"],
+            # Główne pola pozostają puste do czasu akceptacji; korzystamy z suggest_*
+            "artist": "",
+            "title": "",
+            "version_info": "",
             "bpm": tags["bpm"],
             "key_camelot": tags["key_camelot"],
             "energy_hint": tags["energy_hint"],
@@ -73,11 +117,25 @@ def cmd_scan(_: argparse.Namespace) -> None:
             "final_filename": "",
             "final_path": "",
             "added_date": "",
+            # propozycje do weryfikacji
+            **sugg,
+            "review_status": "pending",
         }
         new_rows.append(rec)
         known_hashes.add(fhash)
         if fp:
             known_fps.add(fp)
+        added += 1
+        processed += 1
+        _write_status({
+            "state": "running",
+            "total": total,
+            "processed": processed,
+            "added": added,
+            "errors": errors,
+            "last_file": str(p),
+            "missing_fpcalc": missing_fpcalc,
+        })
 
     if new_rows:
         rows.extend(new_rows)
@@ -85,6 +143,16 @@ def cmd_scan(_: argparse.Namespace) -> None:
         print(f"Zeskanowano {len(new_rows)} plików. Zapisano {CSV_PATH}.")
     else:
         print("Brak nowych plików do dodania.")
+
+    _write_status({
+        "state": "done",
+        "total": total,
+        "processed": processed,
+        "added": added,
+        "errors": errors,
+        "csv_rows": len(load_records(CSV_PATH)),
+        "missing_fpcalc": missing_fpcalc,
+    })
 
 def _load_rules(path: Path) -> Dict[str, Any]:
     import yaml
@@ -130,6 +198,204 @@ def cmd_auto_decide(args: argparse.Namespace) -> None:
         print(f"Zaktualizowano {updated} wierszy.")
     else:
         print("Brak zmian.")
+
+def cmd_auto_decide_smart(_: argparse.Namespace) -> None:
+    """Lepsze auto-decide: używa heurystyk z djlib.placement z progami ufności.
+    ≥0.85: ustaw docelowy kubełek; 0.65..0.85: tylko sugestia (ai_guess_*)."""
+    HARDCOMMIT_CONF = 0.85
+    SUGGEST_CONF = 0.65
+    rows = load_records(CSV_PATH)
+    set_cnt = sug_cnt = 0
+    for r in rows:
+        if r.get("target_subfolder"):
+            continue
+        tgt, conf, reason = decide_bucket(r)
+        if not tgt:
+            continue
+        if conf >= HARDCOMMIT_CONF:
+            r["target_subfolder"] = f"READY TO PLAY/{tgt}"
+            r["ai_guess_bucket"] = ""
+            r["ai_guess_comment"] = f"rule:{reason}; conf={conf:.2f}"
+            set_cnt += 1
+        elif conf >= SUGGEST_CONF:
+            r["ai_guess_bucket"]  = f"READY TO PLAY/{tgt}"
+            r["ai_guess_comment"] = f"rule:{reason}; conf={conf:.2f}"
+            sug_cnt += 1
+    if set_cnt or sug_cnt:
+        save_records(CSV_PATH, rows)
+    print(f"✅ Auto-decide (smart): set={set_cnt}, suggested={sug_cnt}")
+
+def cmd_enrich_online(_: argparse.Namespace) -> None:
+    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID.
+    Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
+    Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
+    """
+    rows = load_records(CSV_PATH)
+    todo = [r for r in rows if (r.get("review_status") or "").lower() != "accepted"]
+    total = len(todo)
+    processed = 0
+    changed = 0
+
+    # status plik
+    status_path = LOGS_DIR / "enrich_status.json"
+    def _write_status(state: str, last_file: str = "") -> None:
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with status_path.open("w", encoding="utf-8") as f:
+                json.dump({
+                    "state": state,
+                    "total": total,
+                    "processed": processed,
+                    "updated": changed,
+                    "last_file": last_file,
+                }, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    _write_status("running", "")
+
+    # przygotuj mapowanie tagów → bucket
+    tag_map = load_taxonomy_map()
+
+    for r in rows:
+        if (r.get("review_status") or "").lower() == "accepted":
+            continue
+        p = Path(r.get("file_path",""))
+        online = enrich_online_for_row(p, r)
+        if not online:
+            processed += 1
+            _write_status("running", str(p))
+            continue
+        # reguła nadpisywania:
+        # - zawsze nadpisuj, jeśli źródłem jest AcoustID (najwyższy priorytet)
+        # - w innym przypadku: wypełnij jeśli puste LUB nadpisz fallback (filename|tags_fallback)
+        current_source = (r.get("meta_source") or "").strip().lower()
+        online_source = (online.get("meta_source") or "").strip().lower()
+        acoustid_wins = online_source.startswith("acoustid")
+        allow_override = acoustid_wins or (
+            current_source in {"filename|tags_fallback", "filename,tags_fallback", "tags_fallback"}
+        )
+        any_change = False
+        for k, v in online.items():
+            if k in {"artist_suggest","title_suggest","version_suggest","genre_suggest","album_suggest","year_suggest","duration_suggest"}:
+                cur = (r.get(k) or "").strip()
+                if (not cur and v) or (allow_override and v and cur != v):
+                    r[k] = v
+                    any_change = True
+        # ustaw meta_source jeśli zrobiliśmy jakąkolwiek aktualizację i online podał źródło
+        if any_change and (online.get("meta_source") or "").strip():
+            r["meta_source"] = online["meta_source"]
+        # Uzupełnij brakujący genre_suggest tagami zewnętrznymi (Last.fm/Spotify)
+        try:
+            if not (r.get("genre_suggest") or "").strip():
+                a = (r.get("artist_suggest") or r.get("artist") or "").strip()
+                t = (r.get("title_suggest") or r.get("title") or "").strip()
+                votes = external_genre_votes(a, t)
+                if votes:
+                    # wybierz najlepiej punktujący tag
+                    best_tag = max(votes.items(), key=lambda kv: kv[1])[0]
+                    if best_tag:
+                        r["genre_suggest"] = best_tag
+                        any_change = True
+        except Exception:
+            pass
+
+        # Zaproponuj kubełek na podstawie zewnętrznych tagów (nie ustawiamy targetu tutaj)
+        try:
+            a = (r.get("artist_suggest") or r.get("artist") or "").strip()
+            t = (r.get("title_suggest") or r.get("title") or "").strip()
+            votes = external_genre_votes(a, t)
+            if votes and tag_map:
+                bucket, conf, breakdown = suggest_bucket_from_votes(votes, tag_map)
+                if bucket and conf >= 0.65:
+                    r["ai_guess_bucket"]  = f"READY TO PLAY/{bucket}"
+                    # zbuduj krótki komentarz z top 2 tagów
+                    top2 = sorted(breakdown, key=lambda x: x[1], reverse=True)[:2]
+                    tags_str = ", ".join(f"{k}:{w:.2f}" for k, w, _ in top2 if k)
+                    r["ai_guess_comment"] = f"ext-genres; conf={conf:.2f}; tags: {tags_str}"
+                    any_change = True
+        except Exception:
+            pass
+
+        if any_change:
+            changed += 1
+        processed += 1
+        _write_status("running", str(p))
+    if changed:
+        save_records(CSV_PATH, rows)
+    _write_status("done", "")
+    print(f"🔎 Enrich online: updated={changed}")
+
+def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
+    """Uzupełnij brakujące fingerprinty w istniejącym CSV.
+    Dla każdego wiersza bez fingerprintu spróbuj wyliczyć go z pliku (preferuj final_path, potem file_path).
+    Aktualizuj też duration_suggest jeśli puste.
+    Pisz postęp do LOGS/fingerprint_status.json, aby UI mogło pokazywać pasek.
+    """
+    from djlib.config import LOGS_DIR
+    rows = load_records(CSV_PATH)
+    targets = []
+    for r in rows:
+        fp = (r.get("fingerprint") or "").strip()
+        if fp:
+            continue
+        # preferuj final_path jeśli istnieje, w przeciwnym razie file_path
+        p = None
+        fp1 = r.get("final_path") or ""
+        fp2 = r.get("file_path") or ""
+        f1 = Path(fp1) if fp1 else None
+        f2 = Path(fp2) if fp2 else None
+        if f1 and f1.exists():
+            p = f1
+        elif f2 and f2.exists():
+            p = f2
+        if p is not None:
+            targets.append((r, p))
+
+    total = len(targets)
+    processed = 0
+    updated = 0
+    errors = 0
+
+    status_path = LOGS_DIR / "fingerprint_status.json"
+
+    def _write_status(state: str, last_file: str = "") -> None:
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with status_path.open("w", encoding="utf-8") as f:
+                json.dump({
+                    "state": state,
+                    "total": total,
+                    "processed": processed,
+                    "updated": updated,
+                    "errors": errors,
+                    "last_file": last_file,
+                }, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    _write_status("running", "")
+
+    for r, p in targets:
+        try:
+            dur, fp = fingerprint_info(p)
+            if fp:
+                r["fingerprint"] = fp
+                # uzupełnij duration_suggest jeśli brak
+                ds = (r.get("duration_suggest") or "").strip()
+                if not ds and dur:
+                    mm, ss = divmod(int(dur), 60)
+                    r["duration_suggest"] = f"{mm}:{ss:02d}"
+                updated += 1
+        except Exception:
+            errors += 1
+        processed += 1
+        _write_status("running", str(p))
+
+    if updated:
+        save_records(CSV_PATH, rows)
+    _write_status("done", "")
+    print(f"🧩 Fix fingerprints: updated={updated}, errors={errors}")
 
 def cmd_apply(args: argparse.Namespace) -> None:
     rows = load_records(CSV_PATH)
@@ -254,6 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
+    sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
     return p
 
 def main() -> None:
