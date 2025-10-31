@@ -6,7 +6,7 @@ import json
 import base64
 import os
 
-from djlib.config import LOGS_DIR, get_lastfm_api_key, get_spotify_credentials, get_discogs_token
+from djlib.config import LOGS_DIR, get_lastfm_api_key, get_spotify_credentials
 
 CACHE_DIR = LOGS_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -203,73 +203,5 @@ def spotify_artist_genres(artist: str, title: str) -> List[str]:
         cache_set(key, {"genres": []})
         return []
 
-# --- Discogs ---
-
-DISCOGS_TTL = 7 * 24 * 3600
-DISCOGS_UA = "DJLibraryManager/0.1 (+https://github.com/Sztuka/dj-library-manager)"
-
-
-def discogs_genres_styles(artist: str, title: str) -> Tuple[List[str], List[str]]:
-    """Fetch genres+styles from Discogs: database/search → releases/masters.
-    Returns (genres, styles). Lowercased. Cached.
-    """
-    import requests
-    artist = (artist or "").strip()
-    title = (title or "").strip()
-    if not artist and not title:
-        return [], []
-    key = f"discogs:{artist}|{title}"
-    cached = cache_get(key, DISCOGS_TTL)
-    if cached is not None:
-        try:
-            g = [x.lower() for x in cached.get("genres", [])]
-            s = [x.lower() for x in cached.get("styles", [])]
-            return g, s
-        except Exception:
-            return [], []
-    params = {
-        "type": "release",
-        "per_page": 1,
-        "artist": artist,
-        "track": title,
-    }
-    tok = get_discogs_token()
-    headers = {"User-Agent": DISCOGS_UA}
-    if tok:
-        params["token"] = tok
-    try:
-        r = requests.get("https://api.discogs.com/database/search", params=params, headers=headers, timeout=10)
-        if r.status_code != 200:
-            cache_set(key, {"genres": [], "styles": []})
-            return [], []
-        items = (r.json().get("results") or [])
-        if not items:
-            cache_set(key, {"genres": [], "styles": []})
-            return [], []
-        it = items[0]
-        genres: List[str] = []
-        styles: List[str] = []
-        # Prefer master if present
-        try:
-            if it.get("master_id"):
-                mid = it.get("master_id")
-                r2 = requests.get(f"https://api.discogs.com/masters/{mid}", headers=headers, timeout=10)
-                if r2.status_code == 200:
-                    data = r2.json()
-                    genres = [x.lower() for x in data.get("genres", []) or []]
-                    styles = [x.lower() for x in data.get("styles", []) or []]
-            if not genres and it.get("id"):
-                rid = it.get("id")
-                r3 = requests.get(f"https://api.discogs.com/releases/{rid}", headers=headers, timeout=10)
-                if r3.status_code == 200:
-                    data = r3.json()
-                    genres = [x.lower() for x in data.get("genres", []) or []]
-                    styles = [x.lower() for x in data.get("styles", []) or []]
-        except Exception:
-            pass
-        cache_set(key, {"genres": genres, "styles": styles})
-        return genres, styles
-    except Exception:
-        cache_set(key, {"genres": [], "styles": []})
-        return [], []
+# --- Discogs removed ---
 

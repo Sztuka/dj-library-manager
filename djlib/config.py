@@ -225,15 +225,4 @@ def get_spotify_credentials() -> tuple[str, str]:
         secret = str(d.get("spotify_client_secret", "") or "").strip()
     return cid, secret
 
-# Discogs API token (optional, improves rate limits)
-def get_discogs_token() -> str:
-    tok = (os.getenv("DJLIB_DISCOGS_TOKEN") or "").strip()
-    if tok:
-        return tok
-    existing = _first_existing(_CANDIDATES)
-    if existing:
-        d = _read_yaml(existing)
-        val = str(d.get("discogs_token", "") or "").strip()
-        if val:
-            return val
-    return ""
+# Discogs support removed
