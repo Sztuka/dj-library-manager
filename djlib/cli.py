@@ -261,6 +261,8 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
     for r in rows:
         if (r.get("review_status") or "").lower() == "accepted":
             continue
+        if r.get("genre_suggest"):
+            continue  # już ma genre, skip
         p = Path(r.get("file_path",""))
         online = enrich_online_for_row(p, r)
         if not online:
@@ -275,7 +277,7 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         acoustid_wins = online_source.startswith("acoustid")
         allow_override = acoustid_wins or (
             current_source in {"filename|tags_fallback", "filename,tags_fallback", "tags_fallback"}
-        )
+        ) or not r.get("genre_suggest")  # nadpisz jeśli genre pusty
         any_change = False
         for k, v in online.items():
             if k in {"artist_suggest","title_suggest","version_suggest","genre_suggest","album_suggest","year_suggest","duration_suggest"}:
@@ -539,6 +541,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_parser("undo").set_defaults(func=cmd_undo)
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
     sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
+    sp.add_parser("enrich-online").set_defaults(func=cmd_enrich_online)
 
     # genres resolve (single lookup)
     gp = sp.add_parser("genres")

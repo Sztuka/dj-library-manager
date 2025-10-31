@@ -5,6 +5,7 @@ from djlib.filename import parse_from_filename
 from djlib.tags import read_tags
 import json
 import os
+from djlib.metadata import mb_client
 
 MB_ENDPOINT = "https://musicbrainz.org/ws/2/recording"
 MB_UA = "DJLibraryManager/0.1 (+https://github.com/Sztuka/dj-library-manager)"
@@ -79,52 +80,40 @@ def _clean_title(t: str) -> str:
 
 
 def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
-    """Prosty lookup przez MusicBrainz (bez kluczy/API key). Zwraca dict sug_* albo None.
-    Używa tylko artist/title. W przyszłości można dołożyć AcoustID → MBID.
+    """Lookup przez MusicBrainz z użyciem klienta mb_client (1 rps, retry).
+    Zwraca dict suggest_* (w tym genre_suggest z 'genres'/'tags' oraz fallback z release-group/artist).
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
     if not title and not artist:
         return None
     try:
-        import requests  # import lokalny, żeby testy/offline nie wymagały requests
-    except Exception:
-        return None
+        match = mb_client.search_recording(artist, title)
+        if not match:
+            return None
+        # podstawowe pola
+        out_artist = match.artist_credit or artist
+        out_title = match.title or title
+        duration = _format_duration(match.length_ms) if isinstance(match.length_ms, int) else ""
 
-    q = []
-    if artist:
-        q.append(f'artist:"{artist}"')
-    if title:
-        q.append(f'recording:"{title}"')
-    query = " AND ".join(q)
-    params = {"query": query, "fmt": "json", "limit": 1, "inc": "releases+tags"}
-    headers = {"User-Agent": MB_UA}
-    try:
-        resp = requests.get(MB_ENDPOINT, params=params, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        recs = data.get("recordings") or []
-        if not recs:
-            return None
-        rec = recs[0]
-        out_artist = _join_artist_credit(rec.get("artist-credit") or []) or artist
-        out_title = rec.get("title") or title
-        releases = rec.get("releases") or []
-        album = releases[0].get("title") if releases else ""
-        date = releases[0].get("date") if releases else ""
-        year = (date or "").split("-")[0] if date else ""
-        length_ms = rec.get("length")
-        duration = _format_duration(length_ms if isinstance(length_ms, int) else None)
-        # tags jako prosty genre hint
-        tags = rec.get("tags") or []
-        genre = ""
-        if tags:
-            # weź najpopularniejszy tag jako genre_suggest
+        # album i rok – spróbuj z release-group (title, first-release-date)
+        album = ""
+        year = ""
+        if match.release_group_id:
             try:
-                genre = sorted(tags, key=lambda t: int(t.get("count", 0)), reverse=True)[0].get("name","")
+                rg = mb_client._get_release_group_by_id(match.release_group_id)
+                ent = (rg or {}).get("release-group", {})
+                album = ent.get("title", "") or album
+                frd = ent.get("first-release-date", "")
+                if frd:
+                    year = (frd or "").split("-")[0]
             except Exception:
-                genre = tags[0].get("name","")
+                pass
+
+        # gatunki: recording → release-group → artist
+        genres = mb_client.get_recording_genres(match.recording_id, release_group_id=match.release_group_id, artist_id=match.artist_id)
+        genre = genres[0] if genres else ""
+
         return {
             "artist_suggest": out_artist,
             "title_suggest": out_title,
@@ -185,9 +174,9 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
         except Exception:
             return None
         url = f"https://musicbrainz.org/ws/2/recording/{best_id}"
-        params = {"fmt": "json", "inc": "artists+releases+tags"}
+        params = {"fmt": "json", "inc": "artists+releases+release-groups+tags+genres"}
         headers = {"User-Agent": MB_UA}
-        r = requests.get(url, params=params, headers=headers, timeout=10)
+        r = requests.get(url, params=params, headers=headers, timeout=15, allow_redirects=True)
         if r.status_code != 200:
             return None
         rec = r.json()
@@ -199,13 +188,31 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
         year = (date or "").split("-")[0] if date else ""
         length_ms = rec.get("length")
         duration = _format_duration(length_ms if isinstance(length_ms, int) else None)
-        tags = rec.get("tags") or []
-        genre = ""
-        if tags:
+        # Preferuj pełny pipeline z klienta: zebrać genres/tags także z RG i Artist
+        try:
+            rgid = None
             try:
-                genre = sorted(tags, key=lambda t: int(t.get("count", 0)), reverse=True)[0].get("name", "")
+                rgid = (rec.get("release-group") or {}).get("id") or None
             except Exception:
-                genre = tags[0].get("name", "")
+                rgid = None
+            genres = mb_client.get_recording_genres(best_id, release_group_id=rgid)
+        except Exception:
+            # fallback: tylko z bieżącego JSON-a
+            tags = rec.get("tags") or []
+            genres_json = rec.get("genres") or []
+            names = []
+            for it in tags:
+                nm = (it.get("name") or "").strip()
+                if nm:
+                    names.append(nm)
+            for it in genres_json:
+                nm = (it.get("name") or "").strip()
+                if nm:
+                    names.append(nm)
+            # uniq preserve order
+            seen = set()
+            genres = [g for g in names if not (g.lower() in seen or seen.add(g.lower()))]
+        genre = genres[0] if genres else ""
         return {
             "artist_suggest": out_artist,
             "title_suggest": out_title,

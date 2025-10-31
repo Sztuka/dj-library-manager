@@ -9,6 +9,7 @@ FIELDNAMES = [
     "artist",
     "title",
     "version_info",
+    "genre",
     "bpm",
     "key_camelot",
     "energy_hint",
