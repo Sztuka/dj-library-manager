@@ -140,7 +140,13 @@ AUDIO_EXTS = {
 
 def ensure_base_dirs() -> None:
     """Utwórz katalogi bazowe według obecnego konfiga."""
-    for p in [LIB_ROOT, INBOX_DIR, REVIEW_QUEUE_DIR, READY_TO_PLAY_DIR, LOGS_DIR]:
+    cfg = load_config()
+    lib = Path(cfg["LIB_ROOT"])
+    inbox = Path(cfg["INBOX_UNSORTED"])
+    ready = lib / "READY TO PLAY"
+    review = lib / "REVIEW QUEUE"
+    logs = lib / "LOGS"
+    for p in [lib, inbox, ready, review, logs]:
         p.mkdir(parents=True, exist_ok=True)
 
 def load_config() -> Dict[str, Any]:

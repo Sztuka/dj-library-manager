@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Dict, Tuple, List
 import re
 from djlib.extern import lastfm_toptags, spotify_artist_genres
-from djlib.webapp import normalize_label  # reuse normalization
+from djlib.taxonomy import normalize_label  # reuse normalization
 from pathlib import Path
 import yaml
 

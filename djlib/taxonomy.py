@@ -7,9 +7,51 @@ import yaml
 from djlib.config import READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR
 from djlib.config import LIB_ROOT
 
+def normalize_label(label: str) -> str:
+    """
+    Delikatna normalizacja etykiet:
+    - zachowuje wielkość liter i znaki (np. podkreślenia),
+    - ucina białe znaki wokół segmentów i usuwa puste segmenty,
+    - łączy pojedynczym '/',
+    - wewnątrz segmentu redukuje nadmiarowe spacje ("  funk   soul" -> "funk soul").
+    Przykłady: "tech_house" -> "tech_house", "Open  Format" -> "Open Format", "MIXES/" -> "MIXES".
+    """
+    if label is None:
+        return ""
+    s = str(label).replace("\\", "/")
+    parts = [p.strip() for p in s.split("/") if p.strip()]
+    parts = [" ".join(p.split()) for p in parts]
+    return "/".join(parts)
+
+def _canonical_key(label: str) -> str:
+    """Klucz kanoniczny do deduplikacji (case-insensitive, spacje sklejone).
+    Nie jest zapisywany – używany tylko do porównań.
+    """
+    s = normalize_label(label)
+    # Na potrzeby klucza porównujemy bez rozróżniania wielkości liter
+    return s.upper()
+
+def _style_segment(seg: str, style: str) -> str:
+    if style == "uppercase":
+        return seg.upper()
+    if style == "title":
+        low = seg.lower()
+        # specjalny przypadek dekad, zachowaj małe 's'
+        if low in {"70s", "80s", "90s", "2000s", "2010s"}:
+            return low
+        return " ".join((w[:1].upper() + w[1:]) if w else w for w in seg.split(" "))
+    return seg
+
+def style_label(label: str, style: str) -> str:
+    parts = [p for p in normalize_label(label).split("/") if p]
+    if not parts:
+        return ""
+    return "/".join(_style_segment(p, style) for p in parts)
+
 # gdzie trzymamy definicję taksonomii
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TAXONOMY_PATH = REPO_ROOT / "taxonomy.yml"
+TAXONOMY_LOCAL_PATH = REPO_ROOT / "taxonomy.local.yml"
 
 _DEFAULT_READY_BUCKETS: list[str] = [
     # CLUB
@@ -48,6 +90,22 @@ _DEFAULT_REVIEW_BUCKETS: List[str] = [
 ]
 
 def _read_taxonomy() -> Dict[str, List[str]]:
+    # Najpierw sprawdź lokalny plik taxonomy.local.yml (aktualne buckety użytkownika)
+    if TAXONOMY_LOCAL_PATH.exists():
+        try:
+            with TAXONOMY_LOCAL_PATH.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            ready = data.get("ready_buckets") or []
+            review = data.get("review_buckets") or []
+            # sanity
+            ready = [str(x).strip() for x in ready if str(x).strip()]
+            review = [str(x).strip() for x in review if str(x).strip()]
+            if ready or review:  # jeśli ma jakąś zawartość, użyj
+                return {"ready_buckets": ready, "review_buckets": review}
+        except Exception as e:
+            print("[taxonomy] local load failed:", e)
+    
+    # Fallback do głównego taxonomy.yml (domyślne buckety)
     if not TAXONOMY_PATH.exists():
         return {
             "ready_buckets": list(_DEFAULT_READY_BUCKETS),
@@ -71,7 +129,7 @@ def _write_taxonomy(ready: List[str], review: List[str]) -> None:
         "ready_buckets": sorted(set(ready)),
         "review_buckets": sorted(set(review)),
     }
-    with TAXONOMY_PATH.open("w", encoding="utf-8") as f:
+    with TAXONOMY_LOCAL_PATH.open("w", encoding="utf-8") as f:
         yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
 
 def allowed_targets() -> list[str]:
@@ -84,19 +142,24 @@ def is_valid_target(value: str) -> bool:
     return (value or "") in set(allowed_targets())
 
 def target_to_path(target: str) -> Path | None:
+    from djlib.config import load_config
+    cfg = load_config()
+    lib = Path(cfg["LIB_ROOT"])
+    ready = lib / "READY TO PLAY"
+    review = lib / "REVIEW QUEUE"
     t = (target or "").strip().strip("/")
     if not t:
         return None
     if t.startswith("READY TO PLAY/"):
         rel = t.split("/", 1)[1] if "/" in t else ""
-        return READY_TO_PLAY_DIR / rel
+        return ready / rel
     if t.startswith("REVIEW QUEUE/"):
         rel = t.split("/", 1)[1] if "/" in t else ""
-        return REVIEW_QUEUE_DIR / rel
+        return review / rel
     return None
 
 
-def ensure_taxonomy_dirs() -> None:
+def ensure_taxonomy_folders() -> None:
     """Tworzy wszystkie katalogi z taksonomii."""
     for t in allowed_targets():
         p = target_to_path(t)
@@ -129,3 +192,69 @@ def save_taxonomy(data: Dict[str, List[str]]) -> None:
     ready = data.get("ready_buckets", [])
     review = data.get("review_buckets", [])
     _write_taxonomy(ready, review)
+
+def build_ready_buckets(taxonomy: Dict[str, List[str]] | List[str] | None = None, *more: List[str], mixes: bool = False) -> List[str]:
+    """
+    Zwraca listę znormalizowanych ścieżek bucketów READY w postaci stringów:
+    - jeśli podano `taxonomy` jako dict -> bierze `ready_buckets` z dicty
+    - jeśli podano listy pozycyjnie (np. club, openf) -> traktuje je jako kategorie
+      i dodaje prefiksy: pierwsza lista -> "CLUB/<label>", druga -> "OPEN FORMAT/<label>"
+    - usuwa duplikaty po normalizacji, zachowuje kolejność
+
+    Funkcja ma elastyczną sygnaturę aby dopasować testy i UI.
+    """
+    # Jeśli pierwszy argument jest dict - zachowanie backward-compatible ale zwracamy stringi
+    buckets_src: List[str] = []
+    if isinstance(taxonomy, dict):
+        buckets_src = taxonomy.get("ready_buckets", []) or []
+    elif taxonomy is None:
+        buckets_src = []
+    elif isinstance(taxonomy, list):
+        # Jeśli przekazano listę jako jedyny argument traktujemy ją jako gotowe buckety
+        buckets_src = taxonomy
+    else:
+        # Nieznany typ -> pusty
+        buckets_src = []
+
+    result: List[str] = []
+    seen: set[str] = set()
+
+    # If additional positional lists are provided, interpret them as category buckets
+    if more:
+        # Expect pattern: build_ready_buckets(club_list, openf_list, mixes=True)
+        club = taxonomy if isinstance(taxonomy, list) else (more[0] if more else [])
+        openf = more[0] if isinstance(taxonomy, list) and more else (more[1] if len(more) > 1 else [])
+
+        def _add_prefixed(items, prefix):
+            for raw in items or []:
+                norm = normalize_label(raw)
+                if not norm:
+                    continue
+                # jeśli item zawiera '/', pozostawiamy znormalizowaną formę
+                out = norm if "/" in norm else f"{prefix}/{norm}"
+                key = _canonical_key(out)
+                if key not in seen:
+                    seen.add(key)
+                    result.append(out)
+
+        _add_prefixed(club, "CLUB")
+        _add_prefixed(openf, "OPEN FORMAT")
+
+        if mixes:
+            if "MIXES" not in seen:
+                result.append("MIXES")
+
+        return result
+
+    # Normal path: taxonomy list/dict converted to normalized strings (no prefixes)
+    for raw in buckets_src:
+        norm = normalize_label(raw)
+        if not norm:
+            continue
+        key = _canonical_key(norm)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(norm)
+
+    return result
