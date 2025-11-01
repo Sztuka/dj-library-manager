@@ -42,8 +42,8 @@ def _expand(p: str | Path) -> Path:
     return Path(str(p)).expanduser().resolve()
 
 def _defaults() -> AppConfig:
-    lib = _expand("~/Music_DJ")
-    inbox = lib / "INBOX_UNSORTED"
+    lib = _expand("~/Music Library")
+    inbox = _expand("~/Unsorted")
     return AppConfig(library_root=lib, inbox_dir=inbox)
 
 # ---------------------------
@@ -69,8 +69,8 @@ def _to_dict(cfg: AppConfig, extras: Dict[str, Any] | None = None) -> Dict[str, 
     return base
 
 def _from_dict(d: Dict[str, Any]) -> AppConfig:
-    lib = _expand(d.get("library_root", "~/Music_DJ"))
-    inbox = _expand(d.get("inbox_dir", lib / "INBOX_UNSORTED"))
+    lib = _expand(d.get("library_root", "~/Music Library"))
+    inbox = _expand(d.get("inbox_dir", "~/Unsorted"))
     return AppConfig(library_root=lib, inbox_dir=inbox)
 
 # ---------------------------
@@ -111,6 +111,17 @@ def _load_or_setup() -> Tuple[AppConfig, Path]:
     cfg = _interactive_setup()
     dest = _choose_config_path()
     _write_yaml(dest, _to_dict(cfg))
+    
+    # Po konfiguracji automatycznie wykryj taksonomię z istniejącej struktury
+    try:
+        from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
+        detected = detect_taxonomy_from_fs()
+        if detected["ready_buckets"] or detected["review_buckets"]:
+            save_taxonomy(detected)
+            print(f"✓ Wykryto taksonomię: {len(detected['ready_buckets'])} ready buckets, {len(detected['review_buckets'])} review buckets")
+    except Exception as e:
+        print(f"⚠ Nie udało się wykryć taksonomii: {e}")
+    
     return cfg, dest
 
 def reconfigure() -> Tuple[AppConfig, Path]:
@@ -204,12 +215,35 @@ def get_acoustid_api_key() -> str:
     # W przeciwnym razie – domyślny klucz aplikacji
     return DEFAULT_ACOUSTID_APP_KEY
 
+# MusicBrainz settings
+def get_musicbrainz_settings() -> dict[str, str]:
+    """Zwraca ustawienia MusicBrainz User-Agent."""
+    # Najpierw config.local.yml, potem config.yml
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        mb = d.get("musicbrainz", {})
+        if mb and all(k in mb for k in ["app_name", "app_version", "contact"]):
+            return {
+                "app_name": str(mb["app_name"]),
+                "app_version": str(mb["app_version"]),
+                "contact": str(mb["contact"])
+            }
+    
+    # Domyślne wartości z config.yml
+    return {
+        "app_name": "DJLibraryManager",
+        "app_version": "0.1", 
+        "contact": "https://github.com/Sztuka/dj-library-manager"
+    }
+
 # Last.fm API
 def get_lastfm_api_key() -> str:
-    # ENV first
-    env = os.getenv("DJLIB_LASTFM_API_KEY")
+    # ENV first (.env file or system env)
+    env = os.getenv("DJLIB_LASTFM_API_KEY") or os.getenv("LASTFM_API_KEY")
     if env:
         return env.strip()
+    # Then config files
     existing = _first_existing(_CANDIDATES)
     if existing:
         d = _read_yaml(existing)
@@ -220,15 +254,19 @@ def get_lastfm_api_key() -> str:
 
 # Spotify API (Client Credentials)
 def get_spotify_credentials() -> tuple[str, str]:
-    cid = (os.getenv("DJLIB_SPOTIFY_CLIENT_ID") or "").strip()
-    secret = (os.getenv("DJLIB_SPOTIFY_CLIENT_SECRET") or "").strip()
+    # ENV first (.env file or system env)
+    cid = (os.getenv("DJLIB_SPOTIFY_CLIENT_ID") or os.getenv("SPOTIPY_CLIENT_ID") or "").strip()
+    secret = (os.getenv("DJLIB_SPOTIFY_CLIENT_SECRET") or os.getenv("SPOTIPY_CLIENT_SECRET") or "").strip()
     if cid and secret:
         return cid, secret
+    # Then config files
     existing = _first_existing(_CANDIDATES)
     if existing:
         d = _read_yaml(existing)
         cid = str(d.get("spotify_client_id", "") or "").strip()
         secret = str(d.get("spotify_client_secret", "") or "").strip()
-    return cid, secret
+        if cid and secret:
+            return cid, secret
+    return "", ""
 
 # Discogs support removed

@@ -1,0 +1,19 @@
+INBOX_UNSORTED: ~/Unsorted
+LIB_ROOT: ~/Music Library
+
+# Application API keys (public, can be committed)
+acoustid_api_key: ZQGds2YbFx
+
+# MusicBrainz User-Agent (required by MB Web Service Terms)
+musicbrainz:
+  app_name: DJLibraryManager
+  app_version: 0.1
+  contact: https://github.com/Sztuka/dj-library-manager
+
+  lastfm_api_key: 5d551c2dd7dddd2e8fae6778f725c968
+  spotify_client_id: d8a34ee455eb481d8994e2f0d0a48b09
+  spotify_client_secret: 175d716201554e04a11379c61d6d86cd
+
+preferences:
+  auto_format_new_labels: false
+  label_style: as_is

@@ -54,33 +54,6 @@ TAXONOMY_PATH = REPO_ROOT / "taxonomy.yml"
 TAXONOMY_LOCAL_PATH = REPO_ROOT / "taxonomy.local.yml"
 
 _DEFAULT_READY_BUCKETS: list[str] = [
-    # CLUB
-    "CLUB/HOUSE",
-    "CLUB/TECH HOUSE",
-    "CLUB/TECHNO",
-    "CLUB/MELODIC TECHNO",
-    "CLUB/AFRO HOUSE",
-    "CLUB/ELECTRO SWING",
-    "CLUB/ELECTRO",
-    "CLUB/DNB",
-    "CLUB/TRANCE",
-    "CLUB/DEEP HOUSE",
-
-    # OPEN FORMAT
-    "OPEN FORMAT/PARTY DANCE",
-    "OPEN FORMAT/RNB",
-    "OPEN FORMAT/HIP-HOP",
-    "OPEN FORMAT/LATIN REGGAETON",
-    "OPEN FORMAT/POLISH SINGALONG",
-    "OPEN FORMAT/ROCK CLASSICS",
-    "OPEN FORMAT/ROCKNROLL",
-    "OPEN FORMAT/FUNK SOUL",     
-    "OPEN FORMAT/70s",
-    "OPEN FORMAT/80s",
-    "OPEN FORMAT/90s",
-    "OPEN FORMAT/2000s",
-    "OPEN FORMAT/2010s",
-
     "MIXES",
 ]
 
@@ -258,3 +231,63 @@ def build_ready_buckets(taxonomy: Dict[str, List[str]] | List[str] | None = None
         result.append(norm)
 
     return result
+
+def detect_taxonomy_from_fs() -> Dict[str, List[str]]:
+    """
+    Wykrywa istniejącą strukturę folderów w LIB_ROOT i zwraca taksonomię.
+    Skanuje READY TO PLAY i REVIEW QUEUE w poszukiwaniu podfolderów.
+    Zawsze dodaje domyślne buckety jeśli nie zostały wykryte.
+    """
+    # Użyj globalnych zmiennych zamiast importowania load_config (unika circular import)
+    from djlib.config import LIB_ROOT
+    lib_root = LIB_ROOT
+    
+    ready_buckets = []
+    review_buckets = []
+    
+    # Skanuj READY TO PLAY
+    ready_root = lib_root / "READY TO PLAY"
+    if ready_root.exists():
+        # Najpierw CLUB
+        club_root = ready_root / "CLUB"
+        if club_root.exists():
+            for item in sorted(club_root.iterdir()):
+                if item.is_dir():
+                    ready_buckets.append(f"CLUB/{item.name}")
+        
+        # Potem OPEN FORMAT
+        openf_root = ready_root / "OPEN FORMAT"
+        if openf_root.exists():
+            for item in sorted(openf_root.iterdir()):
+                if item.is_dir():
+                    ready_buckets.append(f"OPEN FORMAT/{item.name}")
+        
+        # Na koniec top-level (bez prefiksu)
+        for item in sorted(ready_root.iterdir()):
+            if item.is_dir() and item.name not in {"CLUB", "OPEN FORMAT"}:
+                ready_buckets.append(item.name)
+    
+    # Skanuj REVIEW QUEUE
+    review_root = lib_root / "REVIEW QUEUE"
+    if review_root.exists():
+        for item in sorted(review_root.iterdir()):
+            if item.is_dir():
+                review_buckets.append(item.name)
+    
+    # Dodaj domyślne buckety jeśli nie zostały wykryte
+    ready_set = set(ready_buckets)
+    review_set = set(review_buckets)
+    
+    # Zawsze dodaj MIXES jeśli nie ma
+    if "MIXES" not in ready_set:
+        ready_buckets.append("MIXES")
+    
+    # Dodaj domyślne review buckety jeśli nie zostały wykryte
+    for default_review in _DEFAULT_REVIEW_BUCKETS:
+        if default_review not in review_set:
+            review_buckets.append(default_review)
+    
+    return {
+        "ready_buckets": ready_buckets,
+        "review_buckets": review_buckets,
+    }
