@@ -5,10 +5,6 @@ pyacoustid        # czasem potrzebne do AcoustID lookup przy fingerprintach
 black             # formatter kodu
 ruff              # linter (opcjonalnie)
 pyyaml            # do konfiguracji (jeśli używasz YAML)
-fastapi           # framework webowy
-uvicorn[standard] # serwer ASGI do uruchamiania FastAPI
-jinja2            # szablony HTML
-python-multipart  # obsługa formularzy w FastAPI
 requests          # online enrichment (MusicBrainz)
 musicbrainzngs    # oficjalny klient MusicBrainz Web Service 2
 spotipy           # Spotify Web API (Client Credentials)

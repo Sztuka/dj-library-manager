@@ -1,4 +1,4 @@
-from djlib.webapp import normalize_label, build_ready_buckets
+from djlib.taxonomy import normalize_label, build_ready_buckets
 
 def test_normalize_label_basic():
     # zachowujemy styl użytkownika: case i podkreślenia pozostają

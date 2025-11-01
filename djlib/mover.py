@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 from datetime import datetime
 
-from djlib.taxonomy import target_to_path, ensure_taxonomy_dirs
+from djlib.taxonomy import target_to_path, ensure_taxonomy_folders
 
 def resolve_target_path(target: str) -> Path | None:
     p = target_to_path(target)

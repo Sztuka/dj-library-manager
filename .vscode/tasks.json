@@ -30,35 +30,7 @@
 			"problemMatcher": []
 		},
 		{
-			"label": "STEP 1 — Start Web Wizard (server)",
-			"type": "shell",
-			"command": "${workspaceFolder}/.venv/bin/python -m djlib.web_launch",
-			"dependsOn": "STEP 0 — Setup: create venv & install deps",
-			"options": {
-				"cwd": "${workspaceFolder}"
-			},
-			"problemMatcher": []
-		},
-		{
-			"label": "STEP 1.1 — Open Wizard URL",
-			"type": "shell",
-			"command": "/usr/bin/env bash -lc 'open http://127.0.0.1:8000/wizard'",
-			"options": {
-				"cwd": "${workspaceFolder}"
-			},
-			"problemMatcher": []
-		},
-		{
-			"label": "STEP 1.1 (alt) — Open Dashboard URL",
-			"type": "shell",
-			"command": "/usr/bin/env bash -lc 'open http://127.0.0.1:8000/dashboard'",
-			"options": {
-				"cwd": "${workspaceFolder}"
-			},
-			"problemMatcher": []
-		},
-		{
-			"label": "STEP 2 — Scan INBOX_UNSORTED",
+			"label": "STEP 1 — Scan INBOX_UNSORTED",
 			"type": "shell",
 			"command": "${workspaceFolder}/.venv/bin/python -m djlib.cli scan",
 			"dependsOn": "STEP 0 — Setup: create venv & install deps",
