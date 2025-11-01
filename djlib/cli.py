@@ -227,7 +227,7 @@ def cmd_auto_decide_smart(_: argparse.Namespace) -> None:
     print(f"✅ Auto-decide (smart): set={set_cnt}, suggested={sug_cnt}")
 
 def cmd_enrich_online(_: argparse.Namespace) -> None:
-    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID.
+    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm/Spotify.
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
     """
@@ -261,8 +261,6 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
     for r in rows:
         if (r.get("review_status") or "").lower() == "accepted":
             continue
-        if r.get("genre_suggest"):
-            continue  # już ma genre, skip
         p = Path(r.get("file_path",""))
         online = enrich_online_for_row(p, r)
         if not online:
@@ -288,34 +286,53 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         # ustaw meta_source jeśli zrobiliśmy jakąkolwiek aktualizację i online podał źródło
         if any_change and (online.get("meta_source") or "").strip():
             r["meta_source"] = online["meta_source"]
-        # Uzupełnij brakujący genre_suggest tagami zewnętrznymi (Last.fm/Spotify)
-        try:
-            if not (r.get("genre_suggest") or "").strip():
-                a = (r.get("artist_suggest") or r.get("artist") or "").strip()
-                t = (r.get("title_suggest") or r.get("title") or "").strip()
-                votes = external_genre_votes(a, t)
-                if votes:
-                    # wybierz najlepiej punktujący tag
-                    best_tag = max(votes.items(), key=lambda kv: kv[1])[0]
-                    if best_tag:
-                        r["genre_suggest"] = best_tag
-                        any_change = True
-        except Exception:
-            pass
-
-        # Zaproponuj kubełek na podstawie zewnętrznych tagów (nie ustawiamy targetu tutaj)
+        
+        # Zawsze spróbuj wzbogacić gatunki używając wszystkich źródeł (MB + Last.fm + Spotify)
         try:
             a = (r.get("artist_suggest") or r.get("artist") or "").strip()
             t = (r.get("title_suggest") or r.get("title") or "").strip()
-            votes = external_genre_votes(a, t)
-            if votes and tag_map:
+            dur_s = None
+            if r.get("duration_suggest"):
+                try:
+                    dur_parts = r["duration_suggest"].split(":")
+                    if len(dur_parts) == 2:
+                        dur_s = int(dur_parts[0]) * 60 + int(dur_parts[1])
+                except Exception:
+                    pass
+            
+            from djlib.metadata.genre_resolver import resolve as resolve_genres
+            genre_res = resolve_genres(a, t, duration_s=dur_s)
+            if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
+                # Ustaw 3 gatunki: main + subs
+                genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
+                genre_str = ", ".join(genres)
+                current_genre = (r.get("genre_suggest") or "").strip()
+                if not current_genre or genre_res.confidence > 0.08:  # override existing only if significantly better
+                    r["genre_suggest"] = genre_str
+                    any_change = True
+                    # Update meta_source to reflect all sources used
+                    sources = [src for src, _, _ in genre_res.breakdown]
+                    if sources:
+                        r["meta_source"] = f"{r.get('meta_source', '')}+genres({','.join(sources)})".strip("+")
+        except Exception as e:
+            # Debug: print exception for troubleshooting
+            print(f"Genre resolution failed for {a} - {t}: {e}")
+            pass
+
+        # Zaproponuj kubełek na podstawie gatunków
+        try:
+            genre_str = (r.get("genre_suggest") or "").strip()
+            if genre_str and tag_map:
+                # Parse genres back to individual tags for voting
+                genre_tags = [g.strip() for g in genre_str.split(",") if g.strip()]
+                votes = {tag: 1.0 for tag in genre_tags}  # equal weight for each genre
                 bucket, conf, breakdown = suggest_bucket_from_votes(votes, tag_map)
                 if bucket and conf >= 0.65:
                     r["ai_guess_bucket"]  = f"READY TO PLAY/{bucket}"
-                    # zbuduj krótki komentarz z top 2 tagów
-                    top2 = sorted(breakdown, key=lambda x: x[1], reverse=True)[:2]
-                    tags_str = ", ".join(f"{k}:{w:.2f}" for k, w, _ in top2 if k)
-                    r["ai_guess_comment"] = f"ext-genres; conf={conf:.2f}; tags: {tags_str}"
+                    # zbuduj krótki komentarz z top tagów
+                    top_tags = [tag for tag, _, mapped in breakdown if mapped][:3]
+                    tags_str = ", ".join(top_tags) if top_tags else genre_str.split(",")[0]
+                    r["ai_guess_comment"] = f"genres; conf={conf:.2f}; tags: {tags_str}"
                     any_change = True
         except Exception:
             pass
@@ -426,9 +443,12 @@ def cmd_apply(args: argparse.Namespace) -> None:
             continue
 
         final_name = build_final_filename(
-            r.get("artist", ""), r.get("title", ""),
-            r.get("version_info", ""), r.get("key_camelot", ""),
-            r.get("bpm", ""), extension_for(src)
+            r.get("artist_suggest") or r.get("artist", ""), 
+            r.get("title_suggest") or r.get("title", ""),
+            r.get("version_suggest") or r.get("version_info", ""), 
+            r.get("key_camelot", ""),
+            r.get("bpm", ""), 
+            extension_for(src)
         )
 
         dest_path = dest_dir / final_name

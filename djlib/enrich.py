@@ -228,7 +228,7 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
 
 
 def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | None:
-    """Spróbuj wzbogacić metadane online (MusicBrainz) bazując na suggest_* lub nazwie.
+    """Spróbuj wzbogacić metadane online (AcoustID + MusicBrainz).
     Nie rusza BPM/Key. Zwraca uzupełnienia sugerowanych pól albo None.
     """
     artist = (row.get("artist_suggest") or "").strip()
@@ -236,7 +236,7 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
     if not artist and not title:
         a, t, v = parse_from_filename(path)
         artist, title = a, t
-    # 1) jeśli mamy fingerprint i duration, spróbuj AcoustID
+    # 1) Zawsze spróbuj AcoustID jeśli mamy fingerprint i duration
     fp = (row.get("fingerprint") or "").strip()
     dur_txt = (row.get("duration_suggest") or "").strip()
     dur_sec = 0
@@ -250,7 +250,7 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
         out = lookup_acoustid(fp, dur_sec)
         if out:
             return out
-    # 2) fallback: MusicBrainz search — spróbuj kilku wariantów
+    # 2) Zawsze spróbuj MusicBrainz search — spróbuj kilku wariantów
     # a) jak jest
     out = lookup_musicbrainz(artist, title)
     if out:
