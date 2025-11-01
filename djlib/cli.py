@@ -520,6 +520,24 @@ def cmd_genres_resolve(args: argparse.Namespace) -> None:
         parts = ", ".join(f"{k}:{v:.2f}" for k, v in sorted(local.items(), key=lambda kv: kv[1], reverse=True)[:5])
         print(f"  - {src}: {parts}")
 
+def cmd_detect_taxonomy(_: argparse.Namespace) -> None:
+    """Wykrywa istniejącą strukturę folderów i zapisuje jako taxonomy.local.yml."""
+    from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
+
+    detected = detect_taxonomy_from_fs()
+    ready = detected["ready_buckets"]
+    review = detected["review_buckets"]
+    
+    if ready or review:
+        save_taxonomy(detected)
+        print(f"Wykryto taksonomię: {len(ready)} ready buckets, {len(review)} review buckets")
+        if ready:
+            print("Ready buckets:", ", ".join(ready))
+        if review:
+            print("Review buckets:", ", ".join(review))
+    else:
+        print("Nie wykryto żadnej struktury folderów w LIB_ROOT")
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -551,6 +569,8 @@ def build_parser() -> argparse.ArgumentParser:
     res.add_argument("--title", required=True)
     res.add_argument("--duration", type=int, default=None, help="Duration in seconds (optional)")
     res.set_defaults(func=cmd_genres_resolve)
+
+    sp.add_parser("detect-taxonomy").set_defaults(func=cmd_detect_taxonomy)
     return p
 
 def main() -> None:

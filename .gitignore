@@ -26,6 +26,8 @@ __pycache__/
 library.csv
 config.local.yml
 config.local.json
+taxonomy.local.yml
+.env
 
 # ===== Data / artifacts =====
 data/
@@ -51,7 +53,3 @@ bin/
 .coverage
 htmlcov/
 
-# lokalne pliki konfiguracyjne i robocze
-config.yml
-taxonomy.yml
-library.csv
