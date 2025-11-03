@@ -14,6 +14,10 @@ from djlib.filename import parse_from_filename
 from djlib.enrich import suggest_metadata
 from djlib.metadata.genre_resolver import resolve as resolve_genres
 from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
+try:
+    from djlib.audio.essentia_backend import analyze as analyze_audio  # optional
+except Exception:
+    analyze_audio = None  # type: ignore
 
 
 def _duration_from_tags_or_file(p: Path, tags: Dict[str, str]) -> str:
@@ -49,6 +53,10 @@ def main() -> int:
         "parsed_artist", "parsed_title", "parsed_version",
         # suggested (basic)
         "suggest_artist", "suggest_title",
+        # detected audio metrics (optional)
+        "bpm_detected", "bpm_confidence", "bpm_correction",
+        "key_detected_camelot", "key_strength",
+        "energy_score",
         # suggested genres (3)
         "genre_main", "genre_sub1", "genre_sub2",
         # bucket
@@ -77,6 +85,42 @@ def main() -> int:
                 sugg_title = f"{base_title} ({ver})"
             else:
                 sugg_title = base_title
+
+            # audio analysis (optional, if backend available)
+            bpm_det = bpm_conf = bpm_corr = ""
+            key_det = key_strength = ""
+            energy_score = ""
+            if analyze_audio:
+                try:
+                    ares = analyze_audio(p)
+                    v = ares.get("bpm")
+                    if v is not None:
+                        bpm_det = str(v)
+                    v = ares.get("bpm_conf")
+                    if v is not None:
+                        try:
+                            bpm_conf = f"{float(v):.2f}"
+                        except Exception:
+                            bpm_conf = str(v)
+                    v = ares.get("bpm_corr")
+                    if v is not None:
+                        bpm_corr = str(v)
+                    if ares.get("key_camelot"):
+                        key_det = str(ares.get("key_camelot"))
+                    v = ares.get("key_strength")
+                    if v is not None:
+                        try:
+                            key_strength = f"{float(v):.2f}"
+                        except Exception:
+                            key_strength = str(v)
+                    v = ares.get("energy")
+                    if v is not None:
+                        try:
+                            energy_score = f"{float(v):.3f}"
+                        except Exception:
+                            energy_score = str(v)
+                except Exception:
+                    pass
 
             # genres via resolver (MB + Last.fm + Spotify)
             gr = None
@@ -117,6 +161,13 @@ def main() -> int:
                 "parsed_version": parsed_version,
                 "suggest_artist": sugg_artist,
                 "suggest_title": sugg_title,
+                # detected audio metrics
+                "bpm_detected": bpm_det,
+                "bpm_confidence": bpm_conf,
+                "bpm_correction": bpm_corr,
+                "key_detected_camelot": key_det,
+                "key_strength": key_strength,
+                "energy_score": energy_score,
                 "genre_main": g_main,
                 "genre_sub1": g_sub1,
                 "genre_sub2": g_sub2,
