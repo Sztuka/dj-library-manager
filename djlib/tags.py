@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any, Tuple
 import re
-import mutagen  # używamy tylko mutagen.File(...)
+from mutagen import File as MutFile  # type: ignore
 
 def _first_str(v: Any) -> str:
     if v is None:
@@ -35,7 +35,7 @@ _CAM_MINOR = {
 }
 _FLAT_TO_SHARP = {"DB": "C#", "EB": "D#", "GB": "F#", "AB": "G#", "BB": "A#"}
 
-_CAM_PAT = re.compile(r"^\s*(\d{1,2})([ABab])\s*$")
+_CAM_PAT = re.compile(r"^\s*(\d{1,2})([ABabdDmM])\s*$")
 
 def _to_camelot(key_raw: str) -> str:
     if not key_raw:
@@ -46,7 +46,14 @@ def _to_camelot(key_raw: str) -> str:
         n, ab = m.groups()
         n = int(n)
         if 1 <= n <= 12:
-            return f"{n}{ab.upper()}"
+            # Convert d->B (major), m->A (minor), and normalize case
+            if ab.lower() == 'd':
+                ab = 'B'
+            elif ab.lower() == 'm':
+                ab = 'A'
+            else:
+                ab = ab.upper()
+            return f"{n}{ab}"
 
     s = s.upper().replace("MAJOR", "").replace("MINOR", "M").replace(" MIN", "M").strip()
     s = s.replace("MOLL", "M").replace("DUR", "").strip()
@@ -67,7 +74,7 @@ def read_tags(path: Path) -> Dict[str, str]:
     Zwraca:
     artist, title, version_info, bpm, key_camelot, energy_hint, genre, comment
     """
-    f = mutagen.File(str(path), easy=True)  # type: ignore[no-any-return]
+    f = MutFile(str(path), easy=True)  # type: ignore[no-any-return]
     tags: Dict[str, Any] = getattr(f, "tags", {}) or {}
 
     artist = _first_str(tags.get("artist")).strip()
@@ -87,6 +94,38 @@ def read_tags(path: Path) -> Dict[str, str]:
         if cam:
             key_camelot = cam
             break
+
+    # Fallback: try raw container frames (e.g., ID3 TKEY) if Easy tags didn't expose the key
+    if not key_camelot:
+        try:
+            raw = MutFile(str(path))
+            if raw and getattr(raw, "tags", None):
+                # ID3 TKEY
+                try:
+                    tkey = raw.tags.get("TKEY")  # type: ignore[call-arg]
+                    if tkey:
+                        # Some mutagen frames hold .text list
+                        vals = getattr(tkey, "text", None)
+                        if vals:
+                            cam = _to_camelot(_first_str(vals))
+                            if cam:
+                                key_camelot = cam
+                except Exception:
+                    pass
+                # MP4 iTunes custom key (----:com.apple.iTunes:initialkey)
+                try:
+                    if getattr(raw, "tags", None):
+                        for k in ("----:com.apple.iTunes:initialkey", "----:com.apple.iTunes:KEY"):
+                            if k in raw.tags:  # type: ignore[operator]
+                                v = _first_str(raw.tags.get(k))  # type: ignore[call-arg]
+                                cam = _to_camelot(v)
+                                if cam:
+                                    key_camelot = cam
+                                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     version_info = ""
     if title:

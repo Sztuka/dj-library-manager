@@ -543,8 +543,9 @@ def cmd_genres_resolve(args: argparse.Namespace) -> None:
 def cmd_detect_taxonomy(_: argparse.Namespace) -> None:
     """Wykrywa istniejącą strukturę folderów i zapisuje jako taxonomy.local.yml."""
     from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
+    from djlib.config import LIB_ROOT
 
-    detected = detect_taxonomy_from_fs()
+    detected = detect_taxonomy_from_fs(LIB_ROOT)
     ready = detected["ready_buckets"]
     review = detected["review_buckets"]
     

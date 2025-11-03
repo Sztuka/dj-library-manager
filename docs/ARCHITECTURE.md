@@ -1,7 +1,7 @@
 # DJ Library Manager - Dokumentacja Architektury
 
-**Wersja:** 1.0  
-**Data:** 2024  
+**Wersja:** 2.0  
+**Data:** 2025  
 **Przeznaczenie:** Dokumentacja techniczna dla agentów AI oraz deweloperów
 
 ---
@@ -22,16 +22,19 @@
 
 ## Przegląd Systemu
 
-DJ Library Manager to narzędzie do zarządzania biblioteką muzyczną DJ-a. System skanuje nowe pliki audio, ekstrahuje metadane, klasyfikuje utwory według gatunków i organizuje je w strukturze folderów.
+DJ Library Manager to narzędzie do zarządzania biblioteką muzyczną DJ-a. System skanuje nowe pliki audio, ekstrahuje metadane, wzbogaca je danymi online (MusicBrainz, Last.fm, Spotify), klasyfikuje utwory według gatunków i organizuje je w strukturze folderów.
 
 ### Główne funkcjonalności:
 
 - Skanowanie INBOX i ekstrakcja tagów audio
-- Automatyczna klasyfikacja utworów (AI guessing)
+- **Online enrichment**: Wzbogacanie metadanych z MusicBrainz, AcoustID, Last.fm, Spotify
+- **Genre resolution**: Rozpoznawanie gatunków z wielu źródeł z confidence scoring
+- Automatyczna klasyfikacja utworów (AI guessing + taxonomy mapping)
 - Zarządzanie taksonomią kategorii (buckets)
-- Automatyczne decyzje na podstawie reguł
+- Automatyczne decyzje na podstawie reguł lub heurystyk
 - Przenoszenie i zmiana nazw plików
 - Wykrywanie duplikatów (hash + fingerprint audio)
+- **System propozycji**: Suggest/accept workflow dla metadanych
 
 ---
 
@@ -49,12 +52,22 @@ dj-library-manager/
 │   ├── fingerprint.py  # Fingerprint audio i hash
 │   ├── filename.py     # Generowanie nazw plików
 │   ├── mover.py        # Przenoszenie plików
-│   ├── classify.py     # AI guessing bucketów
+│   ├── classify.py     # AI guessing bucketów (legacy)
 │   ├── placement.py    # Automatyczne decyzje o bucketach
-│   └── ...
+│   ├── enrich.py       # Online enrichment metadanych
+│   ├── genre.py        # Genre resolution i taxonomy mapping
+│   ├── extern.py       # Integracje zewnętrzne (Last.fm, Spotify)
+│   ├── buckets.py      # Walidacja bucketów
+│   └── metadata/       # Klienci API metadanych
+│       ├── __init__.py
+│       ├── genre_resolver.py  # Główny resolver gatunków
+│       ├── mb_client.py       # MusicBrainz client
+│       └── lastfm.py          # Last.fm client
 ├── scripts/            # Skrypty CLI
-├── webui/              # Interfejs webowy
+├── webui/              # Interfejs webowy (TODO)
+├── docs/               # Dokumentacja
 ├── taxonomy.yml        # Definicja bucketów
+├── taxonomy_map.yml    # Mapowanie tagów → bucketów
 ├── rules.yml           # Reguły auto-decide
 └── config.local.yml    # Lokalna konfiguracja (gitignored)
 ```
@@ -78,6 +91,10 @@ dj-library-manager/
 │   ├── UNDECIDED
 │   └── NEEDS EDIT
 ├── LOGS/                     # Logi operacji
+│   ├── enrich_status.json    # Status wzbogacania
+│   ├── fingerprint_status.json
+│   ├── moves-{timestamp}.csv # Logi przeniesień
+│   └── dupes.csv             # Raport duplikatów
 └── library.csv               # Główna baza danych
 ```
 
@@ -151,28 +168,39 @@ Gdzie `{SECTION}` to: `CLUB` lub `OPEN FORMAT`
 
 Baza danych główna w formacie CSV. Kolumny zdefiniowane w `djlib/csvdb.py::FIELDNAMES`:
 
-| Kolumna            | Opis                                    | Przykład                              |
-| ------------------ | --------------------------------------- | ------------------------------------- |
-| `track_id`         | Unikalne ID utworu                      | `a1b2c3d4e5f6_1234567890`             |
-| `file_path`        | Oryginalna ścieżka do pliku             | `/Users/user/Music/INBOX/track.mp3`   |
-| `artist`           | Artysta (z tagów audio)                 | `Daft Punk`                           |
-| `title`            | Tytuł utworu                            | `Get Lucky`                           |
-| `version_info`     | Wersja/remix (z tagów)                  | `Radio Edit`, `Extended Mix`          |
-| `bpm`              | BPM (z Traktor/analizy)                 | `120`                                 |
-| `key_camelot`      | Tonacja Camelot (z Traktor)             | `6A`                                  |
-| `energy_hint`      | Wskazówka energii (opcjonalnie)         | `high`, `medium`                      |
-| `file_hash`        | SHA-256 hash pliku                      | `a1b2c3...`                           |
-| `fingerprint`      | Audio fingerprint (Chromaprint)         | `AQAA...`                             |
-| `is_duplicate`     | Czy duplikat (na podstawie fingerprint) | `true`, `false`                       |
-| `ai_guess_bucket`  | Sugerowany bucket przez AI              | `READY TO PLAY/CLUB/HOUSE`            |
-| `ai_guess_comment` | Komentarz do sugestii                   | `genre=house; conf=0.95`              |
-| `target_subfolder` | Finalna decyzja użytkownika             | `READY TO PLAY/CLUB/HOUSE`            |
-| `must_play`        | Flaga "must play" (opcjonalnie)         | `true`, `false`                       |
-| `occasion_tags`    | Tagi okazji (opcjonalnie)               | `wedding`, `party`                    |
-| `notes`            | Uwagi użytkownika                       | Dowolny tekst                         |
-| `final_filename`   | Finalna nazwa po przeniesieniu          | `Artist - Title (Mix) [6A 120].mp3`   |
-| `final_path`       | Finalna ścieżka po przeniesieniu        | `/Users/user/Music/READY TO PLAY/...` |
-| `added_date`       | Data dodania do biblioteki              | `2024-01-15 10:30:00`                 |
+| Kolumna                                    | Opis                                    | Przykład                              |
+| ------------------------------------------ | --------------------------------------- | ------------------------------------- |
+| `track_id`                                 | Unikalne ID utworu                      | `a1b2c3d4e5f6_1234567890`             |
+| `file_path`                                | Oryginalna ścieżka do pliku             | `/Users/user/Music/INBOX/track.mp3`   |
+| `artist`                                   | Artysta (zaakceptowany)                 | `Daft Punk`                           |
+| `title`                                    | Tytuł utworu (zaakceptowany)            | `Get Lucky`                           |
+| `version_info`                             | Wersja/remix (zaakceptowany)            | `Radio Edit`, `Extended Mix`          |
+| `genre`                                    | Gatunek z tagów audio                   | `Electronic`                          |
+| `bpm`                                      | BPM (z Traktor/analizy)                 | `120`                                 |
+| `key_camelot`                              | Tonacja Camelot (z Traktor)             | `6A`                                  |
+| `energy_hint`                              | Wskazówka energii (opcjonalnie)         | `high`, `medium`                      |
+| `file_hash`                                | SHA-256 hash pliku                      | `a1b2c3...`                           |
+| `fingerprint`                              | Audio fingerprint (Chromaprint)         | `AQAA...`                             |
+| `is_duplicate`                             | Czy duplikat (na podstawie fingerprint) | `true`, `false`                       |
+| `ai_guess_bucket`                          | Sugerowany bucket przez AI              | `READY TO PLAY/CLUB/HOUSE`            |
+| `ai_guess_comment`                         | Komentarz do sugestii                   | `genre=house; conf=0.95`              |
+| `target_subfolder`                         | Finalna decyzja użytkownika             | `READY TO PLAY/CLUB/HOUSE`            |
+| `must_play`                                | Flaga "must play" (opcjonalnie)         | `true`, `false`                       |
+| `occasion_tags`                            | Tagi okazji (opcjonalnie)               | `wedding`, `party`                    |
+| `notes`                                    | Uwagi użytkownika                       | Dowolny tekst                         |
+| `final_filename`                           | Finalna nazwa po przeniesieniu          | `Artist - Title (Mix) [6A 120].mp3`   |
+| `final_path`                               | Finalna ścieżka po przeniesieniu        | `/Users/user/Music/READY TO PLAY/...` |
+| `added_date`                               | Data dodania do biblioteki              | `2024-01-15 10:30:00`                 |
+| **Propozycje metadanych (do akceptacji):** |                                         |                                       |
+| `artist_suggest`                           | Proponowany artysta                     | `Daft Punk`                           |
+| `title_suggest`                            | Proponowany tytuł                       | `Get Lucky`                           |
+| `version_suggest`                          | Proponowana wersja                      | `Radio Edit`                          |
+| `genre_suggest`                            | Proponowany gatunek (z API)             | `House, Electronic, Dance`            |
+| `album_suggest`                            | Proponowany album                       | `Random Access Memories`              |
+| `year_suggest`                             | Proponowany rok wydania                 | `2013`                                |
+| `duration_suggest`                         | Proponowany czas trwania                | `4:45`                                |
+| `meta_source`                              | Źródło metadanych                       | `musicbrainz`, `acoustid+musicbrainz` |
+| `review_status`                            | Status przeglądu                        | `pending`, `accepted`                 |
 
 ### Ważne pola:
 
@@ -322,19 +350,76 @@ review_buckets:
 - `move_with_rename(src, dest_dir, final_name)`: Przenosi i zmienia nazwę (obsługuje konflikty)
 - `utc_now_str()`: Format daty/czasu UTC dla `added_date`
 
-### `djlib/classify.py`
+### `djlib/enrich.py`
 
-**Zadanie**: AI guessing bucketów (prosta heurystyka)
+**Zadanie**: Wzbogacanie metadanych online
 
-**Funkcja**:
+**Funkcje kluczowe**:
 
-- `guess_bucket(artist, title, bpm, genre, comment)`: Zwraca tuple `(bucket, comment)`
+- `suggest_metadata(path, tags)`: Generuje propozycje metadanych z nazwy pliku
+- `lookup_musicbrainz(artist, title)`: Wyszukiwanie w MusicBrainz API
+- `lookup_acoustid(fp, duration)`: Wyszukiwanie przez AcoustID fingerprint
+- `enrich_online_for_row(path, row)`: Główna funkcja wzbogacania dla rekordu
 
-**Zwracane buckety**:
+**Źródła metadanych**:
 
-- `CLUB_CANDIDATES`, `OPEN_FORMAT_CANDIDATES`, `UNDECIDED`
+1. **AcoustID + MusicBrainz**: Najwyższy priorytet (jeśli dostępny fingerprint)
+2. **MusicBrainz search**: Bezpośrednie wyszukiwanie
+3. **Fallback**: Parsowanie nazwy pliku + tagi audio
 
-**Uwaga**: To jest prosta heurystyka, nie prawdziwe AI. Można ją rozszerzyć.
+### `djlib/genre.py`
+
+**Zadanie**: Rozpoznawanie gatunków i mapowanie na buckety
+
+**Funkcje kluczowe**:
+
+- `load_taxonomy_map()`: Ładuje mapowanie tagów → bucketów z `taxonomy_map.yml`
+- `external_genre_votes(artist, title)`: Zbiera głosy gatunków z Last.fm/Spotify
+- `suggest_bucket_from_votes(votes, mapping)`: Sugeruje bucket na podstawie głosów
+
+**Plik konfiguracyjny**: `taxonomy_map.yml`
+
+```yaml
+map:
+  house: "CLUB/HOUSE"
+  techno: "CLUB/TECHNO"
+  hip-hop: "OPEN FORMAT/HIP-HOP"
+  # ...
+```
+
+### `djlib/metadata/`
+
+**Zadanie**: Klienci API dla zewnętrznych źródeł metadanych
+
+#### `genre_resolver.py`
+
+- `resolve(artist, title, duration_s)`: Główny resolver gatunków
+- Łączy dane z MusicBrainz, Last.fm, Spotify
+- Zwraca `GenreResult` z main/sub gatunkami i confidence
+
+#### `mb_client.py`
+
+- `search_recording(artist, title)`: Wyszukiwanie utworów w MusicBrainz
+- `get_recording_genres(recording_id, ...)`: Pobieranie gatunków z MB
+- Obsługa rate limiting (1 req/s) i retry
+
+#### `lastfm.py`
+
+- `get_top_tags(artist, title)`: Pobieranie top tagów z Last.fm
+
+### `djlib/extern.py`
+
+**Zadanie**: Integracje z zewnętrznymi API (Last.fm, Spotify)
+
+**Funkcje**:
+
+- `lastfm_toptags(artist, title)`: Tagi z Last.fm
+- `spotify_artist_genres(artist)`: Gatunki artysty ze Spotify
+
+**Konfiguracja API**:
+
+- Last.fm: `lastfm_api_key` w config
+- Spotify: `spotify_client_id`, `spotify_client_secret` w config
 
 ### `djlib/placement.py`
 
@@ -361,9 +446,15 @@ review_buckets:
 **Komendy**:
 
 - `scan`: Skanowanie INBOX
+- `enrich-online`: Wzbogacanie metadanych online (MB, AcoustID, Last.fm, Spotify)
+- `fix-fingerprints`: Uzupełnianie brakujących fingerprintów
 - `auto-decide`: Automatyczne uzupełnianie target_subfolder
+- `auto-decide-smart`: Inteligentne auto-decide z confidence thresholds
 - `apply`: Przenoszenie plików zgodnie z target_subfolder
 - `undo`: Cofanie ostatniej operacji przenoszenia
+- `dupes`: Raport duplikatów
+- `genres resolve`: Rozpoznawanie gatunków dla pojedynczego utworu
+- `detect-taxonomy`: Wykrywanie taksonomii z istniejącej struktury folderów
 
 ---
 
@@ -382,44 +473,56 @@ review_buckets:
    - Generuje fingerprint (jeśli `fpcalc` dostępny)
    - Sprawdza duplikaty (po fingerprint lub hash)
    - AI guessing bucketu
-   - Tworzy rekord w CSV
+   - **Generuje propozycje metadanych** (`suggest_*` pola)
+   - Tworzy rekord w CSV z `review_status = "pending"`
 
-**Rezultat**: Nowe wiersze w `library.csv` z pustym `target_subfolder`
+**Rezultat**: Nowe wiersze w `library.csv` z pustym `target_subfolder` i propozycjami do przeglądu
 
-### 2. Automatyczne decyzje
+### 2. Wzbogacanie metadanych online
 
-**Skrypt**: `scripts/auto_decide.py` lub `djlib/cli.py::cmd_auto_decide`
+**Skrypt**: `djlib/cli.py::cmd_enrich_online`
+
+**Proces**:
+
+1. Dla rekordów z `review_status != "accepted"`:
+   - **AcoustID lookup**: Jeśli fingerprint dostępny → MusicBrainz recording
+   - **MusicBrainz search**: Bezpośrednie wyszukiwanie artist/title
+   - **Genre resolution**: Zbiera gatunki z MB/Last.fm/Spotify (3 źródła)
+   - **Bucket suggestion**: Mapuje gatunki na buckety przez `taxonomy_map.yml`
+   - Aktualizuje `suggest_*` pola jeśli lepsze od istniejących
+
+**Priorytety nadpisywania**:
+
+- AcoustID wins zawsze (najwyższa jakość)
+- Override jeśli nowe dane mają wyższy confidence
+- Preserve existing accepted data
+
+### 3. Automatyczne decyzje
 
 **Opcje**:
 
 - **Rules-based** (`rules.yml`): Na podstawie zawartości słów-kluczy
 - **Placement-based** (`placement.py`): Na podstawie metadanych (genre, BPM, era)
+- **Smart auto-decide**: Używa heurystyk z confidence thresholds
 
-**Proces (rules-based)**:
-
-1. Dla każdego wiersza z pustym `target_subfolder`
-2. Sprawdza reguły w `rules.yml` (pierwsza dopasowana)
-3. Jeśli dopasowana → ustawia `target_subfolder`
-4. Fallback na `ai_guess_bucket` jeśli ma `CLUB_CANDIDATES` lub `OPEN_FORMAT_CANDIDATES`
-
-**Proces (placement-based)**:
+**Proces (smart)**:
 
 1. Używa `djlib/placement.py::decide_bucket()`
-2. Jeśli confidence >= threshold → ustawia `target_subfolder`
-3. W przeciwnym razie → tylko sugeruje w `ai_guess_bucket`
+2. Jeśli confidence >= 0.85 → ustawia `target_subfolder` automatycznie
+3. Jeśli confidence >= 0.65 → tylko sugeruje w `ai_guess_bucket`
 
-### 3. Przenoszenie plików
+### 4. Przenoszenie plików
 
 **Skrypt**: `scripts/apply_decisions.py` lub `djlib/cli.py::cmd_apply`
 
 **Proces**:
 
 1. Dla każdego wiersza z `target_subfolder` i bez `final_path`:
+   - **Używa suggest\_\* pól** dla nazwy pliku (jeśli zaakceptowane)
    - Resolvuje ścieżkę docelową z `target_subfolder`
    - Generuje finalną nazwę pliku
    - Przenosi i zmienia nazwę
    - Aktualizuje `final_filename`, `final_path`, `added_date`
-   - Zapisuje log do `LOGS/moves-{timestamp}.csv`
 
 **Uwaga**: Użyj `--dry-run` aby zobaczyć co zostanie zrobione bez wykonania
 
@@ -444,6 +547,28 @@ review_buckets:
 - **Fallback**: SHA-256 hash (tylko identyczne pliki)
 - **Implementacja**: `djlib/fingerprint.py`
 
+### System propozycji metadanych
+
+- **Suggest/Accept workflow**: Metadane dzielone na zaakceptowane (główne pola) i proponowane (`suggest_*`)
+- **Źródła**: Filename parsing, tagi audio, MusicBrainz, AcoustID, Last.fm, Spotify
+- **Priorytety**: AcoustID > MusicBrainz > filename/tags
+- **Status**: `review_status` = "pending" | "accepted"
+
+### Wzbogacanie online
+
+- **MusicBrainz**: Recording search, genre/tags z recording/release-group/artist
+- **AcoustID**: Fingerprint-based lookup (wymaga API key)
+- **Last.fm**: Top tags dla utworów
+- **Spotify**: Artist genres (wymaga Client Credentials)
+- **Rate limiting**: 1 req/s dla MB, caching z `requests-cache`
+
+### Genre Resolution
+
+- **Multi-source aggregation**: Łączy dane z 3+ źródeł z confidence weights
+- **Format wyjściowy**: "Main Genre, Sub1, Sub2" (max 3)
+- **Confidence threshold**: >= 0.03 dla nowych, >= 0.08 dla override
+- **Taxonomy mapping**: Tagi → buckety przez `taxonomy_map.yml`
+
 ### Rozwiązywanie konfliktów nazw
 
 - Jeśli plik o takiej samej nazwie już istnieje: dodawany numer `(2)`, `(3)`, etc.
@@ -453,22 +578,6 @@ review_buckets:
 
 - Sprawdzanie czy target istnieje w taxonomy przed przenoszeniem
 - **Implementacja**: `djlib/taxonomy.py::is_valid_target()`
-
-### Obsługa braku tagów
-
-- Jeśli brak tagów: używa `"Unknown Artist"`, `"Unknown Title"`
-- Jeśli brak BPM/Key: używa `"??"`
-- **Implementacja**: `djlib/filename.py::build_final_filename()`
-
-### Struktura katalogów
-
-- Automatyczne tworzenie katalogów z taxonomy
-- **Implementacja**: `djlib/taxonomy.py::ensure_taxonomy_dirs()`
-
-### Logowanie operacji
-
-- Wszystkie operacje przenoszenia logowane do `LOGS/moves-{timestamp}.csv`
-- Format: `src_before, dest_after, track_id`
 
 ---
 
@@ -499,6 +608,7 @@ from typing import List, Dict
 
 # Third-party
 import yaml
+import requests
 
 # Local imports
 from djlib.config import LIB_ROOT
@@ -522,6 +632,34 @@ from djlib.taxonomy import allowed_targets
 - Zawsze UTF-8 encoding
 - `newline=""` dla kompatybilności cross-platform
 - Używaj `csv.DictReader/DictWriter` z `FIELDNAMES`
+
+### API Keys i konfiguracja:
+
+- **AcoustID**: `acoustid_api_key` w config (Application API key)
+- **Last.fm**: `lastfm_api_key` w config lub env `LASTFM_API_KEY`
+- **Spotify**: `spotify_client_id`, `spotify_client_secret` w config lub env
+- **MusicBrainz**: User-Agent w config (`app_name`, `app_version`, `contact`)
+
+### Zależności zewnętrzne:
+
+```python
+# Core
+mutagen>=1.46          # Audio tag reading
+pyacoustid>=0.3        # AcoustID fingerprint lookup
+requests>=2.31         # HTTP requests
+requests-cache>=1.1    # HTTP caching
+
+# Optional for enrichment
+musicbrainzngs>=0.7   # MusicBrainz API client
+spotipy>=2.23         # Spotify API
+pylast>=5.2           # Last.fm API
+```
+
+### Caching:
+
+- HTTP requests cache'owane w `djlib_http_cache.sqlite`
+- Rate limiting: 1 req/s dla MusicBrainz
+- Retry logic dla API calls
 
 ---
 
@@ -583,4 +721,4 @@ bucket, confidence, reason = decide_bucket(row)
 ---
 
 **Ostatnia aktualizacja**: 2025  
-**Wersja dokumentacji**: 1.0
+**Wersja dokumentacji**: 2.0

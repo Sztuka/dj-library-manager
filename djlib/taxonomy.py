@@ -3,10 +3,6 @@ from pathlib import Path
 from typing import List, Dict, Tuple
 import yaml
 
-# lokalizacje główne bierzemy z config.py
-from djlib.config import READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR
-from djlib.config import LIB_ROOT
-
 def normalize_label(label: str) -> str:
     """
     Delikatna normalizacja etykiet:
@@ -232,16 +228,12 @@ def build_ready_buckets(taxonomy: Dict[str, List[str]] | List[str] | None = None
 
     return result
 
-def detect_taxonomy_from_fs() -> Dict[str, List[str]]:
+def detect_taxonomy_from_fs(lib_root: Path) -> Dict[str, List[str]]:
     """
     Wykrywa istniejącą strukturę folderów w LIB_ROOT i zwraca taksonomię.
     Skanuje READY TO PLAY i REVIEW QUEUE w poszukiwaniu podfolderów.
     Zawsze dodaje domyślne buckety jeśli nie zostały wykryte.
     """
-    # Użyj globalnych zmiennych zamiast importowania load_config (unika circular import)
-    from djlib.config import LIB_ROOT
-    lib_root = LIB_ROOT
-    
     ready_buckets = []
     review_buckets = []
     
@@ -251,28 +243,28 @@ def detect_taxonomy_from_fs() -> Dict[str, List[str]]:
         # Najpierw CLUB
         club_root = ready_root / "CLUB"
         if club_root.exists():
-            for item in sorted(club_root.iterdir()):
-                if item.is_dir():
-                    ready_buckets.append(f"CLUB/{item.name}")
+            club_items = [item for item in sorted(club_root.iterdir()) if item.is_dir()]
+            for item in club_items:
+                ready_buckets.append(f"CLUB/{item.name}")
         
         # Potem OPEN FORMAT
         openf_root = ready_root / "OPEN FORMAT"
         if openf_root.exists():
-            for item in sorted(openf_root.iterdir()):
-                if item.is_dir():
-                    ready_buckets.append(f"OPEN FORMAT/{item.name}")
+            openf_items = [item for item in sorted(openf_root.iterdir()) if item.is_dir()]
+            for item in openf_items:
+                ready_buckets.append(f"OPEN FORMAT/{item.name}")
         
         # Na koniec top-level (bez prefiksu)
-        for item in sorted(ready_root.iterdir()):
-            if item.is_dir() and item.name not in {"CLUB", "OPEN FORMAT"}:
-                ready_buckets.append(item.name)
+        toplevel_items = [item for item in sorted(ready_root.iterdir()) if item.is_dir() and item.name not in {"CLUB", "OPEN FORMAT"}]
+        for item in toplevel_items:
+            ready_buckets.append(item.name)
     
     # Skanuj REVIEW QUEUE
     review_root = lib_root / "REVIEW QUEUE"
     if review_root.exists():
-        for item in sorted(review_root.iterdir()):
-            if item.is_dir():
-                review_buckets.append(item.name)
+        review_items = [item for item in sorted(review_root.iterdir()) if item.is_dir()]
+        for item in review_items:
+            review_buckets.append(item.name)
     
     # Dodaj domyślne buckety jeśli nie zostały wykryte
     ready_set = set(ready_buckets)

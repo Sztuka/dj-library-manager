@@ -31,6 +31,39 @@ def canonical(tag: str) -> str:
     return ALIASES.get(t, t)
 
 
+# Non-genre noise patterns occasionally present in MB/LFM tags
+_NOISE_TERMS = {
+    "offizielle charts",  # german charts label
+    "offizielle",
+    "charts",
+    "chart",
+    "ph temp checken",
+    "favourite", "favorite", "favorites",
+    "seen live",
+    "plattentests.de",
+    "germany", "deutschland",
+}
+
+import re as _re
+
+def _is_noise(tag: str) -> bool:
+    t = _norm(tag)
+    if not t:
+        return True
+    if t in _NOISE_TERMS:
+        return True
+    # domain-like tokens
+    if "." in t and not t.replace(".", "").isalpha():
+        return True
+    # '1–4 wochen' / '1-4 wochen' etc.
+    if _re.search(r"\b\d+\s*[–-]?\s*\d*\s*wochen\b", t):
+        return True
+    # very short or purely numeric
+    if len(t) <= 2 or t.isdigit():
+        return True
+    return False
+
+
 @dataclass
 class GenreResolution:
     main: str
@@ -60,13 +93,15 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None) -> GenreR
         local: Dict[str, float] = {}
         for t in tags:
             c = canonical(t)
+            if _is_noise(c):
+                continue
             scores[c] = scores.get(c, 0.0) + mb_w
             local[c] = local.get(c, 0.0) + mb_w
         if local:
             parts.append(("musicbrainz", mb_w, local))
 
-    # Last.fm
-    lfm_w = 2.0
+    # Last.fm (stronger influence to reflect community tags importance)
+    lfm_w = 4.0
     tags_lfm = lastfm.top_tags(artist, title)
     if tags_lfm:
         local: Dict[str, float] = {}
@@ -77,6 +112,8 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None) -> GenreR
             if w <= 0:
                 continue
             c = canonical(name)
+            if _is_noise(c):
+                continue
             scores[c] = scores.get(c, 0.0) + w
             local[c] = local.get(c, 0.0) + w
         if local:
@@ -89,6 +126,8 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None) -> GenreR
         local: Dict[str, float] = {}
         for name in tags_sp:
             c = canonical(name)
+            if _is_noise(c):
+                continue
             scores[c] = scores.get(c, 0.0) + sp_w
             local[c] = local.get(c, 0.0) + sp_w
         if local:

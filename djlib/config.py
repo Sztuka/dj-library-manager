@@ -103,22 +103,145 @@ def _choose_config_path() -> Path:
     # zapisujemy preferencyjnie w repo jako config.local.yml
     return _CANDIDATES[0]
 
+def _create_marker_files(cfg: AppConfig) -> None:
+    """Utwórz ukryte pliki znaczników w folderach biblioteki i inbox."""
+    import datetime
+    
+    marker_data = {
+        "app": "DJLibraryManager",
+        "version": "0.1",
+        "created": datetime.datetime.now().isoformat(),
+        "library_root": str(cfg.library_root),
+        "inbox_dir": str(cfg.inbox_dir),
+    }
+    
+    # Plik znacznika dla library root
+    lib_marker = cfg.library_root / ".djlib_root"
+    try:
+        with lib_marker.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(marker_data, f, allow_unicode=True, sort_keys=False)
+    except Exception as e:
+        print(f"⚠ Nie udało się utworzyć pliku znacznika w library root: {e}")
+    
+    # Plik znacznika dla inbox (tylko jeśli to inny folder)
+    if cfg.inbox_dir != cfg.library_root:
+        inbox_marker = cfg.inbox_dir / ".djlib_inbox"
+        try:
+            with inbox_marker.open("w", encoding="utf-8") as f:
+                yaml.safe_dump(marker_data, f, allow_unicode=True, sort_keys=False)
+        except Exception as e:
+            print(f"⚠ Nie udało się utworzyć pliku znacznika w inbox: {e}")
+
+def _detect_from_markers() -> AppConfig | None:
+    """Spróbuj wykryć konfigurację na podstawie plików znaczników."""
+    
+    def _check_marker_file(marker_path: Path) -> AppConfig | None:
+        """Sprawdź pojedynczy plik znacznika."""
+        if marker_path.exists():
+            try:
+                with marker_path.open("r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                lib_root = Path(data.get("library_root", ""))
+                inbox_dir = Path(data.get("inbox_dir", ""))
+                
+                # Sprawdź czy ścieżki nadal istnieją
+                if lib_root.exists() and inbox_dir.exists():
+                    return AppConfig(library_root=lib_root, inbox_dir=inbox_dir)
+            except Exception:
+                pass
+        return None
+    
+    # Najpierw sprawdź domyślne lokalizacje
+    defaults = _defaults()
+    default_root_marker = defaults.library_root / ".djlib_root"
+    default_inbox_marker = defaults.inbox_dir / ".djlib_inbox"
+    
+    # Sprawdź .djlib_root w domyślnej library_root
+    cfg = _check_marker_file(default_root_marker)
+    if cfg:
+        return cfg
+    
+    # Sprawdź .djlib_inbox w domyślnej inbox_dir
+    cfg = _check_marker_file(default_inbox_marker)
+    if cfg:
+        return cfg
+    
+    # Potem sprawdź w bieżącym katalogu roboczym i jego rodzicach
+    def _find_marker_in_path(path: Path, marker_name: str) -> Path | None:
+        """Znajdź plik znacznika w podanej ścieżce lub jej rodzicach."""
+        current = path
+        for _ in range(5):  # maksymalnie 5 poziomów w górę
+            marker = current / marker_name
+            if marker.exists():
+                return marker
+            if current.parent == current:  # dotarliśmy do root
+                break
+            current = current.parent
+        return None
+    
+    cwd = Path.cwd()
+    
+    # Najpierw szukaj .djlib_root
+    root_marker = _find_marker_in_path(cwd, ".djlib_root")
+    if root_marker:
+        cfg = _check_marker_file(root_marker)
+        if cfg:
+            return cfg
+    
+    # Jeśli nie znaleziono .djlib_root, spróbuj .djlib_inbox
+    inbox_marker = _find_marker_in_path(cwd, ".djlib_inbox")
+    if inbox_marker:
+        cfg = _check_marker_file(inbox_marker)
+        if cfg:
+            return cfg
+    
+    return None
+
 def _load_or_setup() -> Tuple[AppConfig, Path]:
     existing = _first_existing(_CANDIDATES)
     if existing:
         return _from_dict(_read_yaml(existing)), existing
-    # brak konfiga – pytamy użytkownika
+    
+    # Spróbuj wykryć konfigurację z plików znaczników
+    detected = _detect_from_markers()
+    if detected:
+        print("✓ Wykryto istniejącą konfigurację z plików znaczników:")
+        print(f" • library_root: {detected.library_root}")
+        print(f" • inbox_dir:    {detected.inbox_dir}")
+        
+        # Potwierdź z użytkownikiem
+        response = input("Czy chcesz użyć tej konfiguracji? (Y/n): ").strip().lower()
+        if response in ("", "y", "yes"):
+            # Zapisz wykrytą konfigurację
+            dest = _choose_config_path()
+            _write_yaml(dest, _to_dict(detected))
+            _create_marker_files(detected)
+            
+            # Po wykryciu konfiguracji automatycznie wykryj taksonomię z istniejącej struktury
+            try:
+                from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
+                detected_tax = detect_taxonomy_from_fs(detected.library_root)
+                if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
+                    save_taxonomy(detected_tax)
+                    print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
+            except Exception as e:
+                print(f"⚠ Nie udało się wykryć taksonomii: {e}")
+            
+            return detected, dest
+    
+    # Brak wykrytej konfiguracji – pytaj użytkownika
     cfg = _interactive_setup()
     dest = _choose_config_path()
     _write_yaml(dest, _to_dict(cfg))
+    _create_marker_files(cfg)  # Utwórz pliki znaczników
     
     # Po konfiguracji automatycznie wykryj taksonomię z istniejącej struktury
     try:
         from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
-        detected = detect_taxonomy_from_fs()
-        if detected["ready_buckets"] or detected["review_buckets"]:
-            save_taxonomy(detected)
-            print(f"✓ Wykryto taksonomię: {len(detected['ready_buckets'])} ready buckets, {len(detected['review_buckets'])} review buckets")
+        detected_tax = detect_taxonomy_from_fs(cfg.library_root)
+        if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
+            save_taxonomy(detected_tax)
+            print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
     except Exception as e:
         print(f"⚠ Nie udało się wykryć taksonomii: {e}")
     
@@ -129,6 +252,7 @@ def reconfigure() -> Tuple[AppConfig, Path]:
     cfg = _interactive_setup()
     dest = _choose_config_path()
     _write_yaml(dest, _to_dict(cfg))
+    _create_marker_files(cfg)  # Utwórz pliki znaczników
     return cfg, dest
 
 # ---------------------------
@@ -159,6 +283,10 @@ def ensure_base_dirs() -> None:
     logs = lib / "LOGS"
     for p in [lib, inbox, ready, review, logs]:
         p.mkdir(parents=True, exist_ok=True)
+    
+    # Upewnij się, że pliki znaczników istnieją
+    app_cfg = AppConfig(library_root=lib, inbox_dir=inbox)
+    _create_marker_files(app_cfg)
 
 def load_config() -> Dict[str, Any]:
     """Wczytaj aktualną konfigurację i zwróć jako słownik z kluczami LIB_ROOT i INBOX_UNSORTED."""
@@ -185,10 +313,7 @@ def save_config_paths(lib_root: str, inbox: str) -> None:
         if k in existing:
             extras[k] = existing[k]
     _write_yaml(dest, _to_dict(cfg, extras))
-
-# ---------------------------
-# Dodatkowe ustawienia (API Keys)
-# ---------------------------
+    _create_marker_files(cfg)  # Aktualizuj pliki znaczników
 
 def set_acoustid_api_key(key: str) -> None:
     dest = _choose_config_path()
