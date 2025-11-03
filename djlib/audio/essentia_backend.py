@@ -4,10 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+import json
+import shutil
+import subprocess
+import tempfile
 
 from .cache import compute_audio_id, get_analysis, upsert_analysis, init_db
 from .features import bpm_correct_into_range, config_hash
 from . import ALGO_VERSION
+from djlib.tags import _to_camelot  # reuse existing Camelot mapping
 
 
 def _try_import_essentia():
@@ -19,17 +24,36 @@ def _try_import_essentia():
         return None, None
 
 
+def _find_extractor_binary() -> Optional[str]:
+    """Try to find Essentia's streaming extractor binary on PATH.
+
+    Common names:
+    - 'essentia_streaming_extractor_music' (Homebrew)
+    - 'streaming_extractor_music' (generic builds)
+    """
+    for name in ("essentia_streaming_extractor_music", "streaming_extractor_music"):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
 def check_env() -> Dict[str, Any]:
     """Report availability of Essentia and basic runtime details."""
     ess, es = _try_import_essentia()
+    cli_bin = _find_extractor_binary()
     if ess is None:
         return {
             "essentia_available": False,
-            "details": "Essentia not installed. Install via Homebrew (brew install essentia) or conda.",
+            "essentia_cli_available": bool(cli_bin),
+            "cli_binary": cli_bin,
+            "details": "Essentia Python bindings not available. Use Conda or Homebrew. CLI fallback supported if extractor binary is installed.",
         }
     ver = getattr(ess, "__version__", "?")
     return {
         "essentia_available": True,
+        "essentia_cli_available": bool(cli_bin),
+        "cli_binary": cli_bin,
         "version": ver,
     }
 
@@ -59,6 +83,7 @@ def analyze(
             return cached
 
     ess, es = _try_import_essentia()
+    cli_bin = _find_extractor_binary()
 
     bpm = None
     bpm_conf = None
@@ -73,6 +98,44 @@ def analyze(
         # In future iterations, load audio, compute BPM/Key/Energy via Essentia.
         src = "essentia"
         # metrics[...] could include raw measures for debug once implemented
+    elif cli_bin:
+        # Fallback: call Essentia streaming extractor binary and parse JSON output.
+        src = "essentia-cli"
+        with tempfile.TemporaryDirectory() as td:
+            out_json = Path(td) / "features.json"
+            # Run: extractor <input> <output.json>
+            cmd = [cli_bin, str(p), str(out_json)]
+            try:
+                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if out_json.exists():
+                    with out_json.open("r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    # Extract BPM
+                    try:
+                        bpm = float(data.get("rhythm", {}).get("bpm"))
+                    except Exception:
+                        pass
+                    # Extract Key and strength
+                    try:
+                        tonal = data.get("tonal", {})
+                        key_key = (tonal.get("key_key") or "").strip()
+                        key_scale = (tonal.get("key_scale") or "").strip()  # 'minor' or 'major'
+                        key_strength = tonal.get("key_strength")
+                        if key_key:
+                            key_raw = f"{key_key} {key_scale}".strip()
+                            cam = _to_camelot(key_raw)
+                            key_camelot = cam or key_camelot
+                    except Exception:
+                        pass
+                    # Optional: a few low-level metrics for future energy calculation
+                    low = data.get("lowlevel", {})
+                    try:
+                        metrics["dyn_complex"] = low.get("dynamic_complexity")
+                    except Exception:
+                        pass
+            except subprocess.CalledProcessError as e:
+                # Leave as skeleton if CLI fails
+                pass
 
     # Apply BPM correction into target range
     bpm_corr_val, corr_factor = bpm_correct_into_range(bpm, *target_bpm_range)

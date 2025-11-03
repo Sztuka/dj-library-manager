@@ -2,6 +2,13 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "TOOLS — Install Homebrew (macOS)",
+      "type": "shell",
+      "command": "/usr/bin/env bash -lc '/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "TOOLS — Install Essentia (Homebrew)",
       "type": "shell",
       "command": "/usr/bin/env bash -lc '${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_essentia.py'",
