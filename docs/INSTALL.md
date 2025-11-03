@@ -7,6 +7,10 @@ This project supports two paths for audio analysis (Essentia):
 
 Essentia is optional. The app works without it; BPM/Key/Energy detection will be skipped. When present, analysis results are cached.
 
+Backend modes:
+- Python bindings (preferred with Conda): full in-process analysis
+- CLI fallback (works with Homebrew binary): uses `essentia_streaming_extractor_music`/`streaming_extractor_music` to extract features and parse JSON
+
 ## 1) Python venv (base app)
 
 Create a virtualenv and install Python requirements:
@@ -27,10 +31,17 @@ Create a virtualenv and install Python requirements:
 - Alternatively, run:
   - brew install essentia
 
+Note: If Python bindings don’t import in your venv (e.g., Python 3.13), the CLI fallback will still work as long as the extractor binary is installed and on PATH. We auto-detect both `essentia_streaming_extractor_music` and `streaming_extractor_music`.
+
 After installing, verify:
 
 - VS Code task: "TOOLS — Check audio env"
 - Or: `.venv/bin/python -m djlib.cli analyze-audio --check-env`
+
+Expected output fields include:
+- `essentia_available`: Python bindings importable
+- `essentia_cli_available`: extractor binary found
+- `cli_binary`: path to the binary if available
 
 ### Cross‑platform (Conda)
 
@@ -42,7 +53,7 @@ If you prefer an isolated environment with Essentia preinstalled:
   - conda activate djlib
   - pip install -e . # install the local package into the conda env
 
-Note: `environment.yml` installs `essentia`, `ffmpeg`, `chromaprint`, and your base Python deps (via pip -r requirements.txt).
+Note: `environment.yml` installs `essentia`, `ffmpeg`, `chromaprint`, and your base Python deps (via pip -r requirements.txt). This path is the most reliable for Python bindings.
 
 ## 3) Run audio analysis
 
