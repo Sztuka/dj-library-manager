@@ -8,6 +8,13 @@ version = "0.0.1"
 description = "Local DJ library organizer (Rekordbox-friendly)"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+# Optional audio backend; install via conda/brew is recommended. This extra is
+# best-effort for environments where wheels are available.
+audio = [
+	"essentia>=2.1",
+]
+
 [tool.setuptools]
 package-dir = {"" = "."}
 

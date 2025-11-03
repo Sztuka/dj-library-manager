@@ -1,5 +1,14 @@
 # DJ Library Manager (MVP)
 
+Quick start (local BPM/Key without Traktor):
+
+- See `docs/INSTALL.md` for installing Essentia (optional but recommended)
+- Run tasks:
+   - STEP 0 — Setup: create venv & install deps
+   - TOOLS — Check audio env (verifies Essentia)
+   - STEP 2 — Analyze audio (cache)
+- Generate a preview: `python scripts/report_preview.py` (adds detected bpm/key/energy columns)
+
 Workflow:
 
 1. Skopiuj nowe pliki do `~/Music_DJ/INBOX_UNSORTED`.

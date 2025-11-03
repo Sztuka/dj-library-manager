@@ -1,0 +1,14 @@
+name: djlib
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - essentia
+  - ffmpeg
+  - numpy
+  - scipy
+  - libsndfile
+  - chromaprint
+  - pip:
+      - -r requirements.txt
