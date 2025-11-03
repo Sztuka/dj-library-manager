@@ -19,6 +19,12 @@ from djlib.filename import build_final_filename, extension_for
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 from djlib.buckets import is_valid_target
 from djlib.placement import decide_bucket
+try:
+    from djlib.audio import check_env as audio_check_env
+    from djlib.audio import analyze as audio_analyze
+except Exception:
+    audio_check_env = None  # type: ignore
+    audio_analyze = None  # type: ignore
 
 # --- Pomocnicze ---
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -559,6 +565,76 @@ def cmd_detect_taxonomy(_: argparse.Namespace) -> None:
     else:
         print("Nie wykryto żadnej struktury folderów w LIB_ROOT")
 
+def cmd_analyze_audio(args: argparse.Namespace) -> None:
+    """Analiza audio (BPM/Key/Energy) dla INBOX lub wskazanego pliku/katalogu.
+    Wyniki zapisywane są do cache SQLite (LOGS/audio_analysis.sqlite).
+    """
+    # Obsłuż --check-env
+    if getattr(args, "check_env", False):
+        if audio_check_env is None:
+            print("Essentia backend niedostępny (brak modułu).")
+            return
+        info = audio_check_env()
+        print(json.dumps(info, ensure_ascii=False, indent=2))
+        return
+
+    if audio_analyze is None:
+        print("Audio backend niedostępny. Zainstaluj Essentia lub uruchom z --check-env, aby sprawdzić środowisko.")
+        return
+
+    # Zbierz pliki do analizy
+    targets = []
+    base = Path(getattr(args, "path", "") or INBOX_DIR)
+    if base.is_file():
+        targets = [base]
+    else:
+        base = base if base.exists() else INBOX_DIR
+        targets = [p for p in base.glob("**/*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
+
+    total = len(targets)
+    processed = 0
+    updated = 0
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    status_path = LOGS_DIR / "audio_status.json"
+
+    def _write_status(state: str, last_file: str = "", last_error: str = "") -> None:
+        try:
+            with status_path.open("w", encoding="utf-8") as f:
+                json.dump({
+                    "state": state,
+                    "total": total,
+                    "processed": processed,
+                    "updated": updated,
+                    "last_file": last_file,
+                    "error": last_error,
+                }, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    # Parsuj zakres BPM
+    lo, hi = 80, 180
+    tb = getattr(args, "target_bpm", None)
+    if tb and ":" in tb:
+        try:
+            lo, hi = [int(x) for x in tb.split(":", 1)]
+        except Exception:
+            pass
+
+    _write_status("running", "")
+    for p in targets:
+        try:
+            res = audio_analyze(p, target_bpm_range=(lo, hi), recompute=bool(args.recompute), config={"target_bpm": [lo, hi]})
+            # Jeśli analyze dokonało upsert do cache, liczymy jako updated
+            if res:
+                updated += 1
+            _write_status("running", str(p))
+        except Exception as e:
+            _write_status("running", str(p), str(e))
+        processed += 1
+
+    _write_status("done", "")
+    print(f"🎧 Analyze-audio: files={total}, analyzed={updated}")
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -581,6 +657,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
     sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
     sp.add_parser("enrich-online").set_defaults(func=cmd_enrich_online)
+
+    # analyze-audio
+    aap = sp.add_parser("analyze-audio")
+    aap.add_argument("--path", default=str(INBOX_DIR), help="Ścieżka pliku lub folderu (domyślnie INBOX)")
+    aap.add_argument("--check-env", action="store_true", help="Sprawdź środowisko Essentia")
+    aap.add_argument("--recompute", action="store_true", help="Pomiń cache i przelicz na nowo")
+    aap.add_argument("--workers", type=int, default=1, help="Liczba workerów (na razie ignorowane; skeleton)")
+    aap.add_argument("--target-bpm", default="80:180", help="Zakres docelowy BPM, np. 80:180")
+    aap.set_defaults(func=cmd_analyze_audio)
 
     # genres resolve (single lookup)
     gp = sp.add_parser("genres")
