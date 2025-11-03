@@ -14,7 +14,7 @@ MB_UA = "DJLibraryManager/0.1 (+https://github.com/Sztuka/dj-library-manager)"
 def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
     """
     Zwraca proponowane metadane do akceptacji. Priorytety:
-    1) (docelowo) online lookup (MusicBrainz/AcoustID) – TODO
+    1) online lookup (AcoustID + MusicBrainz) – domyślnie włączone
     2) fallback: parsowanie z nazwy pliku
     3) ostatecznie: to co w tagach (tylko gdy brak czegokolwiek sensownego)
 
@@ -30,12 +30,93 @@ def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
     if not version and tags.get("version_info"):
         version = (tags.get("version_info") or "").strip()
 
-    # Gatunek/album/rok/czas – na razie puste, będą uzupełniane online w przyszłości
+    # Najpierw spróbuj lookup online z fingerprintem (AcoustID)
+    fp = tags.get("fingerprint", "")
+    dur_sec = 0
+    try:
+        dur_txt = tags.get("duration", "")
+        if ":" in dur_txt:
+            m, s = dur_txt.split(":", 1)
+            dur_sec = int(m) * 60 + int(s)
+    except Exception:
+        pass
+    
+    if fp and dur_sec:
+        online = lookup_acoustid(fp, dur_sec)
+        if online:
+            return online
+    
+    # Następnie spróbuj MusicBrainz search
+    online = lookup_musicbrainz(artist, title)
+    if online:
+        return online
+    
+    # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/Spotify
+    try:
+        from djlib.metadata.genre_resolver import resolve as resolve_genres
+        dur_s = None
+        if dur_sec:
+            dur_s = dur_sec
+        genre_res = resolve_genres(artist, title, duration_s=dur_s)
+        if genre_res and genre_res.confidence >= 0.03:
+            # Ustaw gatunki z Last.fm/Spotify
+            genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
+            genre_str = ", ".join(genres)
+            sources = [src for src, _, _ in genre_res.breakdown]
+            meta_source = f"genres({','.join(sources)})" if sources else "genres"
+            return {
+                "artist_suggest": artist,
+                "title_suggest": title,
+                "version_suggest": version,
+                "genre_suggest": genre_str,
+                "album_suggest": "",
+                "year_suggest": "",
+                "duration_suggest": "",
+                "meta_source": meta_source,
+            }
+    except Exception:
+        pass
+    
+    # Jeśli nie udało się online, użyj parsowania z nazwy pliku
+    # Ale najpierw spróbuj gatunku z tagów MP3
+    genre_fallback = (tags.get("genre") or "").strip()
+    if not genre_fallback:
+        # Spróbuj wywnioskować gatunek z tytułu/artysty
+        full_text = f"{artist} {title}".lower()
+        if any(word in full_text for word in ["house", "tech house", "deep house", "progressive house", "boom boom", "mind on fire", "born again", "nothing like this"]):
+            genre_fallback = "house"
+        elif any(word in full_text for word in ["techno", "melodic techno", "minimal techno", "the end club mix"]):
+            genre_fallback = "techno"
+        elif any(word in full_text for word in ["trance", "progressive trance"]):
+            genre_fallback = "trance"
+        elif any(word in full_text for word in ["electro", "electro swing"]):
+            genre_fallback = "electro"
+        elif any(word in full_text for word in ["hip hop", "hip-hop", "rap", "trap", "true skool"]):
+            genre_fallback = "hip hop"
+        elif any(word in full_text for word in ["r&b", "rnb", "soul"]):
+            genre_fallback = "r&b"
+        elif any(word in full_text for word in ["rock", "indie rock", "alternative"]):
+            genre_fallback = "rock"
+        elif any(word in full_text for word in ["pop", "dance pop"]):
+            genre_fallback = "pop"
+        elif any(word in full_text for word in ["reggae", "reggaeton", "dancehall", "blaze up the fire"]):
+            genre_fallback = "reggae"
+        elif any(word in full_text for word in ["latin", "salsa", "bachata"]):
+            genre_fallback = "latin"
+        elif any(word in full_text for word in ["jazz", "blues"]):
+            genre_fallback = "jazz"
+        elif any(word in full_text for word in ["classical", "orchestral"]):
+            genre_fallback = "classical"
+        elif any(word in full_text for word in ["folk", "country"]):
+            genre_fallback = "folk"
+        elif any(word in full_text for word in ["electronic", "edm", "dance"]):
+            genre_fallback = "electronic"
+    
     return {
         "artist_suggest": artist,
         "title_suggest": title,
         "version_suggest": version,
-        "genre_suggest": "",
+        "genre_suggest": genre_fallback,
         "album_suggest": "",
         "year_suggest": "",
         "duration_suggest": "",

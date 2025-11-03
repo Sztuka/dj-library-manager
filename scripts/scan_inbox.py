@@ -38,6 +38,23 @@ def main():
 
         track_id = f"{fhash[:12]}_{int(time.time())}"
 
+        # Dodaj fingerprint i duration do tagów dla suggest_metadata
+        tags_for_suggest = tags.copy()
+        tags_for_suggest["fingerprint"] = fp or ""
+        
+        # Pobierz duration z pliku
+        try:
+            from djlib.fingerprint import fingerprint_info
+            duration_sec, _ = fingerprint_info(p)
+            if duration_sec:
+                mm, ss = divmod(int(duration_sec), 60)
+                tags_for_suggest["duration"] = f"{mm}:{ss:02d}"
+        except Exception:
+            tags_for_suggest["duration"] = ""
+
+        from djlib.enrich import suggest_metadata
+        suggested = suggest_metadata(p, tags_for_suggest)
+
         rec = {
             "track_id": track_id,
             "file_path": str(p),
@@ -59,6 +76,15 @@ def main():
             "final_filename": "",
             "final_path": "",
             "added_date": "",
+            # Dodaj sugerowane metadane
+            "artist_suggest": suggested.get("artist_suggest", ""),
+            "title_suggest": suggested.get("title_suggest", ""),
+            "version_suggest": suggested.get("version_suggest", ""),
+            "genre_suggest": suggested.get("genre_suggest", ""),
+            "album_suggest": suggested.get("album_suggest", ""),
+            "year_suggest": suggested.get("year_suggest", ""),
+            "duration_suggest": suggested.get("duration_suggest", ""),
+            "meta_source": suggested.get("meta_source", ""),
         }
         new_rows.append(rec)
         known_hashes.add(fhash)
