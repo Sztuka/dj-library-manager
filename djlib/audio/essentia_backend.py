@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 
 from .cache import compute_audio_id, get_analysis, upsert_analysis, init_db
-from .features import bpm_correct_into_range, config_hash
+from .features import bpm_correct_into_range, config_hash, energy_score_from_metrics
 from . import ALGO_VERSION
 from djlib.tags import _to_camelot  # reuse existing Camelot mapping
 
@@ -139,10 +139,40 @@ def analyze(
                             key_camelot = cam or key_camelot
                     except Exception:
                         pass
-                    # Optional: a few low-level metrics for future energy calculation
-                    low = data.get("lowlevel", {})
+                    # Optional: low-level & rhythm metrics for energy calculation
                     try:
+                        low = data.get("lowlevel", {})
                         metrics["dyn_complex"] = low.get("dynamic_complexity")
+                        # Loudness (EBU R128 integrated) if present
+                        lufs = None
+                        try:
+                            ebu = low.get("loudness_ebu128", {})
+                            lufs = ebu.get("integrated")
+                        except Exception:
+                            pass
+                        if lufs is None:
+                            # Some builds expose just 'loudness' (approximate)
+                            lufs = low.get("loudness")
+                        metrics["lufs"] = lufs
+                        # Spectral features (means)
+                        sc = low.get("spectral_centroid", {})
+                        sr = low.get("spectral_rolloff", {})
+                        metrics["spec_centroid"] = sc.get("mean") if isinstance(sc, dict) else None
+                        metrics["spec_rolloff"] = sr.get("mean") if isinstance(sr, dict) else None
+                        # Rhythm onset rate
+                        rhy = data.get("rhythm", {})
+                        metrics["onset_rate"] = rhy.get("onset_rate")
+                    except Exception:
+                        pass
+                    # Highlevel mood/energy (0..1)
+                    try:
+                        hl = data.get("highlevel", {})
+                        mood_energy = hl.get("mood_energy", {})
+                        allvals = mood_energy.get("all", {}) if isinstance(mood_energy, dict) else {}
+                        # Prefer explicit probability of 'high' if present
+                        e_high = allvals.get("high")
+                        if isinstance(e_high, (int, float)):
+                            energy = float(e_high)
                     except Exception:
                         pass
             except subprocess.CalledProcessError as e:
@@ -151,6 +181,10 @@ def analyze(
 
     # Apply BPM correction into target range
     bpm_corr_val, corr_factor = bpm_correct_into_range(bpm, *target_bpm_range)
+
+    # If no direct energy from highlevel, compute a rough score from metrics
+    if energy is None:
+        energy = energy_score_from_metrics({k: v for k, v in metrics.items() if isinstance(v, (int, float))})
 
     payload = {
         "algo_version": ALGO_VERSION,

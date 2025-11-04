@@ -8,6 +8,7 @@ This project supports two paths for audio analysis (Essentia):
 Essentia is optional. The app works without it; BPM/Key/Energy detection will be skipped. When present, analysis results are cached.
 
 Backend modes:
+
 - Python bindings (preferred with Conda): full in-process analysis
 - CLI fallback (works with Homebrew binary): uses `essentia_streaming_extractor_music`/`streaming_extractor_music` to extract features and parse JSON
 
@@ -39,6 +40,7 @@ After installing, verify:
 - Or: `.venv/bin/python -m djlib.cli analyze-audio --check-env`
 
 Expected output fields include:
+
 - `essentia_available`: Python bindings importable
 - `essentia_cli_available`: extractor binary found
 - `cli_binary`: path to the binary if available
