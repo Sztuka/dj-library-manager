@@ -9,6 +9,5 @@ dependencies:
   - numpy
   - scipy
   - libsndfile
-  - chromaprint
   - pip:
       - -r requirements.txt

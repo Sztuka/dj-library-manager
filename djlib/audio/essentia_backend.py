@@ -35,6 +35,18 @@ def _find_extractor_binary() -> Optional[str]:
         p = shutil.which(name)
         if p:
             return p
+    # Check repo-local vendor path: <repo>/bin/mac/
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        candidates = [
+            repo_root / "bin" / "mac" / "essentia_streaming_extractor_music",
+            repo_root / "bin" / "mac" / "streaming_extractor_music",
+        ]
+        for c in candidates:
+            if c.exists() and c.is_file():
+                return str(c)
+    except Exception:
+        pass
     return None
 
 

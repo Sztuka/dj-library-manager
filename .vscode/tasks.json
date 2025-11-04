@@ -19,6 +19,14 @@
       "problemMatcher": []
     },
     {
+      "label": "TOOLS — Install Essentia CLI (vendor/manual)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_essentia_cli.py",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "TOOLS — Check audio env",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli analyze-audio --check-env",
