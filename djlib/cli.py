@@ -22,9 +22,11 @@ from djlib.placement import decide_bucket
 try:
     from djlib.audio import check_env as audio_check_env
     from djlib.audio import analyze as audio_analyze
+    from djlib.audio.cache import get_analysis
 except Exception:
     audio_check_env = None  # type: ignore
     audio_analyze = None  # type: ignore
+    get_analysis = None  # type: ignore
 
 # --- Pomocnicze ---
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -529,6 +531,85 @@ def cmd_dupes(_: argparse.Namespace) -> None:
                             r.get("file_path",""), r.get("final_path",""), r.get("file_hash","")])
     print(f"Zapisano raport duplikatów: {out}")
 
+def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
+    """Zsynchronizuj metryki (BPM/Key/Energy) z cache SQLite do głównego CSV.
+    Domyślnie uzupełnia tylko puste pola; użyj --force aby nadpisać istniejące.
+    Opcjonalnie zapisuje metadane do plików audio jeśli --write-tags.
+    """
+    if get_analysis is None:
+        print("Audio cache backend niedostępny.")
+        return
+    rows = load_records(CSV_PATH)
+    if not rows:
+        print("Brak wierszy w CSV.")
+        return
+    force = bool(getattr(args, "force", False))
+    write_tags_flag = bool(getattr(args, "write_tags", False))
+    updated = 0
+    tags_written = 0
+    for r in rows:
+        audio_id = (r.get("file_hash") or "").strip()
+        if not audio_id:
+            # spróbuj policzyć hash jeśli plik istnieje
+            try:
+                p = Path(r.get("file_path") or "")
+                if p.exists():
+                    from djlib.audio.cache import compute_audio_id as _cmp
+                    audio_id = _cmp(p)
+                else:
+                    continue
+            except Exception:
+                continue
+        a = get_analysis(audio_id)
+        if not a:
+            continue
+        # przygotuj wartości
+        bpm = a.get("bpm")
+        key = a.get("key_camelot")
+        energy = a.get("energy")
+        # uzupełniaj tylko puste chyba że --force
+        def _should_set(cur: str) -> bool:
+            return force or (not (cur or "").strip())
+        changed = False
+        if bpm is not None and _should_set(r.get("bpm", "")):
+            try:
+                r["bpm"] = f"{float(bpm):.2f}".rstrip("0").rstrip(".")
+            except Exception:
+                r["bpm"] = str(bpm)
+            changed = True
+        if key and _should_set(r.get("key_camelot", "")):
+            r["key_camelot"] = str(key)
+            changed = True
+        if energy is not None and _should_set(r.get("energy_hint", "")):
+            # energy jako 0..1 → wpisz procentowo (0..100) lub float; wybierz prosty procent
+            try:
+                r["energy_hint"] = f"{round(float(energy)*100)}"
+            except Exception:
+                r["energy_hint"] = str(energy)
+            changed = True
+        if changed:
+            updated += 1
+        
+        # Zapisz metadane do pliku jeśli --write-tags
+        if write_tags_flag and (bpm or key):
+            try:
+                p = Path(r.get("file_path") or "")
+                if p.exists():
+                    from djlib.tags import write_tags
+                    tag_updates = {}
+                    if bpm is not None:
+                        tag_updates["bpm"] = str(bpm)
+                    if key:
+                        tag_updates["key_camelot"] = str(key)
+                    write_tags(p, tag_updates)
+                    tags_written += 1
+            except Exception as e:
+                print(f"[WARN] Nie udało się zapisać tagów do {p}: {e}")
+    
+    if updated:
+        save_records(CSV_PATH, rows)
+    print(f"🔄 Sync audio metrics: updated={updated}, tags_written={tags_written}")
+
 def cmd_genres_resolve(args: argparse.Namespace) -> None:
     artist = (getattr(args, "artist", None) or "").strip()
     title = (getattr(args, "title", None) or "").strip()
@@ -548,22 +629,34 @@ def cmd_genres_resolve(args: argparse.Namespace) -> None:
 
 def cmd_detect_taxonomy(_: argparse.Namespace) -> None:
     """Wykrywa istniejącą strukturę folderów i zapisuje jako taxonomy.local.yml."""
-    from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
+    from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy, load_taxonomy
     from djlib.config import LIB_ROOT
 
+    # Załaduj istniejącą taksonomię
+    existing = load_taxonomy()
+    existing_ready = set(existing["ready_buckets"])
+    existing_review = set(existing["review_buckets"])
+
+    # Wykryj nową z filesystem
     detected = detect_taxonomy_from_fs(LIB_ROOT)
-    ready = detected["ready_buckets"]
-    review = detected["review_buckets"]
-    
-    if ready or review:
-        save_taxonomy(detected)
-        print(f"Wykryto taksonomię: {len(ready)} ready buckets, {len(review)} review buckets")
-        if ready:
-            print("Ready buckets:", ", ".join(ready))
-        if review:
-            print("Review buckets:", ", ".join(review))
-    else:
-        print("Nie wykryto żadnej struktury folderów w LIB_ROOT")
+    detected_ready = set(detected["ready_buckets"])
+    detected_review = set(detected["review_buckets"])
+
+    # Merge: dodaj nowe wykryte, zachowaj istniejące
+    merged_ready = existing_ready | detected_ready
+    merged_review = existing_review | detected_review
+
+    merged = {
+        "ready_buckets": sorted(merged_ready),
+        "review_buckets": sorted(merged_review),
+    }
+
+    save_taxonomy(merged)
+    print(f"Zaktualizowano taksonomię: {len(merged_ready)} ready buckets, {len(merged_review)} review buckets")
+    if merged_ready:
+        print("Ready buckets:", ", ".join(merged_ready))
+    if merged_review:
+        print("Review buckets:", ", ".join(merged_review))
 
 def cmd_analyze_audio(args: argparse.Namespace) -> None:
     """Analiza audio (BPM/Key/Energy) dla INBOX lub wskazanego pliku/katalogu.
@@ -592,6 +685,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
         targets = [p for p in base.glob("**/*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
 
     total = len(targets)
+    print(f"DEBUG: base={base}, total_targets={total}")  # DEBUG
     processed = 0
     updated = 0
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -622,6 +716,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
 
     _write_status("running", "")
     for p in targets:
+        print(f"DEBUG: processing {p}")  # DEBUG
         try:
             res = audio_analyze(p, target_bpm_range=(lo, hi), recompute=bool(args.recompute), config={"target_bpm": [lo, hi]})
             # Jeśli analyze dokonało upsert do cache, liczymy jako updated
@@ -629,6 +724,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
                 updated += 1
             _write_status("running", str(p))
         except Exception as e:
+            print(f"DEBUG: exception {e}")  # DEBUG
             _write_status("running", str(p), str(e))
         processed += 1
 
@@ -655,6 +751,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
+    sap = sp.add_parser("sync-audio-metrics")
+    sap.add_argument("--force", action="store_true")
+    sap.add_argument("--write-tags", action="store_true", help="Zapisz metadane (BPM/Key) do plików audio")
+    sap.set_defaults(func=cmd_sync_audio_metrics)
     sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
     sp.add_parser("enrich-online").set_defaults(func=cmd_enrich_online)
 

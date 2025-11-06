@@ -28,6 +28,8 @@ DJ Library Manager to narzędzie do zarządzania biblioteką muzyczną DJ-a. Sys
 
 - Skanowanie INBOX i ekstrakcja tagów audio
 - **Online enrichment**: Wzbogacanie metadanych z MusicBrainz, AcoustID, Last.fm, Spotify
+- **Local audio analysis**: Ekstrakcja BPM/Key/Energy z Essentia (bez Traktora)
+- **Tag writing**: Zapis metryk do ID3 tagów plików (Camelot notation)
 - **Genre resolution**: Rozpoznawanie gatunków z wielu źródeł z confidence scoring
 - Automatyczna klasyfikacja utworów (AI guessing + taxonomy mapping)
 - Zarządzanie taksonomią kategorii (buckets)
@@ -48,7 +50,7 @@ dj-library-manager/
 │   ├── config.py       # Konfiguracja ścieżek i ustawień
 │   ├── taxonomy.py     # Zarządzanie taksonomią bucketów
 │   ├── csvdb.py        # Operacje na bazie CSV
-│   ├── tags.py         # Czytanie tagów audio
+│   ├── tags.py         # Czytanie/zapis tagów audio
 │   ├── fingerprint.py  # Fingerprint audio i hash
 │   ├── filename.py     # Generowanie nazw plików
 │   ├── mover.py        # Przenoszenie plików
@@ -58,6 +60,11 @@ dj-library-manager/
 │   ├── genre.py        # Genre resolution i taxonomy mapping
 │   ├── extern.py       # Integracje zewnętrzne (Last.fm, Spotify)
 │   ├── buckets.py      # Walidacja bucketów
+│   ├── audio/          # Lokalna analiza audio
+│   │   ├── __init__.py
+│   │   ├── cache.py    # Cache metryk audio (SQLite)
+│   │   ├── features.py # Ekstrakcja cech audio
+│   │   └── essentia_backend.py # Backend Essentia dla analizy
 │   └── metadata/       # Klienci API metadanych
 │       ├── __init__.py
 │       ├── genre_resolver.py  # Główny resolver gatunków
@@ -310,13 +317,39 @@ review_buckets:
 
 ### `djlib/tags.py`
 
-**Zadanie**: Czytanie tagów audio z plików
+**Zadanie**: Czytanie/zapis tagów audio z plików
 
-**Metoda**: Używa `mutagen` do czytania tagów ID3/MP3
+**Metoda**: Używa `mutagen` do czytania/zapisu tagów ID3/MP3
 
-**Zwraca**: Dict z kluczami: `artist`, `title`, `version_info`, `bpm`, `key_camelot`, `genre`, `comment`, `energy_hint`
+**Czytanie**: Zwraca dict z kluczami: `artist`, `title`, `version_info`, `bpm`, `key_camelot`, `genre`, `comment`, `energy_hint`
 
-**Uwaga**: BPM i Key powinny być ustawione przez Traktor Pro przed skanowaniem
+**Zapis**: Funkcja `write_tags()` zapisuje metryki audio do tagów ID3 (BPM, Key jako TKEY, Energy jako komentarz)
+
+**Uwaga**: BPM i Key mogą być ustawione przez Traktor Pro lub lokalną analizę Essentia
+
+### `djlib/audio/`
+
+**Zadanie**: Lokalna analiza audio bez Traktora
+
+#### `cache.py`
+
+- **Zadanie**: Cache metryk audio w SQLite
+- **Funkcje**: `init_db()`, `store_metrics()`, `get_metrics()`
+- **Cache location**: `LOGS_DIR / "audio_analysis.sqlite"`
+- **Schema**: audio_id, bpm, key_camelot, energy, source, timestamp
+
+#### `features.py`
+
+- **Zadanie**: Ekstrakcja cech audio
+- **Funkcje**: `extract_bpm()`, `extract_key()`, `extract_energy()`
+- **Backend**: Używa Essentia Python bindings
+
+#### `essentia_backend.py`
+
+- **Zadanie**: Główny backend analizy audio z Essentia
+- **Funkcje**: `analyze_file()`, `batch_analyze()`
+- **Features**: BPM, Key (Camelot), Energy, Onset rate, Spectral features
+- **Output**: Metryki zapisane w cache i opcjonalnie w tagach plików
 
 ### `djlib/fingerprint.py`
 
@@ -446,6 +479,9 @@ map:
 **Komendy**:
 
 - `scan`: Skanowanie INBOX
+- `sync-audio-metrics`: Lokalna analiza BPM/Key/Energy z Essentia
+  - `--write-tags`: Zapisuje metryki do tagów ID3 plików
+  - `--force`: Wymusza re-analizę wszystkich plików
 - `enrich-online`: Wzbogacanie metadanych online (MB, AcoustID, Last.fm, Spotify)
 - `fix-fingerprints`: Uzupełnianie brakujących fingerprintów
 - `auto-decide`: Automatyczne uzupełnianie target_subfolder
@@ -459,6 +495,22 @@ map:
 ---
 
 ## Workflow i Procesy
+
+### 0. Lokalna analiza audio (opcjonalne)
+
+**Skrypt**: `djlib/cli.py::cmd_sync_audio_metrics`
+
+**Proces**:
+
+1. Skanuje wszystkie pliki audio w `INBOX_DIR`
+2. Dla każdego pliku:
+   - Ekstrahuje BPM, Key, Energy używając Essentia
+   - Zapisuje metryki w cache SQLite (`LOGS/audio_analysis.sqlite`)
+   - Opcjonalnie zapisuje metryki w tagach ID3 plików (`--write-tags`)
+3. Key konwertowany na Camelot notation (1A-12A, 1B-12B)
+4. BPM/Key zapisane jako ID3 TKEY tag dla kompatybilności z DJ software
+
+**Alternatywa dla Traktora**: Zamiast analizy w Traktorze, można użyć tej komendy do lokalnej ekstrakcji metryk.
 
 ### 1. Skanowanie nowych plików
 
@@ -540,6 +592,15 @@ map:
 ---
 
 ## Rozwiązania Techniczne
+
+### Lokalna analiza audio
+
+- **Framework**: Essentia v2.1-beta6-dev Python bindings
+- **Features**: BPM, Key (Camelot notation), Energy, Onset rate, Spectral centroid/rolloff
+- **Cache**: SQLite database (`LOGS/audio_analysis.sqlite`) dla uniknięcia re-analizy
+- **Tag writing**: ID3 TKEY tag dla kluczy, standardowe tagi dla BPM/Energy
+- **Performance**: Batch processing, progress tracking, error handling
+- **Alternatywa dla Traktora**: Kompletna ekstrakcja metryk bez DJ software
 
 ### Obsługa duplikatów
 
@@ -644,10 +705,13 @@ from djlib.taxonomy import allowed_targets
 
 ```python
 # Core
-mutagen>=1.46          # Audio tag reading
+mutagen>=1.46          # Audio tag reading/writing
 pyacoustid>=0.3        # AcoustID fingerprint lookup
 requests>=2.31         # HTTP requests
 requests-cache>=1.1    # HTTP caching
+
+# Audio analysis (optional)
+essentia>=2.1b6.dev0   # Local BPM/Key/Energy extraction
 
 # Optional for enrichment
 musicbrainzngs>=0.7   # MusicBrainz API client

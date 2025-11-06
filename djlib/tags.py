@@ -143,3 +143,61 @@ def read_tags(path: Path) -> Dict[str, str]:
         "genre": genre,
         "comment": comment,
     }
+
+def write_tags(path: Path, updates: Dict[str, str]) -> None:
+    """
+    Zapisz metadane do pliku audio.
+    Obsługiwane klucze: artist, title, bpm, key_camelot, genre, comment
+    """
+    f = MutFile(str(path), easy=True)
+    if f is None:
+        raise ValueError(f"Nie można otworzyć pliku audio: {path}")
+    
+    if f.tags is None:
+        f.add_tags()
+    
+    tags = f.tags
+    
+    # Mapuj nasze klucze na mutagen easy tags
+    mapping = {
+        "artist": "artist",
+        "title": "title", 
+        "bpm": "bpm",
+        "genre": "genre",
+        "comment": "comment",
+    }
+    
+    for our_key, mutagen_key in mapping.items():
+        if our_key in updates:
+            tags[mutagen_key] = updates[our_key]
+    
+    # Specjalna obsługa key_camelot -> initialkey (raw tag dla MP3/ID3)
+    if "key_camelot" in updates:
+        key_val = updates["key_camelot"]
+        if key_val:
+            # Spróbuj raw tags dla MP3
+            raw = MutFile(str(path))
+            if raw and hasattr(raw, 'tags') and raw.tags:
+                # ID3 TKEY
+                try:
+                    from mutagen.id3 import TKEY as ID3TKEY
+                    raw.tags.add(ID3TKEY(encoding=3, text=key_val))
+                    raw.save()
+                    return  # Jeśli się udało, zakończ
+                except Exception:
+                    pass
+                # MP4 custom tag
+                try:
+                    if hasattr(raw.tags, 'keys') and any('----:com.apple.iTunes' in k for k in raw.tags.keys()):
+                        raw.tags["----:com.apple.iTunes:initialkey"] = key_val
+                        raw.save()
+                        return
+                except Exception:
+                    pass
+            # Fallback: spróbuj easy tags z "key"
+            try:
+                tags["key"] = key_val
+            except Exception:
+                pass  # ignoruj jeśli nie działa
+    
+    f.save()
