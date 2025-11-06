@@ -1,0 +1,42 @@
+# Minimal image building Essentia v2.1_beta5 with streaming_extractor_music
+# Target: provide the CLI extractor binary for use from macOS via Docker
+
+FROM ubuntu:20.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    python3 \
+    build-essential \
+    pkg-config \
+    libfftw3-dev \
+    libyaml-dev \
+    libsamplerate0-dev \
+    libtag1-dev \
+    libeigen3-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libavresample-dev \
+    libswresample-dev \
+    libswscale-dev \
+    libboost-all-dev \
+    zlib1g-dev \
+    libsndfile1-dev \
+ && pkg-config --list-all | grep -i yaml \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN git clone https://github.com/MTG/essentia.git && \
+    cd essentia && \
+    git checkout v2.1_beta5 && \
+    python3 waf configure --mode=release --with-examples --arch=i386 && \
+    python3 waf --keep && \
+    cp build/src/libessentia*.so* /usr/local/lib/ && ldconfig && \
+    cp build/src/examples/essentia_streaming_extractor_music /usr/local/bin/streaming_extractor_music && \
+    chmod +x /usr/local/bin/streaming_extractor_music
+
+# Default entrypoint allows simple `docker run <img> <in> <out>` usage
+ENTRYPOINT ["streaming_extractor_music"]

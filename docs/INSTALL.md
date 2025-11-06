@@ -11,6 +11,7 @@ Backend modes:
 
 - Python bindings (preferred with Conda): full in-process analysis
 - CLI fallback (works with Homebrew binary): uses `essentia_streaming_extractor_music`/`streaming_extractor_music` to extract features and parse JSON
+- Docker fallback (cross‑platform): runs the Linux CLI extractor in a container, no local install required
 
 ## 1) Python venv (base app)
 
@@ -44,6 +45,9 @@ Expected output fields include:
 - `essentia_available`: Python bindings importable
 - `essentia_cli_available`: extractor binary found
 - `cli_binary`: path to the binary if available
+- `essentia_docker_available`: Docker detected on your system
+- `essentia_docker_enabled`: Whether Docker fallback is enabled via env var
+- `docker_image`: Image name configured for Docker fallback
 
 ### Cross‑platform (Conda)
 
@@ -56,6 +60,39 @@ If you prefer an isolated environment with Essentia preinstalled:
   - pip install -e . # install the local package into the conda env
 
 Note: `environment.yml` installs `essentia`, `ffmpeg`, `chromaprint`, and your base Python deps (via pip -r requirements.txt). This path is the most reliable for Python bindings.
+
+### macOS/Linux/Windows (Docker fallback)
+
+If Homebrew/Conda paths are inconvenient, use Docker to run the streaming extractor:
+
+1. Build the image (one‑time):
+
+```zsh
+docker build -t djlib-essentia:local -f docker/Dockerfile.essentia docker
+```
+
+2. Enable Docker fallback for analyze‑audio and set the image name (in your shell):
+
+```zsh
+export DJLIB_ESSENTIA_DOCKER=1
+export DJLIB_ESSENTIA_IMAGE=djlib-essentia:local
+```
+
+3. Verify:
+
+```zsh
+./.venv/bin/python -m djlib.cli analyze-audio --check-env
+```
+
+You should see `essentia_docker_available: true`, `essentia_docker_enabled: true`, and `docker_image: djlib-essentia:local`.
+
+With Docker fallback enabled, the backend automatically runs:
+
+```text
+docker run --rm -v <input_audio>:/in/audio:ro -v <tmp_dir>:/out djlib-essentia:local /in/audio /out/features.json
+```
+
+No local Essentia install is needed on the host.
 
 ## 3) Run audio analysis
 

@@ -1,0 +1,10 @@
+# Ignore local dev artifacts when building images
+.venv/
+__pycache__/
+*.pyc
+LOGS/
+*.sqlite
+node_modules/
+.git/
+.gitignore
+*.ipynb
