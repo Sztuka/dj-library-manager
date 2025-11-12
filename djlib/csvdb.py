@@ -35,6 +35,15 @@ FIELDNAMES = [
     "duration_suggest",
     "meta_source",
     "review_status",
+    # --- enrichment sources ---
+    "genres_musicbrainz",
+    "genres_lastfm",
+    "genres_spotify",
+    # --- popularity (Last.fm) ---
+    "pop_playcount",
+    "pop_listeners",
+    # --- external (SoundCloud) ---
+    "genres_soundcloud",
 ]
 
 def load_records(csv_path: Path) -> List[Dict[str, str]]:

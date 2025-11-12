@@ -8,6 +8,7 @@ import djlib.metadata  # noqa: F401
 from . import mb_client
 from . import lastfm
 from ..extern import spotify_artist_genres
+from .soundcloud import track_tags as sc_track_tags
 
 
 def _norm(tag: str) -> str:
@@ -72,10 +73,10 @@ class GenreResolution:
     breakdown: List[Tuple[str, float, Dict[str, float]]]
 
 
-def resolve(artist: str, title: str, *, duration_s: int | None = None) -> GenreResolution | None:
+def resolve(artist: str, title: str, *, duration_s: int | None = None, disable_soundcloud: bool = False) -> GenreResolution | None:
     """Resolve genres using MB -> Last.fm -> Spotify with scoring.
 
-    Weights: MB=3, LFM=2, SP=1. Returns main + up to 2 subs.
+    Weights (relative): MB=3, LFM=6, SP=1. Returns main + up to 2 subs.
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
@@ -101,7 +102,8 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None) -> GenreR
             parts.append(("musicbrainz", mb_w, local))
 
     # Last.fm (stronger influence to reflect community tags importance)
-    lfm_w = 4.0
+    # Zwiększona waga (podniesiona z 4.0 → 6.0) aby Last.fm częściej dominowało w wynikach przy szerokim zestawie tagów.
+    lfm_w = 6.0
     tags_lfm = lastfm.top_tags(artist, title)
     if tags_lfm:
         local: Dict[str, float] = {}
@@ -132,6 +134,21 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None) -> GenreR
             local[c] = local.get(c, 0.0) + sp_w
         if local:
             parts.append(("spotify", sp_w, local))
+
+    # SoundCloud (light weight)
+    if not disable_soundcloud:
+        sc_w = 2.0  # moderate weight: between MB and Last.fm, above Spotify
+        sc = sc_track_tags(artist, title)
+        if sc.get("tags"):
+            local: Dict[str, float] = {}
+            for name in sc["tags"]:
+                c = canonical(name)
+                if _is_noise(c):
+                    continue
+                scores[c] = scores.get(c, 0.0) + sc_w
+                local[c] = local.get(c, 0.0) + sc_w
+            if local:
+                parts.append(("soundcloud", sc_w, local))
 
     if not scores:
         return None

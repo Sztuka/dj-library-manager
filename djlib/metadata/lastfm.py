@@ -68,3 +68,35 @@ def top_tags(artist: str, title: str, *, min_count: int = 10, max_tags: int = 20
     # sort and trim
     out.sort(key=lambda x: x[1], reverse=True)
     return out[:max_tags]
+
+
+def track_info(artist: str, title: str) -> dict:
+    """Return basic track info from Last.fm: playcount, listeners, duration.
+
+    Returns empty dict if API key missing or not found.
+    """
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist or not title:
+        return {}
+
+    data = _call("track.getInfo", {"artist": artist, "track": title})
+    if not data:
+        return {}
+    tr = data.get("track") or {}
+    out: dict = {}
+    try:
+        out["playcount"] = int(tr.get("playcount", 0))
+    except Exception:
+        pass
+    try:
+        out["listeners"] = int(tr.get("listeners", 0))
+    except Exception:
+        pass
+    try:
+        # duration in ms
+        dur_ms = int(tr.get("duration", 0))
+        out["duration_ms"] = dur_ms
+    except Exception:
+        pass
+    return out

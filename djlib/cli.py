@@ -24,9 +24,16 @@ try:
     from djlib.audio import analyze as audio_analyze
     from djlib.audio.cache import get_analysis
 except Exception:
+    # If audio backend is unavailable, fall back to None
     audio_check_env = None  # type: ignore
     audio_analyze = None  # type: ignore
     get_analysis = None  # type: ignore
+
+# ML bucket assigner (optional)
+try:
+    from djlib.bucketing.simple_ml import SimpleMLBucketAssigner
+except Exception:
+    SimpleMLBucketAssigner = None  # type: ignore
 
 # --- Pomocnicze ---
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -240,10 +247,25 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
     """
     rows = load_records(CSV_PATH)
+    # Jeśli podano --force-genres w args, będziemy nadpisywać źródłowe kolumny even if present
+    force_genres = bool(getattr(_, "force_genres", False))  # '_' is args Namespace
     todo = [r for r in rows if (r.get("review_status") or "").lower() != "accepted"]
     total = len(todo)
     processed = 0
     changed = 0
+    mb_set = 0
+    lfm_set = 0
+    sp_set = 0
+
+    # Check API credentials presence for diagnostics
+    try:
+        from djlib.config import get_lastfm_api_key, get_spotify_credentials
+        _lfm_key_present = bool(get_lastfm_api_key())
+        _sp_cid, _sp_sec = get_spotify_credentials()
+        _sp_present = bool(_sp_cid and _sp_sec)
+    except Exception:
+        _lfm_key_present = False
+        _sp_present = False
 
     # status plik
     status_path = LOGS_DIR / "enrich_status.json"
@@ -262,6 +284,35 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
             pass
 
     _write_status("running", "")
+
+    # SoundCloud client id health (informative, does not block)
+    sc_health_msg = ""
+    try:
+        from djlib.metadata.soundcloud import client_id_health
+        h = client_id_health()
+        sc_health_msg = f"soundcloud_client_id_status={h.get('status')}" if h else ""
+        if h and h.get("status") == "ok":
+            print("✅ SoundCloud client_id OK")
+        elif h and h.get("status") in {"invalid", "error"}:
+            print(f"⚠ SoundCloud client_id: {h.get('message')}")
+            if not getattr(_, "skip_soundcloud", False):
+                # interactive decision
+                try:
+                    choice = input("Kontynuować bez SoundCloud? [Y/n]: ").strip().lower()
+                except Exception:
+                    choice = "y"
+                if choice in {"n", "no"}:
+                    print("Przerwano na prośbę użytkownika (SoundCloud invalid).")
+                    _write_status("done", "")
+                    return
+                else:
+                    print("→ Pomiń SoundCloud w tym przebiegu.")
+                    setattr(_, "skip_soundcloud", True)
+        elif h and h.get("status") == "missing":
+            if not getattr(_, "skip_soundcloud", False):
+                print("ℹ Brak SoundCloud client_id (można ustawić DJLIB_SOUNDCLOUD_CLIENT_ID).")
+    except Exception:
+        pass
 
     # przygotuj mapowanie tagów → bucket
     tag_map = load_taxonomy_map()
@@ -309,7 +360,7 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
                     pass
             
             from djlib.metadata.genre_resolver import resolve as resolve_genres
-            genre_res = resolve_genres(a, t, duration_s=dur_s)
+            genre_res = resolve_genres(a, t, duration_s=dur_s, disable_soundcloud=bool(getattr(_, "skip_soundcloud", False)))
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
                 # Ustaw 3 gatunki: main + subs
                 genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
@@ -322,9 +373,48 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
                     sources = [src for src, _, _ in genre_res.breakdown]
                     if sources:
                         r["meta_source"] = f"{r.get('meta_source', '')}+genres({','.join(sources)})".strip("+")
+
+                # Zapisz surowe listy tagów per źródło do dodatkowych kolumn
+                try:
+                    src_map = {src: local for (src, _, local) in genre_res.breakdown}
+                    def _top_k(d, k=5):
+                        return ", ".join([kv[0] for kv in sorted(d.items(), key=lambda kv: kv[1], reverse=True)[:k]])
+                    if src_map.get("musicbrainz") and (force_genres or not (r.get("genres_musicbrainz") or "")):
+                        r["genres_musicbrainz"] = _top_k(src_map["musicbrainz"])  # type: ignore[index]
+                        any_change = True
+                        mb_set += 1
+                    if src_map.get("lastfm") and (force_genres or not (r.get("genres_lastfm") or "")):
+                        r["genres_lastfm"] = _top_k(src_map["lastfm"])  # type: ignore[index]
+                        any_change = True
+                        lfm_set += 1
+                    if src_map.get("spotify") and (force_genres or not (r.get("genres_spotify") or "")):
+                        r["genres_spotify"] = _top_k(src_map["spotify"])  # type: ignore[index]
+                        any_change = True
+                        sp_set += 1
+                    if src_map.get("soundcloud") and (force_genres or not (r.get("genres_soundcloud") or "")):
+                        r["genres_soundcloud"] = _top_k(src_map["soundcloud"])  # type: ignore[index]
+                        any_change = True
+                except Exception:
+                    pass
         except Exception as e:
             # Debug: print exception for troubleshooting
             print(f"Genre resolution failed for {a} - {t}: {e}")
+            pass
+
+        # Popularność z Last.fm (playcount/listeners) — pomoc dla singalong/party dance/decades
+        try:
+            a = (r.get("artist_suggest") or r.get("artist") or "").strip()
+            t = (r.get("title_suggest") or r.get("title") or "").strip()
+            if a and t:
+                from djlib.metadata.lastfm import track_info as lf_track_info
+                info = lf_track_info(a, t) or {}
+                if info:
+                    # Zapisz pola popularności, nie nadpisuj istniejących >0
+                    if info.get("playcount") and int(info.get("playcount", 0)) > int(r.get("pop_playcount", 0) or 0):
+                        r["pop_playcount"] = str(info["playcount"])  # zapis w CSV jako string
+                    if info.get("listeners") and int(info.get("listeners", 0)) > int(r.get("pop_listeners", 0) or 0):
+                        r["pop_listeners"] = str(info["listeners"])  # zapis w CSV jako string
+        except Exception:
             pass
 
         # Zaproponuj kubełek na podstawie gatunków
@@ -353,6 +443,15 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         save_records(CSV_PATH, rows)
     _write_status("done", "")
     print(f"🔎 Enrich online: updated={changed}")
+    # Short diagnostics
+    if total:
+        print(f"   → genres set — MB:{mb_set}, LFM:{lfm_set}, SP:{sp_set}")
+    if not _lfm_key_present:
+        print("   ⚠ Brak LASTFM_API_KEY (DJLIB_LASTFM_API_KEY) — kolumna genres_lastfm może pozostać pusta.")
+    if not _sp_present:
+        print("   ⚠ Brak SPOTIFY client credentials (DJLIB_SPOTIFY_CLIENT_ID/SECRET) — kolumna genres_spotify może pozostać pusta.")
+    if sc_health_msg:
+        print(f"   ℹ {sc_health_msg}")
 
 def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
     """Uzupełnij brakujące fingerprinty w istniejącym CSV.
@@ -658,6 +757,32 @@ def cmd_detect_taxonomy(_: argparse.Namespace) -> None:
     if merged_review:
         print("Review buckets:", ", ".join(merged_review))
 
+
+def cmd_taxonomy_backup(_: argparse.Namespace) -> None:
+    """Zrób snapshot taksonomii na podstawie realnej struktury folderów (LIB_ROOT) i zapisz do backupów.
+
+    Nie modyfikuje istniejącego taxonomy.local.yml. Tworzy:
+    - taxonomy.local.yml.backup (nadpisywalny snapshot)
+    - taxonomy.local.<timestamp>.yml (archiwalny snapshot)
+    """
+    from djlib.taxonomy import detect_taxonomy_from_fs
+    from djlib.config import LIB_ROOT
+    import yaml as _yaml
+
+    lib_root = LIB_ROOT
+    data = detect_taxonomy_from_fs(lib_root)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup_path = REPO_ROOT / "taxonomy.local.yml.backup"
+    archive_path = REPO_ROOT / f"taxonomy.local.{stamp}.yml"
+    try:
+        with backup_path.open("w", encoding="utf-8") as f:
+            _yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+        with archive_path.open("w", encoding="utf-8") as f:
+            _yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+        print(f"📦 Snapshot zapisany: {backup_path} oraz {archive_path}")
+    except Exception as e:
+        print(f"[ERR] Nie udało się zapisać backupu taksonomii: {e}")
+
 def cmd_analyze_audio(args: argparse.Namespace) -> None:
     """Analiza audio (BPM/Key/Energy) dla INBOX lub wskazanego pliku/katalogu.
     Wyniki zapisywane są do cache SQLite (LOGS/audio_analysis.sqlite).
@@ -731,6 +856,481 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
     _write_status("done", "")
     print(f"🎧 Analyze-audio: files={total}, analyzed={updated}")
 
+def _normalize_ml_features_from_analysis(res: Dict[str, Any]) -> Dict[str, Any]:
+    """Map fields from analyze() payload to ML feature dict expected by SimpleMLBucketAssigner."""
+    # Keep only scalar-like entries; ignore meta keys
+    feat: Dict[str, Any] = {}
+    for k, v in res.items():
+        if k in {"algo_version", "config_hash", "analyzed_at", "source", "audio_id"}:
+            continue
+        feat[k] = v
+    # Aliases
+    if "bpm_detected" not in feat and "bpm" in res:
+        feat["bpm_detected"] = res.get("bpm")
+    if "energy_score" not in feat and "energy" in res:
+        feat["energy_score"] = res.get("energy")
+    return feat
+
+def cmd_ml_predict(args: argparse.Namespace) -> None:
+    if SimpleMLBucketAssigner is None:
+        print("ML assigner not available (scikit-learn missing or import failure).")
+        return
+    if audio_analyze is None:
+        print("Audio analyze backend niedostępny — zainstaluj Essentia lub użyj analyze-audio --check-env.")
+        return
+
+    model_path = Path(getattr(args, "model", "") or (REPO_ROOT / "models" / "fma_trained_model_balanced.pkl"))
+    if not model_path.exists():
+        print(f"Brak modelu ML pod: {model_path}")
+        return
+    assigner = SimpleMLBucketAssigner(model_path)
+
+    base = Path(getattr(args, "path", "") or INBOX_DIR)
+    targets = [base] if base.is_file() else [p for p in base.glob("**/*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
+    total = len(targets)
+    print(f"ML Predict: model={model_path}, files={total}")
+
+    rows = load_records(CSV_PATH)
+    by_path = {r.get("file_path"): r for r in rows}
+    hard_t = float(getattr(args, "hard_threshold", 0.85))
+    suggest_t = float(getattr(args, "suggest_threshold", 0.65))
+    min_conf = float(getattr(args, "min_confidence", 0.40))
+    set_cnt = sug_cnt = 0
+
+    log_path = LOGS_DIR / "ml_predictions.csv"
+    if not log_path.exists():
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with log_path.open("w", encoding="utf-8") as f:
+                f.write("file_path,bucket,confidence\n")
+        except Exception:
+            pass
+
+    for p in targets:
+        try:
+            res = audio_analyze(p, recompute=bool(getattr(args, "recompute", False))) or {}
+            feat = _normalize_ml_features_from_analysis(res)
+            bucket, conf = assigner.predict(feat)
+            # Log
+            try:
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(f"{p},{bucket},{conf:.4f}\n")
+            except Exception:
+                pass
+            print(f"{p.name}: {bucket} (conf={conf:.2f})")
+
+            # Optionally write to CSV
+            if getattr(args, "set_target", False) or getattr(args, "suggest", False):
+                r = by_path.get(str(p))
+                if not r:
+                    continue
+                # globalny bezpiecznik: jeśli conf poniżej min_conf – nie zapisuj nic
+                if conf < min_conf:
+                    continue
+                if conf >= hard_t and getattr(args, "set_target", False):
+                    r["target_subfolder"] = f"READY TO PLAY/{bucket}"
+                    r["ai_guess_bucket"] = ""
+                    r["ai_guess_comment"] = f"ml; conf={conf:.2f}"
+                    set_cnt += 1
+                elif conf >= suggest_t and getattr(args, "suggest", False):
+                    r["ai_guess_bucket"] = f"READY TO PLAY/{bucket}"
+                    r["ai_guess_comment"] = f"ml; conf={conf:.2f}"
+                    sug_cnt += 1
+        except Exception as e:
+            print(f"[WARN] ML predict failed for {p}: {e}")
+
+    if (getattr(args, "set_target", False) or getattr(args, "suggest", False)) and (set_cnt or sug_cnt):
+        save_records(CSV_PATH, rows)
+    if set_cnt or sug_cnt:
+        print(f"ML Predict: set={set_cnt}, suggested={sug_cnt}")
+
+
+def _strip_ready_prefix(target: str) -> str:
+    t = (target or "").strip()
+    if t.startswith("READY TO PLAY/"):
+        return t.split("/", 2)[-1] if "/" in t else t
+    if t.startswith("REVIEW QUEUE/"):
+        return t.split("/", 2)[-1] if "/" in t else t
+    return t
+
+
+def cmd_ml_train_local(args: argparse.Namespace) -> None:
+    """Wytrenuj model ML na Twoich lokalnych bucketach z CSV.
+
+    Zbiera utwory z ustawionym target_subfolder, zapewnia analizę Essentia,
+    tworzy wektor cech i trenuje model. Filtruje rzadkie klasy.
+    """
+    if SimpleMLBucketAssigner is None:
+        print("ML assigner not available (scikit-learn missing or import failure).")
+        return
+    if audio_analyze is None or get_analysis is None:
+        print("Audio backend cache niedostępny — zainstaluj Essentia.")
+        return
+
+    rows = load_records(CSV_PATH)
+    # Kandydaci: mają target_subfolder i istniejący plik (preferuj final_path)
+    candidates = []
+    for r in rows:
+        tgt = (r.get("target_subfolder") or "").strip()
+        if not tgt:
+            continue
+        p = None
+        fp1 = r.get("final_path") or ""
+        fp2 = r.get("file_path") or ""
+        f1 = Path(fp1) if fp1 else None
+        f2 = Path(fp2) if fp2 else None
+        if f1 and f1.exists():
+            p = f1
+        elif f2 and f2.exists():
+            p = f2
+        if p is None:
+            continue
+        candidates.append((p, tgt))
+
+    if not candidates:
+        print("Brak danych z etykietami (target_subfolder) do treningu.")
+        return
+
+    print(f"Znaleziono {len(candidates)} oznaczonych utworów do treningu…")
+
+    # Zbuduj labeled_tracks
+    from djlib.audio.cache import compute_audio_id as _cmp
+    labeled_tracks = []
+    for p, tgt in candidates:
+        try:
+            aid = _cmp(p)
+            res = get_analysis(aid)
+            if (res is None) or bool(getattr(args, "recompute", False)):
+                # policz analizę jeśli brak
+                _ = audio_analyze(p)
+                res = get_analysis(aid)
+            if not res:
+                continue
+            feat = _normalize_ml_features_from_analysis(res)
+            feat["bucket"] = _strip_ready_prefix(tgt)
+            labeled_tracks.append(feat)
+        except Exception:
+            continue
+
+    if not labeled_tracks:
+        print("Brak gotowych cech do treningu.")
+        return
+
+    # Filtrowanie rzadkich klas
+    from collections import Counter
+    cnt = Counter(t["bucket"] for t in labeled_tracks)
+    min_per_class = int(getattr(args, "min_per_class", 20) or 0)
+    kept = [t for t in labeled_tracks if cnt[t["bucket"]] >= min_per_class]
+    dropped_labels = sorted({b for b, n in cnt.items() if n < min_per_class})
+    if not kept:
+        print("Po odfiltrowaniu rzadkich klas nie zostało danych. Obniż --min-per-class.")
+        return
+
+    # Limit próbek
+    limit = getattr(args, "limit", None)
+    if isinstance(limit, int) and limit and limit > 0:
+        kept = kept[:limit]
+
+    print(f"Trenuję na {len(kept)} próbkach, klasy: {sorted({t['bucket'] for t in kept})}")
+    if dropped_labels:
+        print(f"Pominięte (zbyt mało próbek): {', '.join(dropped_labels)}")
+
+    # Trening i zapis modelu
+    assigner = SimpleMLBucketAssigner()
+    assigner.train(kept)
+    out_path = Path(getattr(args, "out", REPO_ROOT / "models" / "local_trained_model.pkl"))
+    assigner.save_model(out_path)
+
+
+def cmd_qa_acceptance(args: argparse.Namespace) -> None:
+    """Policz acceptance rate po predykcjach ML.
+
+    Domyślnie czyta LOGS/ml_predictions.csv i porównuje z CSV (target_subfolder).
+    Zlicza, ile predykcji zostało zaakceptowanych (predykcja == docelowy bucket).
+    """
+    log_path = LOGS_DIR / "ml_predictions.csv"
+    if not log_path.exists():
+        print("Brak LOGS/ml_predictions.csv — najpierw uruchom ml-predict.")
+        return
+    rows = load_records(CSV_PATH)
+    by_path = {r.get("file_path"): r for r in rows}
+
+    import csv as _csv
+    total = 0
+    accepted = 0
+    min_conf = float(getattr(args, "min_confidence", 0.65))
+    per_bucket = {}
+    with log_path.open("r", encoding="utf-8") as f:
+        reader = _csv.DictReader(f)
+        for rec in reader:
+            try:
+                fp = rec.get("file_path") or rec.get("file") or rec.get("path") or rec.get("0") or rec.get("file_path, bucket, confidence")
+                # nasze logi mają prosty format "file_path,bucket,confidence" bez nagłówków przy pierwszym zapisie,
+                # ale później dokładamy nagłówek — obsłużmy oba przypadki
+                if not fp and len(rec) == 3:
+                    # spróbuj odczytu z anonimowych kluczy
+                    vals = list(rec.values())
+                    fp, pbucket, confs = vals[0], vals[1], vals[2]
+                else:
+                    pbucket = rec.get("bucket") or ""
+                    confs = rec.get("confidence") or "0"
+                conf = 0.0
+                try:
+                    conf = float(confs)
+                except Exception:
+                    pass
+                if conf < min_conf:
+                    continue
+                total += 1
+                r = by_path.get(fp)
+                if not r:
+                    continue
+                tgt = _strip_ready_prefix(r.get("target_subfolder", ""))
+                pred = _strip_ready_prefix(pbucket)
+                if tgt and pred and tgt == pred:
+                    accepted += 1
+                    per_bucket[pred] = per_bucket.get(pred, 0) + 1
+            except Exception:
+                continue
+
+    rate = (accepted / total) if total else 0.0
+    print(f"Acceptance: {accepted}/{total} = {rate:.2%}")
+    if per_bucket:
+        print("Akceptacje per bucket:")
+        for b, c in sorted(per_bucket.items(), key=lambda x: x[1], reverse=True):
+            print(f"  - {b}: {c}")
+
+
+def cmd_export_xlsx(args: argparse.Namespace) -> None:
+    """Eksport CSV do XLSX z dropdownem dla target_subfolder (lista bucketów).
+
+    Edytuj w Excel/Numbers, potem użyj import-xlsx do wczytania zmian.
+    """
+    try:
+        import openpyxl
+        from openpyxl.worksheet.datavalidation import DataValidation
+        from openpyxl.utils import get_column_letter
+        from typing import cast
+    except Exception:
+        print("Brak openpyxl — zainstaluj zależności (requirements.txt).")
+        return
+    from djlib.taxonomy import load_taxonomy, allowed_targets
+
+    # Domyślnie eksportuj WSZYSTKIE rekordy; przefiltruj tylko jeśli podano --only-pending
+    only_pending = bool(getattr(args, "only_pending", False))
+    out_path = Path(getattr(args, "out", LOGS_DIR / "library_edit.xlsx"))
+
+    rows = load_records(CSV_PATH)
+    if only_pending:
+        rows = [r for r in rows if (r.get("review_status") or "").lower() != "accepted"]
+
+    # Wczytaj (opcjonalnie) ostatnie predykcje ML, aby pokazać audio_genre i confidence
+    ml_pred_by_path: Dict[str, tuple[str, float]] = {}
+    try:
+        import csv as _csv
+        log_path = LOGS_DIR / "ml_predictions.csv"
+        if log_path.exists():
+            with log_path.open("r", encoding="utf-8") as f:
+                reader = _csv.DictReader(f)
+                for rec in reader:
+                    fp = rec.get("file_path") or rec.get("file") or rec.get("path") or rec.get("0")
+                    if not fp:
+                        # no headers case handled earlier when writing; skip ambiguous
+                        vals = list(rec.values())
+                        if len(vals) >= 3:
+                            fp = vals[0]
+                            pb = vals[1]
+                            try:
+                                cf = float(vals[2])
+                            except Exception:
+                                cf = 0.0
+                            ml_pred_by_path[str(fp)] = (str(pb), cf)
+                            continue
+                    pb = rec.get("bucket") or ""
+                    try:
+                        cf = float(rec.get("confidence") or 0)
+                    except Exception:
+                        cf = 0.0
+                    if fp:
+                        ml_pred_by_path[str(fp)] = (pb, cf)
+    except Exception:
+        pass
+
+    wb = openpyxl.Workbook()
+    ws = cast("openpyxl.worksheet.worksheet.Worksheet", wb.active)  # type: ignore[name-defined]
+    ws.title = "Library"  # type: ignore[assignment]
+    headers = [
+        "track_id", "artist", "title", "artist_suggest", "title_suggest", "version_info", "version_suggest",
+        "genre_suggest",
+        "genres_musicbrainz", "genres_lastfm", "genres_spotify", "genres_soundcloud", "genres_audio", "audio_confidence",
+        "pop_playcount", "pop_listeners",
+        "ai_guess_bucket", "ai_guess_comment", "target_subfolder", "file_path"
+    ]
+    ws.append(headers)
+    for r in rows:
+        fp = r.get("file_path", "")
+        audio_genre = ""
+        audio_conf = ""
+        if fp and fp in ml_pred_by_path:
+            pb, cf = ml_pred_by_path[fp]
+            audio_genre = pb
+            audio_conf = f"{cf:.2f}"
+        ws.append([
+            r.get("track_id", ""),
+            r.get("artist", ""),
+            r.get("title", ""),
+            r.get("artist_suggest", ""),
+            r.get("title_suggest", ""),
+            r.get("version_info", ""),
+            r.get("version_suggest", ""),
+            r.get("genre_suggest", ""),
+            r.get("genres_musicbrainz", ""),
+            r.get("genres_lastfm", ""),
+            r.get("genres_spotify", ""),
+            r.get("genres_soundcloud", ""),
+            audio_genre,
+            audio_conf,
+            r.get("pop_playcount", ""),
+            r.get("pop_listeners", ""),
+            r.get("ai_guess_bucket", ""),
+            r.get("ai_guess_comment", ""),
+            r.get("target_subfolder", ""),
+            fp,
+        ])
+
+    # Arkusz z bucketami
+    # Użyj pełnych nazw z prefiksami (READY TO PLAY/…, REVIEW QUEUE/…)
+    tax = load_taxonomy()
+    buckets = allowed_targets()
+    ws2 = wb.create_sheet("Buckets")
+    for i, b in enumerate(buckets, start=1):
+        ws2.cell(row=i, column=1, value=b)
+    # Data validation: dopasuj do kolumny 'target_subfolder' niezależnie od zmian układu kolumn
+    max_row = ws.max_row
+    dv = DataValidation(type="list", formula1=f"=Buckets!$A$1:$A${len(buckets)}", allow_blank=True)
+    try:
+        tgt_idx = headers.index("target_subfolder") + 1
+        col_letter = get_column_letter(tgt_idx)
+        rng = f"{col_letter}2:{col_letter}{max_row}"
+        dv.add(rng)  # type: ignore[arg-type]
+    except ValueError:
+        # jeśli brak kolumny (nie powinno się zdarzyć), pomiń walidację, ale zapisz plik
+        pass
+    ws.add_data_validation(dv)
+    # kosmetyka
+    ws.freeze_panes = "A2"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+    print(f"Zapisano: {out_path}")
+
+
+def cmd_import_xlsx(args: argparse.Namespace) -> None:
+    """Wczytaj zmiany z XLSX (kolumna target_subfolder) z powrotem do CSV.
+
+    Dopasowanie po track_id; jeśli brak, próba po file_path.
+    """
+    try:
+        import openpyxl
+    except Exception:
+        print("Brak openpyxl — zainstaluj zależności (requirements.txt).")
+        return
+
+    src = Path(getattr(args, "path", LOGS_DIR / "library_edit.xlsx"))
+    if not src.exists():
+        print(f"Brak pliku: {src}")
+        return
+    wb = openpyxl.load_workbook(src)
+    ws = wb["Library"]
+
+    rows = load_records(CSV_PATH)
+    by_id = {r.get("track_id"): r for r in rows}
+    by_path = {r.get("file_path"): r for r in rows}
+
+    updated = 0
+    for i, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        try:
+            track_id, artist, title, version_info, genre_suggest, ai_bucket, ai_comment, target_subfolder, file_path = row[:9]
+        except Exception:
+            continue
+        target_subfolder = str(target_subfolder or "").strip()
+        if not target_subfolder:
+            continue
+        rec = None
+        tid = str(track_id or "").strip()
+        fpp = str(file_path or "").strip()
+        if tid and tid in by_id:
+            rec = by_id[tid]
+        elif fpp and fpp in by_path:
+            rec = by_path[fpp]
+        if not rec:
+            continue
+        if rec.get("target_subfolder", "") != target_subfolder:
+            rec["target_subfolder"] = target_subfolder
+            updated += 1
+
+    if updated:
+        save_records(CSV_PATH, rows)
+    print(f"Import XLSX: updated={updated}")
+
+
+# ============ META-KOMENDY (aliasy) ============
+
+def cmd_round_1(args: argparse.Namespace) -> None:
+    """Uruchom pełny pierwszy etap: analyze → enrich-online → ml-predict (suggest) → export-xlsx."""
+    # analyze-audio
+    aargs = argparse.Namespace(
+        path=str(INBOX_DIR), check_env=False, recompute=False, workers=1, target_bpm="80:180"
+    )
+    cmd_analyze_audio(aargs)
+
+    # enrich-online
+    cmd_enrich_online(argparse.Namespace())
+
+    # ml-predict (sugestie)
+    pargs = argparse.Namespace(
+        model=str(REPO_ROOT / "models" / "fma_trained_model_balanced.pkl"),
+        path=str(INBOX_DIR),
+        recompute=False,
+        set_target=False,
+        suggest=True,
+        hard_threshold=0.85,
+        suggest_threshold=float(getattr(args, "suggest_threshold", 0.65)),
+        min_confidence=float(getattr(args, "min_confidence", 0.40)),
+    )
+    cmd_ml_predict(pargs)
+
+    # export-xlsx
+    exargs = argparse.Namespace(
+        out=str(getattr(args, "xlsx_out", LOGS_DIR / "library_edit.xlsx")),
+        only_pending=True,
+    )
+    cmd_export_xlsx(exargs)
+    print(f"➡️  Otwórz do edycji: {exargs.out}")
+
+
+def cmd_round_2(args: argparse.Namespace) -> None:
+    """Uruchom drugi etap: import-xlsx → apply → ml-train-local → qa-acceptance."""
+    # import-xlsx
+    imargs = argparse.Namespace(path=str(getattr(args, "xlsx_path", LOGS_DIR / "library_edit.xlsx")))
+    cmd_import_xlsx(imargs)
+
+    # apply
+    cmd_apply(argparse.Namespace(dry_run=False))
+
+    # ml-train-local
+    tlargs = argparse.Namespace(
+        min_per_class=int(getattr(args, "min_per_class", 20)),
+        limit=None,
+        recompute=False,
+        out=str(getattr(args, "model_out", REPO_ROOT / "models" / "local_trained_model.pkl"))
+    )
+    cmd_ml_train_local(tlargs)
+
+    # qa-acceptance
+    qaargs = argparse.Namespace(min_confidence=float(getattr(args, "qa_min_confidence", 0.65)))
+    cmd_qa_acceptance(qaargs)
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -756,7 +1356,10 @@ def build_parser() -> argparse.ArgumentParser:
     sap.add_argument("--write-tags", action="store_true", help="Zapisz metadane (BPM/Key) do plików audio")
     sap.set_defaults(func=cmd_sync_audio_metrics)
     sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
-    sp.add_parser("enrich-online").set_defaults(func=cmd_enrich_online)
+    ep = sp.add_parser("enrich-online")
+    ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm/spotify nawet jeśli już wypełnione")
+    ep.add_argument("--skip-soundcloud", action="store_true", help="Pomiń źródło SoundCloud nawet jeśli client_id jest ustawiony")
+    ep.set_defaults(func=cmd_enrich_online)
 
     # analyze-audio
     aap = sp.add_parser("analyze-audio")
@@ -766,6 +1369,41 @@ def build_parser() -> argparse.ArgumentParser:
     aap.add_argument("--workers", type=int, default=1, help="Liczba workerów (na razie ignorowane; skeleton)")
     aap.add_argument("--target-bpm", default="80:180", help="Zakres docelowy BPM, np. 80:180")
     aap.set_defaults(func=cmd_analyze_audio)
+
+    # ml predict
+    mp = sp.add_parser("ml-predict")
+    mp.add_argument("--model", default=str(REPO_ROOT / "models" / "fma_trained_model_balanced.pkl"))
+    mp.add_argument("--path", default=str(INBOX_DIR), help="Plik lub folder (domyślnie INBOX)")
+    mp.add_argument("--recompute", action="store_true", help="Przelicz analizę audio na nowo")
+    mp.add_argument("--set-target", action="store_true", help="Ustawiaj docelowy kubełek powyżej progu hard")
+    mp.add_argument("--suggest", action="store_true", help="Ustawiaj tylko ai_guess_* powyżej progu suggest")
+    mp.add_argument("--hard-threshold", type=float, default=0.85)
+    mp.add_argument("--suggest-threshold", type=float, default=0.65)
+    mp.add_argument("--min-confidence", type=float, default=0.40, help="Nie zapisuj żadnych sugestii poniżej tego progu")
+    mp.set_defaults(func=cmd_ml_predict)
+
+    # ml-train-local: trenuj model na Twoich zaakceptowanych bucketach
+    tl = sp.add_parser("ml-train-local")
+    tl.add_argument("--min-per-class", type=int, default=20, help="Minimalna liczba próbek na klasę (odfiltruj rzadkie)")
+    tl.add_argument("--limit", type=int, default=None, help="Limit próbek do szybkiego treningu (opcjonalnie)")
+    tl.add_argument("--recompute", action="store_true", help="Przelicz analizę Essentia jeśli brak w cache")
+    tl.add_argument("--out", default=str(REPO_ROOT / "models" / "local_trained_model.pkl"))
+    tl.set_defaults(func=cmd_ml_train_local)
+
+    # QA: acceptance rate
+    qa = sp.add_parser("qa-acceptance")
+    qa.add_argument("--min-confidence", type=float, default=0.65, help="Licz tylko predykcje powyżej tego progu")
+    qa.set_defaults(func=cmd_qa_acceptance)
+
+    # XLSX export/import z dropdownem na bucket
+    ex = sp.add_parser("export-xlsx")
+    ex.add_argument("--out", default=str(LOGS_DIR / "library_edit.xlsx"))
+    ex.add_argument("--only-pending", action="store_true", help="Eksportuj tylko niezaakceptowane")
+    ex.set_defaults(func=cmd_export_xlsx)
+
+    im = sp.add_parser("import-xlsx")
+    im.add_argument("--path", default=str(LOGS_DIR / "library_edit.xlsx"))
+    im.set_defaults(func=cmd_import_xlsx)
 
     # genres resolve (single lookup)
     gp = sp.add_parser("genres")
@@ -777,6 +1415,23 @@ def build_parser() -> argparse.ArgumentParser:
     res.set_defaults(func=cmd_genres_resolve)
 
     sp.add_parser("detect-taxonomy").set_defaults(func=cmd_detect_taxonomy)
+
+    # --- Meta-komendy: round-1 i round-2 ---
+    r1 = sp.add_parser("round-1", help="Analyze + Enrich + ML Predict (suggest) + Export XLSX")
+    r1.add_argument("--min-confidence", type=float, default=0.40)
+    r1.add_argument("--suggest-threshold", type=float, default=0.65)
+    r1.add_argument("--xlsx-out", default=str(LOGS_DIR / "library_edit.xlsx"))
+    r1.set_defaults(func=cmd_round_1)
+
+    r2 = sp.add_parser("round-2", help="Import XLSX + Apply + Train local model + QA acceptance")
+    r2.add_argument("--xlsx-path", default=str(LOGS_DIR / "library_edit.xlsx"))
+    r2.add_argument("--min-per-class", type=int, default=20)
+    r2.add_argument("--qa-min-confidence", type=float, default=0.65)
+    r2.add_argument("--model-out", default=str(REPO_ROOT / "models" / "local_trained_model.pkl"))
+    r2.set_defaults(func=cmd_round_2)
+
+    tb = sp.add_parser("taxonomy-backup", help="Zrób snapshot taksonomii na podstawie folderów i zapisz backup")
+    tb.set_defaults(func=cmd_taxonomy_backup)
     return p
 
 def main() -> None:

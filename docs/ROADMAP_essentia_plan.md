@@ -2,12 +2,12 @@
 
 Dokument opisuje plan przejścia na lokalną analizę audio (Essentia) jako źródło prawdy dla BPM i Key, z rozszerzeniem o Energy i cechy niskopoziomowe, oraz integrację z modułem Auto‑Bucket. Zakładamy tryb niekomercyjny (prywatny / potencjalnie open‑source w przyszłości), dlatego optymalizujemy jakość i nie ograniczamy się copyleftem.
 
-## 1) Założenia i cele
+## 1) Założenia i cele (aktualizacja 2025 Q4)
 
 - Priorytet jakości: BPM i Key z Essentia (TempoTap/RhythmExtractor, KeyExtractor) → rezygnujemy z Traktora.
 - Energia + cechy audio: lokalne metryki (LUFS, Dynamic Complexity, Spectral Centroid/Rolloff, Onset Rate) → baza do „energy score”.
 - Bucketowanie: najpierw deterministyczne reguły (v0), potem klasyczny ML (v0.1), opcjonalnie hybryda z embeddingiem (v0.3).
-- Sieć (MB/Last.fm/Spotify): pozostaje pomocnicza; główne decyzje (BPM/Key/Energy/Bucket) oparte o audio.
+- Sieć (MB/Last.fm/Spotify/SoundCloud*): pozostaje pomocnicza; główne decyzje (BPM/Key/Energy/Bucket) oparte o audio. (*SoundCloud opcjonalny, z health check i możliwością pominięcia.)
 - Caching, powtarzalność i audyt: analiza deterministyczna, cache po hash pliku + wersja algorytmu.
 
 ## 2) Architektura modułów
@@ -21,7 +21,7 @@ djlib/
     cache.py            # cache SQLite/JSON + wersjonowanie algorytmu
   tags.py               # odczyt tagów (bpm, key, …)
   metadata/             # MB/LFM/Spotify (opcjonalne)
-  genre_resolver.py     # z filtrami noise (już dodane)
+  genre_resolver.py     # z filtrami noise + multi-source wagi (MB/LFM/SP/SC)
   bucketing/
     base.py             # interfejsy
     rules.py            # v0 reguły deterministyczne bucketowania
@@ -31,7 +31,7 @@ djlib/
   csvdb.py              # CSV (library.csv)
   config.py             # ścieżki, ustawienia
 scripts/
-  report_preview.py     # rozszerzymy o bpm_detected/key_detected/energy
+  report_preview.py     # rozszerzymy o bpm_detected/key_detected/energy + per-source genres (DONE)
   assign_buckets.py     # CLI do bucketowania (v0.1)
 ```
 
@@ -44,11 +44,14 @@ scripts/
    - `detect_key_essentia(path) -> key_camelot, strength`
    - `compute_energy(path) -> energy_score (0..1), {lufs, dyn_complexity, onset_rate, spectral_*}`
    - Caching: (file_hash, algo_version) → result
-4. Preview CSV (rozszerzone):
+4. Preview / CSV (rozszerzone – STATUS: częściowo DONE):
    - `tag_bpm`, `bpm_detected`, `bpm_confidence`, `bpm_correction`
    - `tag_key_camelot`, `key_detected_camelot`, `key_strength`
    - `energy_score` + składowe
-   - `genre_main/sub*` (opcjonalnie), `bucket_suggest`
+
+- `genre_main/sub*` (opcjonalnie), `bucket_suggest`
+- per-source gatunki: `genres_musicbrainz`, `genres_lastfm`, `genres_spotify`, `genres_soundcloud` (DONE)
+
 5. Bucket v0 (reguły deterministyczne):
    - Mapuj na podstawie BPM (zakresy), Key (tryb A/B), Energy (progi), perkusyjności i prostych heurystyk.
 6. Auto‑Bucket v0.1 (ML, wg załącznika):
@@ -92,7 +95,7 @@ scripts/
 - Stabilność BPM/Key: jeśli rozjazd między oknami > progów (np. BPM różni się >3%), log do `LOGS/unstable_analysis.csv` i niższa confidence.
 - Niewspierane/pliki problematyczne (dekoder, cisza, < 20 s): log do `LOGS/failed_decodes.csv`.
 
-## 5) Bucketowanie — ścieżki
+## 5) Bucketowanie — ścieżki (bez zmian funkcjonalnych w tej aktualizacji)
 
 - v0 (Reguły):
   - Przykład: `house|tech house` + `120–128 BPM` + `energy≥0.6` → `READY TO PLAY/HOUSE BANGERS`;
@@ -103,10 +106,10 @@ scripts/
 - v0.3 (Hybryda):
   - SBERT embedding tekstu + cechy audio, klas. MLP/XGBoost.
 
-## 6) CLI i UX
+## 6) CLI i UX (rozszerzenia wdrożone)
 
 - `djlib.cli analyze-audio` — analiza całej INBOX (z cache), progres i metryki czasu.
-- `scripts/report_preview.py` — dodać kolumny: `bpm_detected`, `bpm_confidence`, `bpm_correction`, `key_detected_camelot`, `key_strength`, `energy_score`.
+- `scripts/report_preview.py` — kolumny: `bpm_detected`, `bpm_confidence`, `bpm_correction`, `key_detected_camelot`, `key_strength`, `energy_score`, per-source genres (DONE).
 - `scripts/assign_buckets.py` — predykcja bucketów (v0.1), eksport `bucket_predictions.csv`.
 - Tryb `--debug`: zapis cech/uzasadnień do LOGS/.
 
@@ -156,25 +159,42 @@ scripts/
 - Essentia: w trybie niekomercyjnym OK; w razie Open Source — respektujemy AGPL lub rozważamy opcję komercyjną w przyszłości.
 - Modele ML (jeśli użyjemy): audyt licencji każdego modelu (autotagging), lub BYO model przez użytkownika.
 
-## 10) Roadmap — kroki wykonawcze
+## 10) Roadmap — kroki wykonawcze (progress markers)
 
-- Faza A (BPM/Key/Energy + Preview)
-  1. `djlib/audio/essentia_backend.py`: detektory BPM/Key/Energy + cache.
-  2. Integracja z `report_preview.py` (kolumny + wskaźniki jakości, bez regresji czasów).
+- Faza A (BPM/Key/Energy + Preview) – PARTIAL DONE (część Energy jeszcze do kalibracji)
+  1. `djlib/audio/essentia_backend.py`: detektory BPM/Key/Energy + cache. (IN PROGRESS)
+  2. Integracja z `report_preview.py` (kolumny + wskaźniki jakości, bez regresji czasów). (PARTIAL DONE)
   3. CLI `analyze-audio` + logi.
-- Faza B (Bucket v0 — reguły) 4. `bucketing/rules.py` + starter `rules.yml` (zakresy BPM, energy, opcjonalnie style z taxonomy_map). 5. Dodanie do Preview `bucket_suggest` + `bucket_confidence`.
-- Faza C (Auto‑Bucket v0.1 — ML) 6. `bucketing/simple_ml.py` (RandomForest) — jak w załączniku; cechy z audio. 7. `assign_buckets.py` + `metrics.json` + testy.
-- Faza D (Hybryda — opcjonalnie) 8. `hybrid_model.py` (SBERT + cechy), porównanie z v0.1.
+- Faza B (Bucket v0 — reguły) 4. `bucketing/rules.py` + starter `rules.yml` (zakresy BPM, energy, opcjonalnie style z taxonomy_map). 5. Dodanie do Preview `bucket_suggest` + `bucket_confidence`. (PENDING)
+- Faza C (Auto‑Bucket v0.1 — ML) 6. `bucketing/simple_ml.py` (RandomForest) — jak w załączniku; cechy z audio. 7. `assign_buckets.py` + `metrics.json` + testy. (PENDING)
+- Faza D (Hybryda — opcjonalnie) 8. `hybrid_model.py` (SBERT + cechy), porównanie z v0.1. (FUTURE)
 
-## 11) Kryteria „gotowości” (Definition of Done)
+## 11) Kryteria „gotowości” (Definition of Done) – aktualizacja
 
-- DoD A: Preview CSV pokazuje wykryty BPM/Key/Energy na całym INBOX, czas analizy akceptowalny; cache działa, brak błędów I/O.
+- DoD A: Preview CSV pokazuje wykryty BPM/Key/Energy na całym INBOX, per-source genres; czas analizy akceptowalny; cache działa, brak błędów I/O.
 - DoD B: Reguły bucketów dają sensowne propozycje na Twoich danych, edytowalne w YAML; raport akceptacji ≥ ustalonego progu.
 - DoD C: ML v0.1 osiąga ≥ X% accuracy na Twoim zbiorze, metryki zapisane i reprodukowalne.
 
 ---
 
-Jeśli potwierdzasz, w kolejnym kroku utworzę szkielety modułów (`audio/essentia_backend.py`, `audio/features.py`, `audio/cache.py`) i dodam kolumny do `report_preview.py`, tak abyś zobaczył pierwsze wyniki (BPM/Key/Energy) w CSV bez dotykania bucketów. Następnie dołożymy reguły v0 i przejdziemy do ML v0.1.
+## 13) Nowe elementy zrealizowane poza pierwotnym planem
+
+- Multi-source genre enrichment (MB / Last.fm / Spotify / SoundCloud) z wagami.
+- Per-source kolumny `genres_*` + popularność (`pop_playcount`, `pop_listeners`).
+- Interaktywny prompt przy nieważnym SoundCloud client id + flaga `--skip-soundcloud`.
+- Wielokrotne nawiasy w nazwie pliku → łączone jako lista w `version_suggest`.
+
+## 14) Backlog dodatków (proponowane)
+
+- Heurystyka afro house (np. wzorzec "Karibu Remix") → podbicie wagi przy bucketowaniu klubowym.
+- Persist decyzji użytkownika o pominięciu SoundCloud w `enrich_status.json`.
+- Kalibracja Energy (percentyle) + wizualizacja w raporcie.
+- ML bucketowanie v0.1 + metryki (accuracy, precision, recall per bucket).
+- Cache dla SoundCloud odpowiedzi + obsługa soft rate-limit.
+
+---
+
+Jeśli potwierdzasz kierunek, kolejne kroki: finalizacja Energy + reguły bucketów v0, potem moduł ML.
 
 ## 12) Starter `rules.yml` (przykład)
 

@@ -375,6 +375,18 @@ def get_lastfm_api_key() -> str:
         val = str(d.get("lastfm_api_key", "") or "").strip()
         if val:
             return val
+    # Fallback: repository-level config.yml (supports both top-level and nested under 'musicbrainz')
+    repo_cfg = _REPO / "config.yml"
+    if repo_cfg.exists():
+        try:
+            d = _read_yaml(repo_cfg)
+            val = str(d.get("lastfm_api_key", "") or "").strip()
+            if not val:
+                val = str(((d.get("musicbrainz") or {}) or {}).get("lastfm_api_key", "") or "").strip()
+            if val:
+                return val
+        except Exception:
+            pass
     return ""
 
 # Spotify API (Client Credentials)
@@ -392,6 +404,48 @@ def get_spotify_credentials() -> tuple[str, str]:
         secret = str(d.get("spotify_client_secret", "") or "").strip()
         if cid and secret:
             return cid, secret
+    # Fallback: repository-level config.yml (supports both top-level and nested under 'musicbrainz')
+    repo_cfg = _REPO / "config.yml"
+    if repo_cfg.exists():
+        try:
+            d = _read_yaml(repo_cfg)
+            cid = str(d.get("spotify_client_id", "") or "").strip()
+            secret = str(d.get("spotify_client_secret", "") or "").strip()
+            if not (cid and secret):
+                mb = (d.get("musicbrainz") or {}) or {}
+                cid = cid or str(mb.get("spotify_client_id", "") or "").strip()
+                secret = secret or str(mb.get("spotify_client_secret", "") or "").strip()
+            if cid and secret:
+                return cid, secret
+        except Exception:
+            pass
     return "", ""
+
+# SoundCloud (public, client_id-based)
+def get_soundcloud_client_id() -> str:
+    # ENV first
+    env = os.getenv("DJLIB_SOUNDCLOUD_CLIENT_ID") or os.getenv("SOUNDCLOUD_CLIENT_ID")
+    if env:
+        return env.strip()
+    # config.local.yml
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("soundcloud_client_id", "") or "").strip()
+        if val:
+            return val
+    # repo config.yml (top-level or nested under 'musicbrainz' by mistake)
+    repo_cfg = _REPO / "config.yml"
+    if repo_cfg.exists():
+        try:
+            d = _read_yaml(repo_cfg)
+            val = str(d.get("soundcloud_client_id", "") or "").strip()
+            if not val:
+                val = str(((d.get("musicbrainz") or {}) or {}).get("soundcloud_client_id", "") or "").strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    return ""
 
 # Discogs support removed
