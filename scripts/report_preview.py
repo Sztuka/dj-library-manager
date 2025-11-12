@@ -15,6 +15,11 @@ from djlib.enrich import suggest_metadata
 from djlib.metadata.genre_resolver import resolve as resolve_genres
 from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 try:
+    from djlib.bucketing.rules import RulesBucketAssigner
+    rules_assigner = RulesBucketAssigner()
+except ImportError:
+    rules_assigner = None
+try:
     from djlib.audio.essentia_backend import analyze as analyze_audio  # optional
 except Exception:
     analyze_audio = None  # type: ignore
@@ -57,6 +62,10 @@ def main() -> int:
         "bpm_detected", "bpm_confidence", "bpm_correction",
         "key_detected_camelot", "key_strength",
         "energy_score",
+        # additional audio features for genre classification
+        "zero_crossing_rate", "danceability", "chords_changes_rate", "tuning_diatonic_strength",
+        "mfcc_0", "mfcc_1", "mfcc_2", "mfcc_3", "mfcc_4", "mfcc_5", "mfcc_6", "mfcc_7", "mfcc_8", "mfcc_9", "mfcc_10", "mfcc_11", "mfcc_12",
+        "chroma_0", "chroma_1", "chroma_2", "chroma_3", "chroma_4", "chroma_5", "chroma_6", "chroma_7", "chroma_8", "chroma_9", "chroma_10", "chroma_11",
         # suggested genres (3)
         "genre_main", "genre_sub1", "genre_sub2",
         # bucket
@@ -90,6 +99,10 @@ def main() -> int:
             bpm_det = bpm_conf = bpm_corr = ""
             key_det = key_strength = ""
             energy_score = ""
+            zero_crossing_rate = danceability = chords_changes_rate = tuning_diatonic_strength = ""
+            mfcc_coeffs = [""] * 13
+            chroma_coeffs = [""] * 12
+            
             if analyze_audio:
                 try:
                     ares = analyze_audio(p)
@@ -119,6 +132,33 @@ def main() -> int:
                             energy_score = f"{float(v):.3f}"
                         except Exception:
                             energy_score = str(v)
+                    
+                    # Additional genre features
+                    v = ares.get("zero_crossing_rate")
+                    if v is not None:
+                        zero_crossing_rate = f"{float(v):.4f}"
+                    v = ares.get("danceability")
+                    if v is not None:
+                        danceability = f"{float(v):.4f}"
+                    v = ares.get("chords_changes_rate")
+                    if v is not None:
+                        chords_changes_rate = f"{float(v):.4f}"
+                    v = ares.get("tuning_diatonic_strength")
+                    if v is not None:
+                        tuning_diatonic_strength = f"{float(v):.4f}"
+                    
+                    # MFCC coefficients
+                    for i in range(13):
+                        v = ares.get(f"mfcc_{i}")
+                        if v is not None:
+                            mfcc_coeffs[i] = f"{float(v):.4f}"
+                    
+                    # Chroma features
+                    for i in range(12):
+                        v = ares.get(f"chroma_{i}")
+                        if v is not None:
+                            chroma_coeffs[i] = f"{float(v):.4f}"
+                            
                 except Exception:
                     pass
 
@@ -137,16 +177,34 @@ def main() -> int:
             g_sub1 = gr.subs[0] if (gr and gr.subs) else ""
             g_sub2 = gr.subs[1] if (gr and len(gr.subs) > 1) else ""
 
-            # bucket suggestion based on external votes and taxonomy map
+            # bucket suggestion based on rules
             bucket = ""
             bucket_conf = 0.0
-            try:
-                votes = external_genre_votes(sugg_artist or parsed_artist, sugg_title or parsed_title)
-                if votes:
-                    b, conf, _ = suggest_bucket_from_votes(votes, tag_map)
-                    bucket, bucket_conf = b, conf
-            except Exception:
-                pass
+            if rules_assigner:
+                try:
+                    # Convert track data to format expected by assigner
+                    track_data = {
+                        'filename': p.name,
+                        'tag_genre': (tags.get("genre") or "").strip(),
+                        'genre_main': g_main,
+                        'genre_sub1': g_sub1,
+                        'genre_sub2': g_sub2,
+                        'bpm_detected': bpm_det,
+                        'key_detected_camelot': key_det,
+                        'energy_score': energy_score,
+                    }
+                    bucket, bucket_conf = rules_assigner.predict(track_data)
+                except Exception as e:
+                    print(f"Bucket assignment failed for {p.name}: {e}")
+            else:
+                # Fallback to old method
+                try:
+                    votes = external_genre_votes(sugg_artist or parsed_artist, sugg_title or parsed_title)
+                    if votes:
+                        b, conf, _ = suggest_bucket_from_votes(votes, tag_map)
+                        bucket, bucket_conf = b, conf
+                except Exception:
+                    pass
 
             row = {
                 "filename": p.name,
@@ -168,6 +226,13 @@ def main() -> int:
                 "key_detected_camelot": key_det,
                 "key_strength": key_strength,
                 "energy_score": energy_score,
+                # additional audio features
+                "zero_crossing_rate": zero_crossing_rate,
+                "danceability": danceability,
+                "chords_changes_rate": chords_changes_rate,
+                "tuning_diatonic_strength": tuning_diatonic_strength,
+                **{f"mfcc_{i}": mfcc_coeffs[i] for i in range(13)},
+                **{f"chroma_{i}": chroma_coeffs[i] for i in range(12)},
                 "genre_main": g_main,
                 "genre_sub1": g_sub1,
                 "genre_sub2": g_sub2,

@@ -43,6 +43,9 @@ def test_config_and_folders(tmp_path, monkeypatch):
     assert (lib / "READY TO PLAY").exists()
     assert (lib / "REVIEW QUEUE").exists()
 
+    # Skieruj lokalną ścieżkę taksonomii do katalogu tymczasowego, aby nie nadpisywać taxonomy.local.yml w repo
+    monkeypatch.setattr(taxonomy, 'TAXONOMY_LOCAL_PATH', tmp_path / 'taxonomy.local.yml')
+
     # Taksonomia → foldery
     tax = {
         "ready_buckets": [

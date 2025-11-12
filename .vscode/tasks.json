@@ -13,9 +13,7 @@
       "type": "shell",
       "command": "/usr/bin/env bash -lc '${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_essentia.py'",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -31,9 +29,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli analyze-audio --check-env",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -44,9 +40,7 @@
         "STEP 0 — Setup: create venv & install deps",
         "TOOLS — Check audio env"
       ],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -54,27 +48,21 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/report_preview.py",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
       "label": "STEP 0 — Setup: create venv & install deps",
       "type": "shell",
       "command": "/usr/bin/env bash -lc 'python3 -m venv .venv && source .venv/bin/activate && pip install -U pip && pip install -r requirements.txt && pip install -e .'",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
       "label": "TOOLS — Install fpcalc (Homebrew)",
       "type": "shell",
       "command": "/usr/bin/env bash -lc 'if command -v brew >/dev/null; then (brew list chromaprint >/dev/null 2>&1 || brew install chromaprint); else echo \"❌ Brak Homebrew\" && exit 1; fi'",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -82,9 +70,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_fpcalc.py",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -92,9 +78,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli scan",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -102,9 +86,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli detect-taxonomy",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -112,9 +94,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli auto-decide --only-empty",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -122,9 +102,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/auto_decide_rules.py",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -132,9 +110,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli apply --dry-run",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -142,9 +118,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli apply",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -152,9 +126,7 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli undo",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
@@ -162,64 +134,38 @@
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dupes",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
       "label": "TESTS — run",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/pytest -q",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
       "label": "TESTS — coverage",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/pytest --cov=djlib --cov-report=term-missing",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      "label": "TESTS — run",
+      "label": "ROUND — 1) Analyze+Enrich+Predict+Export",
       "type": "shell",
-      "command": "/Users/sztuka/Projects/dj-library-manager/.venv/bin/pytest -q",
-      "args": []
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli round-1",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     },
     {
-      "label": "TESTS — run",
+      "label": "ROUND — 2) Import+Apply+Train+QA",
       "type": "shell",
-      "command": "/Users/sztuka/Projects/dj-library-manager/.venv/bin/pytest -q",
-      "args": []
-    },
-    {
-      "label": "TESTS — run",
-      "type": "shell",
-      "command": "/Users/sztuka/Projects/dj-library-manager/.venv/bin/pytest -q",
-      "args": []
-    },
-    {
-      "label": "TESTS — run",
-      "type": "shell",
-      "command": "/Users/sztuka/Projects/dj-library-manager/.venv/bin/pytest -q",
-      "args": []
-    },
-    {
-      "label": "TESTS — run",
-      "type": "shell",
-      "command": "/Users/sztuka/Projects/dj-library-manager/.venv/bin/pytest -q",
-      "args": []
-    },
-    {
-      "label": "TESTS — run",
-      "type": "shell",
-      "command": "/Users/sztuka/Projects/dj-library-manager/.venv/bin/pytest -q",
-      "args": []
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli round-2",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }

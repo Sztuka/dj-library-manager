@@ -1,6 +1,6 @@
 # DJ Library Manager - Dokumentacja Architektury
 
-**Wersja:** 2.0  
+**Wersja:** 2.1  
 **Data:** 2025  
 **Przeznaczenie:** Dokumentacja techniczna dla agentów AI oraz deweloperów
 
@@ -22,15 +22,15 @@
 
 ## Przegląd Systemu
 
-DJ Library Manager to narzędzie do zarządzania biblioteką muzyczną DJ-a. System skanuje nowe pliki audio, ekstrahuje metadane, wzbogaca je danymi online (MusicBrainz, Last.fm, Spotify), klasyfikuje utwory według gatunków i organizuje je w strukturze folderów.
+DJ Library Manager to narzędzie do zarządzania biblioteką muzyczną DJ-a. System skanuje nowe pliki audio, ekstrahuje metadane, wzbogaca je danymi online (MusicBrainz, Last.fm, Spotify, opcjonalnie SoundCloud), klasyfikuje utwory według gatunków i organizuje je w strukturze folderów.
 
 ### Główne funkcjonalności:
 
 - Skanowanie INBOX i ekstrakcja tagów audio
-- **Online enrichment**: Wzbogacanie metadanych z MusicBrainz, AcoustID, Last.fm, Spotify
+- **Online enrichment**: Wzbogacanie metadanych z MusicBrainz, AcoustID, Last.fm, Spotify, SoundCloud (opcjonalnie)
 - **Local audio analysis**: Ekstrakcja BPM/Key/Energy z Essentia (bez Traktora)
 - **Tag writing**: Zapis metryk do ID3 tagów plików (Camelot notation)
-- **Genre resolution**: Rozpoznawanie gatunków z wielu źródeł z confidence scoring
+- **Genre resolution**: Rozpoznawanie gatunków z wielu źródeł (MusicBrainz / Last.fm / Spotify / SoundCloud) z wagami źródeł + per-source kolumny w CSV
 - Automatyczna klasyfikacja utworów (AI guessing + taxonomy mapping)
 - Zarządzanie taksonomią kategorii (buckets)
 - Automatyczne decyzje na podstawie reguł lub heurystyk
@@ -67,9 +67,11 @@ dj-library-manager/
 │   │   └── essentia_backend.py # Backend Essentia dla analizy
 │   └── metadata/       # Klienci API metadanych
 │       ├── __init__.py
-│       ├── genre_resolver.py  # Główny resolver gatunków
-│       ├── mb_client.py       # MusicBrainz client
-│       └── lastfm.py          # Last.fm client
+│       ├── genre_resolver.py   # Główny resolver gatunków (wagi źródeł)
+│       ├── mb_client.py        # MusicBrainz client
+│       ├── lastfm.py           # Last.fm client
+│       ├── soundcloud.py       # SoundCloud: tag_list + health check
+│       └── spotify_client.py   # Spotify artist genres (jeśli wyodrębniony)
 ├── scripts/            # Skrypty CLI
 ├── webui/              # Interfejs webowy (TODO)
 ├── docs/               # Dokumentacja
@@ -98,7 +100,7 @@ dj-library-manager/
 │   ├── UNDECIDED
 │   └── NEEDS EDIT
 ├── LOGS/                     # Logi operacji
-│   ├── enrich_status.json    # Status wzbogacania
+│   ├── enrich_status.json    # Status wzbogacania (plan: dodać decyzję usera nt. SoundCloud)
 │   ├── fingerprint_status.json
 │   ├── moves-{timestamp}.csv # Logi przeniesień
 │   └── dupes.csv             # Raport duplikatów
@@ -202,7 +204,13 @@ Baza danych główna w formacie CSV. Kolumny zdefiniowane w `djlib/csvdb.py::FIE
 | `artist_suggest`                           | Proponowany artysta                     | `Daft Punk`                           |
 | `title_suggest`                            | Proponowany tytuł                       | `Get Lucky`                           |
 | `version_suggest`                          | Proponowana wersja                      | `Radio Edit`                          |
-| `genre_suggest`                            | Proponowany gatunek (z API)             | `House, Electronic, Dance`            |
+| `genre_suggest`                            | Proponowany główny gatunek (agregowany) | `House, Electronic, Dance`            |
+| `genres_musicbrainz`                       | Surowe gatunki z MusicBrainz            | `house; electronic`                   |
+| `genres_lastfm`                            | Surowe tagi z Last.fm                   | `house; french; disco`                |
+| `genres_spotify`                           | Gatunki artysty (Spotify)               | `french house; filter house`          |
+| `genres_soundcloud`                        | Tag list z SoundCloud (opcjonalnie)     | `house; afro; remix`                  |
+| `pop_playcount`                            | Last.fm playcount (jeśli dostępny)      | `123456`                              |
+| `pop_listeners`                            | Last.fm listeners (jeśli dostępny)      | `34567`                               |
 | `album_suggest`                            | Proponowany album                       | `Random Access Memories`              |
 | `year_suggest`                             | Proponowany rok wydania                 | `2013`                                |
 | `duration_suggest`                         | Proponowany czas trwania                | `4:45`                                |
@@ -373,6 +381,24 @@ review_buckets:
 
 - `build_final_filename(artist, title, version_info, key_camelot, bpm, ext)`: Generuje nazwę zgodnie z konwencją
 
+#### Parsowanie wielokrotnych nawiasów (multi-parentheses parsing)
+
+Przykład surowej nazwy:
+
+```
+Artist - Title (Karibu Remix) (Extended Edit).mp3
+```
+
+Algorytm:
+
+1. Wykryj wszystkie segmenty w nawiasach na końcu bazowej nazwy.
+2. Oczyść z nadmiarowych spacji i znaków.
+3. Dedup (z zachowaniem kolejności).
+4. Połącz przecinkami → `version_suggest = "Karibu Remix, Extended Edit"`.
+5. Brak segmentów → fallback `Original Mix`.
+
+Korzyść: zachowanie kompletu wariantów (Remix / Edit / Radio / Extended) dla przyszłych heurystyk (np. afro house jeśli token zawiera specyficzny wzorzec).
+
 ### `djlib/mover.py`
 
 **Zadanie**: Przenoszenie i zmiana nazw plików
@@ -426,9 +452,10 @@ map:
 
 #### `genre_resolver.py`
 
-- `resolve(artist, title, duration_s)`: Główny resolver gatunków
-- Łączy dane z MusicBrainz, Last.fm, Spotify
-- Zwraca `GenreResult` z main/sub gatunkami i confidence
+- `resolve(artist, title, duration_s, disable_soundcloud=False)`: Główny resolver gatunków
+- Łączy dane z MusicBrainz, Last.fm, Spotify oraz opcjonalnie SoundCloud
+- Wagi (domyślne): Last.fm 6.0, MusicBrainz 3.0, SoundCloud 2.0, Spotify 1.0
+- Zwraca agregat + per-source listy (`genres_*`) i confidence
 
 #### `mb_client.py`
 
@@ -482,7 +509,10 @@ map:
 - `sync-audio-metrics`: Lokalna analiza BPM/Key/Energy z Essentia
   - `--write-tags`: Zapisuje metryki do tagów ID3 plików
   - `--force`: Wymusza re-analizę wszystkich plików
-- `enrich-online`: Wzbogacanie metadanych online (MB, AcoustID, Last.fm, Spotify)
+- `enrich-online`: Wzbogacanie metadanych online (MB, AcoustID, Last.fm, Spotify, SoundCloud)
+  - `--force-genres` – wymusza nadpisanie kolumn `genres_*` i `genre_suggest`
+  - `--skip-soundcloud` – pomija SoundCloud bez pytania
+  - Interaktywny prompt przy nieważnym/missing `SOUNDCLOUD_CLIENT_ID`
 - `fix-fingerprints`: Uzupełnianie brakujących fingerprintów
 - `auto-decide`: Automatyczne uzupełnianie target_subfolder
 - `auto-decide-smart`: Inteligentne auto-decide z confidence thresholds
@@ -539,15 +569,18 @@ map:
 1. Dla rekordów z `review_status != "accepted"`:
    - **AcoustID lookup**: Jeśli fingerprint dostępny → MusicBrainz recording
    - **MusicBrainz search**: Bezpośrednie wyszukiwanie artist/title
-   - **Genre resolution**: Zbiera gatunki z MB/Last.fm/Spotify (3 źródła)
+   - **SoundCloud probe** (opcjonalnie): próba pobrania `genre` + `tag_list` (jeśli dostępny `SOUNDCLOUD_CLIENT_ID`)
+   - **Genre resolution**: Agreguje MB / Last.fm / Spotify / SoundCloud (4 źródła; SoundCloud może być wyłączony)
+   - **Popularity hints**: Last.fm playcount / listeners → kolumny `pop_playcount`, `pop_listeners`
    - **Bucket suggestion**: Mapuje gatunki na buckety przez `taxonomy_map.yml`
    - Aktualizuje `suggest_*` pola jeśli lepsze od istniejących
 
 **Priorytety nadpisywania**:
 
-- AcoustID wins zawsze (najwyższa jakość)
-- Override jeśli nowe dane mają wyższy confidence
-- Preserve existing accepted data
+- AcoustID + MB (fingerprint) wygrywa zawsze (najwyższa jakość identyfikacji)
+- Override jeśli nowe dane mają wyższy aggregated confidence (waga źródła \* score)
+- `--force-genres` wymusza nadpisanie `genres_*` oraz `genre_suggest` nawet przy równym confidence
+- Preserve accepted (użytkownik) chyba że jawnie wymuszono
 
 ### 3. Automatyczne decyzje
 
@@ -611,7 +644,7 @@ map:
 ### System propozycji metadanych
 
 - **Suggest/Accept workflow**: Metadane dzielone na zaakceptowane (główne pola) i proponowane (`suggest_*`)
-- **Źródła**: Filename parsing, tagi audio, MusicBrainz, AcoustID, Last.fm, Spotify
+- **Źródła**: Filename parsing, tagi audio, MusicBrainz, AcoustID, Last.fm, Spotify, SoundCloud (opcjonalnie)
 - **Priorytety**: AcoustID > MusicBrainz > filename/tags
 - **Status**: `review_status` = "pending" | "accepted"
 
@@ -625,9 +658,9 @@ map:
 
 ### Genre Resolution
 
-- **Multi-source aggregation**: Łączy dane z 3+ źródeł z confidence weights
+- **Multi-source aggregation**: Łączy dane z 4 źródeł (MB / Last.fm / Spotify / SoundCloud) z wagami: Last.fm 6.0, MB 3.0, SoundCloud 2.0, Spotify 1.0
 - **Format wyjściowy**: "Main Genre, Sub1, Sub2" (max 3)
-- **Confidence threshold**: >= 0.03 dla nowych, >= 0.08 dla override
+- **Confidence threshold**: Bazowy próg dla dodania tagu: >= 0.03; override istniejącego: >= 0.08 (parametry można stroić przy zwiększeniu liczby źródeł)
 - **Taxonomy mapping**: Tagi → buckety przez `taxonomy_map.yml`
 
 ### Rozwiązywanie konfliktów nazw
@@ -703,7 +736,7 @@ from djlib.taxonomy import allowed_targets
 
 ### Zależności zewnętrzne:
 
-```python
+````python
 # Core
 mutagen>=1.46          # Audio tag reading/writing
 pyacoustid>=0.3        # AcoustID fingerprint lookup
@@ -717,7 +750,36 @@ essentia>=2.1b6.dev0   # Local BPM/Key/Energy extraction
 musicbrainzngs>=0.7   # MusicBrainz API client
 spotipy>=2.23         # Spotify API
 pylast>=5.2           # Last.fm API
-```
+## Testowanie i jakość
+
+### Test suites
+- Jednostkowe: parsowanie nazw (filename), konfiguracja (config), audio cache, taxonomy, podstawowa logika placement.
+- Integracyjne: komendy CLI (scan, enrich-online, apply, undo) na mini-fixtures.
+
+### Uruchamianie
+Taski:
+- `TESTS — run` (pytest -q)
+- `TESTS — coverage` (pokrycie z wyszczególnieniem brakujących linii)
+
+CLI ręcznie:
+```bash
+pytest -q
+pytest --cov=djlib --cov-report=term-missing
+````
+
+### Quality gates
+
+- Build: brak kompilacji (pure Python) – weryfikacja instalacji przez task STEP 0.
+- Tests: wszystkie muszą przejść (docelowo dodać threshold pokrycia > 80%).
+- Lint: plan wprowadzenia `ruff` + `black` (CI future).
+
+### Planowane rozszerzenia jakości
+
+- Logowanie decyzji użytkownika o pominięciu SoundCloud do `enrich_status.json`.
+- Snapshot testy dla multi-source genre fuzji (deterministyczna waga + sort alfabetyczny).
+- Parametryzacja testów filename dla wielu nawiasów / duplikatów / pustych tokenów.
+
+````
 
 ### Caching:
 
@@ -736,7 +798,7 @@ from djlib.taxonomy import add_ready_bucket, ensure_taxonomy_dirs
 
 add_ready_bucket("CLUB/PROGRESSIVE HOUSE")
 ensure_taxonomy_dirs()  # Tworzy katalogi
-```
+````
 
 ### Sprawdzenie czy target jest poprawny:
 
@@ -784,5 +846,40 @@ bucket, confidence, reason = decide_bucket(row)
 
 ---
 
-**Ostatnia aktualizacja**: 2025  
-**Wersja dokumentacji**: 2.0
+**Ostatnia aktualizacja**: 2025 (SoundCloud + per-source genres)  
+**Wersja dokumentacji**: 2.1
+
+---
+
+### Planowane rozszerzenie `enrich_status.json`
+
+Format (propozycja) dodający sekcję SoundCloud audytu:
+
+```json
+{
+  "started_at": "2025-11-12T14:03:22Z",
+  "completed_at": "2025-11-12T14:05:47Z",
+  "rows_processed": 312,
+  "soundcloud": {
+    "client_id_status": "invalid", // ok | invalid | missing | error | rate-limit
+    "decision": "aborted", // active | skipped | aborted
+    "prompt_shown": true,
+    "attempted_requests": 0,
+    "timestamp": "2025-11-12T14:03:25Z"
+  },
+  "sources_counts": {
+    "musicbrainz": 250,
+    "lastfm": 260,
+    "spotify": 210,
+    "soundcloud": 0
+  }
+}
+```
+
+Cele:
+
+- Transparentność: wiemy czy brak danych SC wynikał z decyzji czy błędu.
+- Monitoring jakości: korelacja completeness vs. aktywność źródeł.
+- Pod grunt dla automatycznych retry/reguł adaptacyjnych.
+
+Implementacja: w komendzie `enrich-online` – wstępny zapis stanu (started), aktualizacja po health check (status SC), finalizacja przy zakończeniu lub abort.

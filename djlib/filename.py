@@ -21,8 +21,12 @@ def extension_for(path: Path) -> str:
 
 def parse_from_filename(path: Path) -> tuple[str, str, str]:
     """Próbuje wyciągnąć (artist, title, version_info) z nazwy pliku.
-    Wzorce: "Artist - Title (Version).ext", "Artist - Title.ext".
-    Jeśli się nie uda – zwraca ("", basename, "")."""
+    Rozszerzone warianty:
+    Artist - Title (Remix) (Extended Edit)
+    Artist - Title (Karibu Remix)(Extended Edit)
+    Artist - Title (Karibu Remix) (VIP Mix)
+    Zwraca wszystkie kolejne nawiasy scalone w jedną wersję po przecinku.
+    Jeśli nie znajdzie artysty — fallback: ("", <basename>, "")."""
     name = path.stem
 
     # 1) wstępne czyszczenie nazwy pliku
@@ -36,11 +40,14 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     cleaned = re.sub(r"\s*-[\-–—]\s*", " - ", cleaned)  # normalizuj łącznik
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
-    # 2) próba dopasowania: Artist - Title (Version)
-    m = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*\(([^)]+)\)\s*$", cleaned)
-    if m:
-        a, t, v = m.groups()
-        return a.strip(), t.strip(), v.strip()
+    # 2) próba dopasowania z wieloma nawiasami: Artist - Title (V1) (V2) ...
+    m_multi = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*(\(.+\))\s*$", cleaned)
+    if m_multi:
+        a, t, tail = m_multi.groups()
+        # wyciągnij wszystkie grupy nawiasów
+        parts = re.findall(r"\(([^)]+)\)", tail)
+        version_combined = ", ".join(p.strip() for p in parts if p.strip())
+        return a.strip(), t.strip(), version_combined.strip()
     # 3) próba dopasowania: Artist - Title
     m2 = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*$", cleaned)
     if m2:

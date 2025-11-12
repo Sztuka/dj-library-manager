@@ -21,6 +21,8 @@ def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
     Z pliku zachowujemy BPM i Key (poza zakresem tej funkcji).
     """
     artist, title, version = parse_from_filename(path)
+    # Heurystyka: jeśli wersja zawiera "Remix" bez wskazania stylu, nie zrzynaj sufiksów z tytułu.
+    # Dodatkowo zachowaj wielokrotne nawiasy (np. Karibu Remix, Extended Edit) – nowy parser już to robi.
 
     # Jeśli parser nic nie znalazł, użyj podstaw z tagów jako minimalny fallback
     if not artist:
@@ -54,13 +56,10 @@ def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
     # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/Spotify
     try:
         from djlib.metadata.genre_resolver import resolve as resolve_genres
-        dur_s = None
-        if dur_sec:
-            dur_s = dur_sec
-        genre_res = resolve_genres(artist, title, duration_s=dur_s)
+        dur_s = dur_sec if dur_sec else None
+        genre_res = resolve_genres(artist, title, duration_s=dur_s, disable_soundcloud=False)
         if genre_res and genre_res.confidence >= 0.03:
-            # Ustaw gatunki z Last.fm/Spotify
-            genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
+            genres = [genre_res.main] + genre_res.subs[:2]
             genre_str = ", ".join(genres)
             sources = [src for src, _, _ in genre_res.breakdown]
             meta_source = f"genres({','.join(sources)})" if sources else "genres"

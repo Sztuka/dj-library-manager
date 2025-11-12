@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Public API for the audio analysis package (skeleton)
 
-ALGO_VERSION = 1
+ALGO_VERSION = 2
 
 try:
     from .essentia_backend import check_env, analyze  # noqa: F401

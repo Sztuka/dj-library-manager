@@ -16,6 +16,11 @@ from . import ALGO_VERSION
 from djlib.tags import _to_camelot  # reuse existing Camelot mapping
 from djlib.config import LOGS_DIR
 import yaml
+import numpy as np
+try:
+    from scipy import stats  # type: ignore
+except Exception:  # scipy may be missing; gate features that require it
+    stats = None  # type: ignore
 
 
 def _try_import_essentia():
@@ -171,6 +176,124 @@ def analyze(
                 metrics["spec_rolloff"] = get_scalar('lowlevel.spectral_rolloff')
                 metrics["onset_rate"] = get_scalar('rhythm.onset_rate')
                 
+                # Additional features for genre classification
+                metrics["zero_crossing_rate"] = get_scalar('lowlevel.zerocrossingrate')
+                metrics["danceability"] = get_scalar('rhythm.danceability')
+                metrics["chords_changes_rate"] = get_scalar('tonal.chords_changes_rate')
+                metrics["tuning_diatonic_strength"] = get_scalar('tonal.tuning_diatonic_strength')
+                
+                # Aggregate MFCC coefficients (mean across time)
+                try:
+                    mfcc_vals = results['lowlevel.mfcc']
+                    if hasattr(mfcc_vals, '__len__') and len(mfcc_vals) > 0:
+                        mfcc_mean = np.mean(mfcc_vals, axis=0) if getattr(mfcc_vals, 'ndim', 1) > 1 else mfcc_vals
+                        if hasattr(mfcc_mean, '__len__') and len(mfcc_mean) >= 13:
+                            for i in range(13):  # First 13 MFCC coefficients (means)
+                                metrics[f"mfcc_{i}"] = float(mfcc_mean[i])
+                            # Per-coefficient std
+                            mfcc_std = np.std(mfcc_vals, axis=0) if getattr(mfcc_vals, 'ndim', 1) > 1 else np.zeros(13)
+                            for i in range(min(13, len(mfcc_std))):
+                                metrics[f"mfcc_std_{i}"] = float(mfcc_std[i])
+                            # Aggregate kurtosis/skew if scipy is available
+                            if stats is not None and getattr(mfcc_vals, 'ndim', 1) > 1:
+                                try:
+                                    mfcc_kurtosis = float(np.mean([stats.kurtosis(mfcc_vals[:, i]) for i in range(13)]))
+                                    mfcc_skew = float(np.mean([stats.skew(mfcc_vals[:, i]) for i in range(13)]))
+                                    metrics["mfcc_kurtosis_mean"] = mfcc_kurtosis
+                                    metrics["mfcc_skew_mean"] = mfcc_skew
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    print(f"MFCC extraction failed: {e}")
+                
+                # Aggregate chroma features (HPCP - Harmonic Pitch Class Profile)
+                try:
+                    hpcp_vals = results['tonal.hpcp']
+                    if hasattr(hpcp_vals, '__len__') and len(hpcp_vals) > 0:
+                        hpcp_mean = np.mean(hpcp_vals, axis=0) if getattr(hpcp_vals, 'ndim', 1) > 1 else hpcp_vals
+                        if hasattr(hpcp_mean, '__len__') and len(hpcp_mean) >= 12:
+                            for i in range(12):  # 12 chroma bins (means)
+                                metrics[f"chroma_{i}"] = float(hpcp_mean[i])
+                            # Per-bin std
+                            if getattr(hpcp_vals, 'ndim', 1) > 1:
+                                hpcp_std = np.std(hpcp_vals, axis=0)
+                                for i in range(min(12, len(hpcp_std))):
+                                    metrics[f"chroma_std_{i}"] = float(hpcp_std[i])
+                                # Aggregate kurtosis if scipy is available
+                                if stats is not None:
+                                    try:
+                                        chroma_kurtosis = float(np.mean([stats.kurtosis(hpcp_vals[:, i]) for i in range(12)]))
+                                        metrics["chroma_kurtosis_mean"] = chroma_kurtosis
+                                    except Exception:
+                                        pass
+                except Exception as e:
+                    print(f"Chroma extraction failed: {e}")
+                
+                # Additional spectral features (robust to Pool semantics)
+                try:
+                    # Spectral centroid std
+                    try:
+                        centroid_vals = results['lowlevel.spectral_centroid']
+                        if hasattr(centroid_vals, '__len__') and len(centroid_vals) > 0:
+                            metrics["spec_centroid_std"] = float(np.std(centroid_vals))
+                    except Exception:
+                        pass
+                    # Spectral rolloff std
+                    try:
+                        rolloff_vals = results['lowlevel.spectral_rolloff']
+                        if hasattr(rolloff_vals, '__len__') and len(rolloff_vals) > 0:
+                            metrics["spec_rolloff_std"] = float(np.std(rolloff_vals))
+                    except Exception:
+                        pass
+                    # Spectral bandwidth (approximate)
+                    try:
+                        _ = results['lowlevel.spectral_energyband_low']
+                        _ = results['lowlevel.spectral_energyband_high']
+                        metrics["spec_bandwidth_mean"] = metrics.get("spec_centroid", 0)
+                        metrics["spec_bandwidth_std"] = metrics.get("spec_centroid_std", 0)
+                    except Exception:
+                        pass
+                    # Spectral contrast
+                    try:
+                        contrast_vals = results['lowlevel.spectral_contrast']
+                        if hasattr(contrast_vals, '__len__') and len(contrast_vals) > 0:
+                            metrics["spec_contrast_mean"] = float(np.mean(contrast_vals))
+                            metrics["spec_contrast_std"] = float(np.std(contrast_vals))
+                    except Exception:
+                        pass
+                    # Tonnetz
+                    try:
+                        tonnetz_vals = results['tonal.tonnetz']
+                        if hasattr(tonnetz_vals, '__len__') and len(tonnetz_vals) > 0:
+                            metrics["tonnetz_mean"] = float(np.mean(tonnetz_vals))
+                            metrics["tonnetz_std"] = float(np.std(tonnetz_vals))
+                    except Exception:
+                        pass
+                    # Spectral dynamics
+                    try:
+                        flux_vals = results['lowlevel.spectral_flux']
+                        if hasattr(flux_vals, '__len__') and len(flux_vals) > 0:
+                            metrics["spec_flux_mean"] = float(np.mean(flux_vals))
+                            metrics["spec_flux_std"] = float(np.std(flux_vals))
+                    except Exception:
+                        pass
+                    try:
+                        flat_vals = results['lowlevel.spectral_flatness_db']
+                        if hasattr(flat_vals, '__len__') and len(flat_vals) > 0:
+                            metrics["spec_flatness_mean"] = float(np.mean(flat_vals))
+                            metrics["spec_flatness_std"] = float(np.std(flat_vals))
+                    except Exception:
+                        pass
+                    try:
+                        hfc_vals = results['lowlevel.hfc']
+                        if hasattr(hfc_vals, '__len__') and len(hfc_vals) > 0:
+                            metrics["hfc_mean"] = float(np.mean(hfc_vals))
+                            metrics["hfc_std"] = float(np.std(hfc_vals))
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"Additional spectral features extraction failed: {e}")
+                
             except Exception as e:
                 print(f"Python Essentia analysis failed: {e}")
                 # Fall back to None
@@ -324,12 +447,51 @@ def analyze(
             "onset_rate": metrics.get("onset_rate"),
             "spec_centroid": metrics.get("spec_centroid"),
             "spec_rolloff": metrics.get("spec_rolloff"),
+            "zero_crossing_rate": metrics.get("zero_crossing_rate"),
+            "danceability": metrics.get("danceability"),
+            "chords_changes_rate": metrics.get("chords_changes_rate"),
+            "tuning_diatonic_strength": metrics.get("tuning_diatonic_strength"),
             "energy": energy,
             "energy_var": metrics.get("energy_var"),
             "analyzed_at": datetime.utcnow().isoformat(),
             "source": src,
-            "extras": {"notes": "skeleton backend"},
+            "extras": {"notes": "with genre features"},
         }
+        
+        # Add MFCC coefficients
+        for i in range(13):
+            mfcc_key = f"mfcc_{i}"
+            if mfcc_key in metrics:
+                payload[mfcc_key] = metrics[mfcc_key]
+        
+        # Add MFCC statistics
+        mfcc_stat_keys = [f"mfcc_std_{i}" for i in range(13)] + ["mfcc_kurtosis_mean", "mfcc_skew_mean"]
+        for key in mfcc_stat_keys:
+            if key in metrics:
+                payload[key] = metrics[key]
+        
+        # Add chroma features
+        for i in range(12):
+            chroma_key = f"chroma_{i}"
+            if chroma_key in metrics:
+                payload[chroma_key] = metrics[chroma_key]
+        
+        # Add chroma statistics
+        chroma_stat_keys = [f"chroma_std_{i}" for i in range(12)] + ["chroma_kurtosis_mean"]
+        for key in chroma_stat_keys:
+            if key in metrics:
+                payload[key] = metrics[key]
+        
+        # Add additional spectral features
+        spectral_keys = [
+            "spec_centroid_std", "spec_rolloff_std", "spec_bandwidth_mean", "spec_bandwidth_std",
+            "spec_contrast_mean", "spec_contrast_std", "tonnetz_mean", "tonnetz_std",
+            "spec_flux_mean", "spec_flux_std", "spec_flatness_mean", "spec_flatness_std",
+            "hfc_mean", "hfc_std"
+        ]
+        for key in spectral_keys:
+            if key in metrics:
+                payload[key] = metrics[key]
 
         upsert_analysis(aid, payload)
         result = dict(payload)
