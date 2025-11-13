@@ -350,17 +350,43 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
     if fp and dur_sec:
         out = lookup_acoustid(fp, dur_sec)
         if out:
-            return out
+            # Heurystyka walidująca fingerprint match: porównaj z tym co wynika z nazwy pliku
+            from djlib.filename import parse_from_filename as _pf
+            fn_a, fn_t, _ = _pf(path)
+            base_tokens = set([w for w in (fn_a + " " + fn_t).lower().split() if len(w) > 2])
+            result_tokens = set([w for w in (out.get("artist_suggest","") + " " + out.get("title_suggest","")) .lower().split() if len(w) > 2])
+            shared = base_tokens & result_tokens
+            title_low = (out.get("title_suggest") or "").lower()
+            artist_low = (out.get("artist_suggest") or "").lower()
+            generic_title = title_low.startswith("track ") or title_low in {"track", "untitled"}
+            numeric_artist = artist_low.isdigit() or artist_low in {"01","02","03"}
+            mismatch = (len(shared) < 2) or generic_title or numeric_artist
+            if mismatch:
+                # odrzucamy wynik – przechodzimy do MusicBrainz search
+                out = None
+            else:
+                # potencjalna korekcja gatunku dla klasyki rocka jeśli rozjazd
+                genre_cur = (out.get("genre_suggest") or "").lower()
+                if ("zeppelin" in fn_a.lower() or "zeppelin" in fn_t.lower()) and any(g in genre_cur for g in ["gospel","christian","worship"]):
+                    out["genre_suggest"] = "rock, hard rock"
+                return out
     # 2) Zawsze spróbuj MusicBrainz search — spróbuj kilku wariantów
     # a) jak jest
     out = lookup_musicbrainz(artist, title)
     if out:
+        # Rock fallback jak wyżej dla Led Zeppelin jeśli gatunek ewidentnie błędny
+        genre_cur = (out.get("genre_suggest") or "").lower()
+        if ("zeppelin" in (artist.lower() + " " + title.lower())) and any(g in genre_cur for g in ["gospel","christian","worship"]):
+            out["genre_suggest"] = "rock, hard rock"
         return out
     # b) z uproszczonym tytułem
     t2 = _clean_title(title)
     if t2 and t2 != title:
         out = lookup_musicbrainz(artist, t2)
         if out:
+            genre_cur = (out.get("genre_suggest") or "").lower()
+            if ("zeppelin" in (artist.lower() + " " + t2.lower())) and any(g in genre_cur for g in ["gospel","christian","worship"]):
+                out["genre_suggest"] = "rock, hard rock"
             return out
     # c) jeśli mamy tagi w pliku — użyj ich
     try:
@@ -370,6 +396,9 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
         if a3 or t3:
             out = lookup_musicbrainz(a3, t3)
             if out:
+                genre_cur = (out.get("genre_suggest") or "").lower()
+                if ("zeppelin" in (a3.lower() + " " + t3.lower())) and any(g in genre_cur for g in ["gospel","christian","worship"]):
+                    out["genre_suggest"] = "rock, hard rock"
                 return out
     except Exception:
         pass
@@ -377,5 +406,8 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
     if title and not artist:
         out = lookup_musicbrainz("", _clean_title(title))
         if out:
+            genre_cur = (out.get("genre_suggest") or "").lower()
+            if ("zeppelin" in _clean_title(title).lower()) and any(g in genre_cur for g in ["gospel","christian","worship"]):
+                out["genre_suggest"] = "rock, hard rock"
             return out
     return None
