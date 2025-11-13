@@ -72,6 +72,28 @@ def _is_noise(tag: str) -> bool:
     return False
 
 
+def _downweight_factor(tag: str) -> float:
+    """Return a multiplicative factor (0..1] to reduce influence of broad tags.
+
+    Goal: limit over-dominance of generic tags like folk/indie/alternative.
+    Keep them present if truly dominant, but with smaller weight.
+    """
+    t = _norm(tag)
+    if not t:
+        return 1.0
+    if t == "folk":
+        return 0.30
+    if t == "indie":
+        return 0.35
+    if t in {"indie folk", "indie rock"}:
+        return 0.40
+    if t.startswith("indie ") or t.endswith(" indie"):
+        return 0.40
+    if t in {"alternative", "alternative rock"}:
+        return 0.60
+    return 1.0
+
+
 @dataclass
 class GenreResolution:
     main: str
@@ -103,8 +125,12 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None, disable_s
             c = canonical(t)
             if _is_noise(c):
                 continue
-            scores[c] = scores.get(c, 0.0) + mb_w
-            local[c] = local.get(c, 0.0) + mb_w
+            f = _downweight_factor(c)
+            w = mb_w * f
+            if w <= 0:
+                continue
+            scores[c] = scores.get(c, 0.0) + w
+            local[c] = local.get(c, 0.0) + w
         if local:
             parts.append(("musicbrainz", mb_w, local))
 
@@ -117,11 +143,13 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None, disable_s
         # weight by log(count), scale with lfm_w
         import math
         for name, cnt in tags_lfm:
-            w = (math.log(max(cnt, 1)) if cnt > 0 else 0.0) * lfm_w
-            if w <= 0:
-                continue
+            base = (math.log(max(cnt, 1)) if cnt > 0 else 0.0) * lfm_w
             c = canonical(name)
             if _is_noise(c):
+                continue
+            f = _downweight_factor(c)
+            w = base * f
+            if w <= 0:
                 continue
             scores[c] = scores.get(c, 0.0) + w
             local[c] = local.get(c, 0.0) + w
@@ -137,8 +165,12 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None, disable_s
             c = canonical(name)
             if _is_noise(c):
                 continue
-            scores[c] = scores.get(c, 0.0) + sp_w
-            local[c] = local.get(c, 0.0) + sp_w
+            f = _downweight_factor(c)
+            w = sp_w * f
+            if w <= 0:
+                continue
+            scores[c] = scores.get(c, 0.0) + w
+            local[c] = local.get(c, 0.0) + w
         if local:
             parts.append(("spotify", sp_w, local))
 
@@ -152,8 +184,12 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None, disable_s
                 c = canonical(name)
                 if _is_noise(c):
                     continue
-                scores[c] = scores.get(c, 0.0) + sc_w
-                local[c] = local.get(c, 0.0) + sc_w
+                f = _downweight_factor(c)
+                w = sc_w * f
+                if w <= 0:
+                    continue
+                scores[c] = scores.get(c, 0.0) + w
+                local[c] = local.get(c, 0.0) + w
             if local:
                 parts.append(("soundcloud", sc_w, local))
 
