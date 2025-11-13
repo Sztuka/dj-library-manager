@@ -5,13 +5,20 @@ from pathlib import Path
 _ILLEGAL = r'[\/\\\:\*\?"<>\|]'
 
 def build_final_filename(artist: str, title: str, version_info: str, key_camelot: str, bpm: str, ext: str) -> str:
-    vi = (version_info or "").strip() or "Original Mix"
+    vi_raw = (version_info or "").strip()
+    if vi_raw:
+        # Render multiple version tokens as separate parentheses: (V1) (V2)
+        parts = [p.strip() for p in vi_raw.split(",") if p.strip()]
+        vi = " ".join(f"({p})" for p in parts) if parts else "(Original Mix)"
+    else:
+        vi = "(Original Mix)"
     k = (key_camelot or "").strip() or "??"
     b = (bpm or "").strip() or "??"
     a = (artist or "Unknown Artist").strip()
     t = (title or "Unknown Title").strip()
 
-    name = f"{a} - {t} ({vi}) [{k} {b}]{ext}"
+    # If vi already includes parentheses (multiple), do not wrap again
+    name = f"{a} - {t} {vi} [{k} {b}]{ext}"
     # wyczyść nielegalne znaki w nazwie
     return re.sub(_ILLEGAL, "-", name)
 

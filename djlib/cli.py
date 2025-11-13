@@ -656,7 +656,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 title_base = (r.get("title") or r.get("title_suggest") or "").strip()
                 version_info = (r.get("version_info") or r.get("version_suggest") or "").strip()
                 if title_base and version_info:
-                    title_out = f"{title_base} ({version_info})"
+                    parts = [p.strip() for p in version_info.split(",") if p.strip()]
+                    if parts:
+                        title_out = title_base + " " + " ".join(f"({p})" for p in parts)
+                    else:
+                        title_out = title_base
                 else:
                     title_out = title_base
                 if artist:
