@@ -18,63 +18,98 @@ def _norm(s: str) -> str:
 
 @lru_cache(maxsize=1000)
 def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optional[List[str]]:
-    """Public SoundCloud track search → collect genre + tag_list tokens.
+    """Public SoundCloud search – multi-query strategy collecting genre + tag_list tokens.
 
-    Returns a sorted list of unique, normalized tokens (lowercase) or None if nothing found.
-    Uses only the public /search/tracks endpoint with the provided client_id.
-    Rate-limit friendly: small sleep per call; results cached (LRU).
+    Queries (stop early if we already have strong tokens like 'afro house'):
+      1) artist + title (+ version if given)
+      2) artist + title + 'remix'
+      3) artist + title + 'extended edit'
+
+    For each query we take up to top 3 results, merge tokens and filter noise.
+    Noise: generic buzz (new, trending, viral, remix(es) duplicates, year tags).
+    Returns unique, normalized tokens sorted (for stable CSV diffs) or None.
     """
     cid = get_soundcloud_client_id()
     if not cid:
         return None
-    query = f"{artist} {title} {version}".strip()
-    if not query:
+    base = f"{artist} {title}".strip()
+    if not base:
         return None
+    queries: List[str] = []
+    # include version raw tokens if provided (split by comma / space)
+    if version:
+        version_tokens = [v.strip() for v in re.split(r"[,]+", version) if v.strip()]
+        # join version tokens back to one query
+        queries.append(" ".join([base] + version_tokens))
+    queries.append(base)
+    queries.append(base + " remix")
+    queries.append(base + " extended edit")
+    # de-dup preserve order
+    seen_q = set()
+    queries = [q for q in queries if not (q in seen_q or seen_q.add(q))]
+
+    collected: List[str] = []
     global _SC_REQUESTS
-    try:
-        time.sleep(0.5)  # basic pacing to avoid burst hitting daily quota
-        _SC_REQUESTS += 1
-        r = requests.get(
-            API_SEARCH,
-            params={"q": query, "client_id": cid, "limit": 3},
-            timeout=_DEF_TIMEOUT,
-        )
-        if r.status_code != 200:
-            return None
-        data = r.json() or {}
-        coll = (data.get("collection") or [])
-        if not coll:
-            return None
-        # Take best match (first); could improve ranking by duration/title similarity later
-        item = coll[0]
-        tokens: List[str] = []
+
+    def _extract_from_item(item: Dict[str, str]) -> List[str]:
+        toks: List[str] = []
         genre = item.get("genre") or ""
         if genre:
-            tokens.append(_norm(genre))
+            toks.append(_norm(genre))
         tag_list = item.get("tag_list") or ""
         if tag_list:
-            # quoted phrases and standalone tokens
-            quoted = re.findall(r'"([^"]+)"', tag_list)
+            quoted = re.findall(r'"([^\"]+)"', tag_list)
             for qv in quoted:
-                tokens.append(_norm(qv))
+                toks.append(_norm(qv))
             remainder = re.sub(r'"[^\"]+"', "", tag_list)
             for part in remainder.split():
-                part_n = _norm(part)
-                if part_n and len(part_n) > 2:
-                    tokens.append(part_n)
-        # de-dup preserving order
+                pn = _norm(part)
+                if pn and len(pn) > 2:
+                    toks.append(pn)
+        # Basic item-level filtering of noise
+        noise = {"new", "trending", "viral", "remixes", "remix", "extended", "mix", "summer", "new music"}
+        out = []
+        for t in toks:
+            if t.isdigit():
+                continue
+            # remove explicit year tags
+            if re.match(r"20[0-3][0-9]", t):
+                continue
+            if any(word in t for word in noise):
+                # keep 'afro house' despite 'house' though
+                if t not in noise and not t.endswith(" mix"):
+                    out.append(t)
+                continue
+            out.append(t)
+        return out
+
+    try:
+        for q in queries:
+            time.sleep(0.4)
+            _SC_REQUESTS += 1
+            r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+            if r.status_code != 200:
+                continue
+            data = r.json() or {}
+            coll = (data.get("collection") or [])[:3]
+            for item in coll:
+                collected.extend(_extract_from_item(item))
+            # Early exit if we already captured strong afro/house tokens
+            if any(t in collected for t in ["afro house", "afro tech", "tech house", "house"]):
+                break
+        # de-dup preserve order
         seen = set()
-        out = [t for t in tokens if not (t in seen or seen.add(t))]
-        return sorted(out) if out else None
+        uniq = [t for t in collected if not (t in seen or seen.add(t))]
+        return sorted(uniq) if uniq else None
     except Exception:
         return None
 
 def track_tags(artist: str, title: str) -> Dict[str, List[str]]:
-    """Backward-compatible wrapper used by genre_resolver (no version passing yet)."""
+    """Wrapper used by genre_resolver.
+    Uses enhanced multi-query function without explicit version (filename parser not integrated here yet)."""
     genres = get_soundcloud_genres(artist, title, "") or []
     if not genres:
         return {}
-    # first token as primary genre candidate; all tokens as tags
     return {"genre": genres[:1], "tags": genres}
 
 def client_id_health() -> Dict[str, str]:

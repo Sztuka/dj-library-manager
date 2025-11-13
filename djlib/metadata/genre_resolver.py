@@ -43,6 +43,8 @@ _NOISE_TERMS = {
     "seen live",
     "plattentests.de",
     "germany", "deutschland",
+    # newly filtered buzz / generic popularity tokens and year/season fluff
+    "viral", "trending", "new", "new music", "summer mix", "summer", "remixes", "mix",
 }
 
 import re as _re
@@ -61,6 +63,11 @@ def _is_noise(tag: str) -> bool:
         return True
     # very short or purely numeric
     if len(t) <= 2 or t.isdigit():
+        return True
+    # Year-only tags (2023, 2024, etc.) or tokens ending with year markers
+    if _re.fullmatch(r"20[0-3][0-9]", t):
+        return True
+    if _re.search(r"20[0-3][0-9]", t) and len(t.split()) == 1:
         return True
     return False
 

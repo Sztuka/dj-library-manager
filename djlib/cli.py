@@ -478,6 +478,11 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
 
         if any_change:
             changed += 1
+        # Auto-fill artist/title if still empty and we now have suggest values (quality-of-life)
+        if not (r.get("artist") or "").strip() and (r.get("artist_suggest") or "").strip():
+            r["artist"] = r["artist_suggest"]
+        if not (r.get("title") or "").strip() and (r.get("title_suggest") or "").strip():
+            r["title"] = r["title_suggest"]
         processed += 1
         status_doc["rows_processed"] = processed
         status_doc["updated"] = changed
