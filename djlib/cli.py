@@ -1237,8 +1237,9 @@ def cmd_export_xlsx(args: argparse.Namespace) -> None:
     ws.title = "Library"  # type: ignore[assignment]
     headers = [
         "track_id", "artist", "title", "artist_suggest", "title_suggest", "version_info", "version_suggest",
-        "genre_suggest",
-        "genres_musicbrainz", "genres_lastfm", "genres_spotify", "genres_soundcloud", "genres_audio", "audio_confidence",
+        "genre", "genre_suggest",
+        "bpm", "key_camelot",
+        "genres_musicbrainz", "genres_lastfm", "genres_spotify", "genres_soundcloud", "audio_genre", "audio_confidence",
         "pop_playcount", "pop_listeners",
         "ai_guess_bucket", "ai_guess_comment", "target_subfolder", "file_path"
     ]
@@ -1251,6 +1252,14 @@ def cmd_export_xlsx(args: argparse.Namespace) -> None:
             pb, cf = ml_pred_by_path[fp]
             audio_genre = pb
             audio_conf = f"{cf:.2f}"
+        # Round BPM to integer (display only)
+        bpm_raw = (r.get("bpm") or "").strip()
+        bpm_disp = ""
+        try:
+            if bpm_raw:
+                bpm_disp = str(int(round(float(bpm_raw))))
+        except Exception:
+            bpm_disp = bpm_raw
         ws.append([
             r.get("track_id", ""),
             r.get("artist", ""),
@@ -1259,7 +1268,10 @@ def cmd_export_xlsx(args: argparse.Namespace) -> None:
             r.get("title_suggest", ""),
             r.get("version_info", ""),
             r.get("version_suggest", ""),
+            r.get("genre", ""),
             r.get("genre_suggest", ""),
+            bpm_disp,
+            r.get("key_camelot", ""),
             r.get("genres_musicbrainz", ""),
             r.get("genres_lastfm", ""),
             r.get("genres_spotify", ""),
@@ -1323,31 +1335,63 @@ def cmd_import_xlsx(args: argparse.Namespace) -> None:
     by_id = {r.get("track_id"): r for r in rows}
     by_path = {r.get("file_path"): r for r in rows}
 
+    # Map header indices
+    header = [cell.value for cell in ws[1]]
+    idx = {name: i for i, name in enumerate(header)}
+
+    def _cell(row_vals, key):
+        i = idx.get(key)
+        return row_vals[i] if i is not None and i < len(row_vals) else None
+
     updated = 0
-    for i, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        try:
-            track_id, artist, title, version_info, genre_suggest, ai_bucket, ai_comment, target_subfolder, file_path = row[:9]
-        except Exception:
-            continue
-        target_subfolder = str(target_subfolder or "").strip()
-        if not target_subfolder:
-            continue
-        rec = None
-        tid = str(track_id or "").strip()
-        fpp = str(file_path or "").strip()
-        if tid and tid in by_id:
-            rec = by_id[tid]
-        elif fpp and fpp in by_path:
-            rec = by_path[fpp]
+    accepted = 0
+    for i, row_vals in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        track_id = str(_cell(row_vals, "track_id") or "").strip()
+        file_path = str(_cell(row_vals, "file_path") or "").strip()
+        rec = by_id.get(track_id) or by_path.get(file_path)
         if not rec:
             continue
-        if rec.get("target_subfolder", "") != target_subfolder:
-            rec["target_subfolder"] = target_subfolder
+        # Target subfolder
+        tgt = str(_cell(row_vals, "target_subfolder") or "").strip()
+        if tgt and tgt != rec.get("target_subfolder", ""):
+            rec["target_subfolder"] = tgt
             updated += 1
+        # Accept metadata edits: if user filled artist/title/genre columns
+        artist_edit = str(_cell(row_vals, "artist") or "").strip()
+        title_edit = str(_cell(row_vals, "title") or "").strip()
+        version_info_edit = str(_cell(row_vals, "version_info") or "").strip()
+        genre_edit = str(_cell(row_vals, "genre") or "").strip()
+        if artist_edit and artist_edit != rec.get("artist", ""):
+            rec["artist"] = artist_edit
+            updated += 1
+        if title_edit and title_edit != rec.get("title", ""):
+            rec["title"] = title_edit
+            updated += 1
+        if version_info_edit and version_info_edit != rec.get("version_info", ""):
+            rec["version_info"] = version_info_edit
+            updated += 1
+        if genre_edit and genre_edit != rec.get("genre", ""):
+            rec["genre"] = genre_edit
+            updated += 1
+        # If user modified any accepted fields or set target, mark as accepted
+        if tgt or artist_edit or title_edit or genre_edit:
+            if (rec.get("review_status") or "") != "accepted":
+                rec["review_status"] = "accepted"
+                accepted += 1
+        # Sync suggests to accepted if accepted but main empty
+        if rec.get("review_status") == "accepted":
+            if not rec.get("artist") and rec.get("artist_suggest"):
+                rec["artist"] = rec["artist_suggest"]
+            if not rec.get("title") and rec.get("title_suggest"):
+                rec["title"] = rec["title_suggest"]
+            if not rec.get("version_info") and rec.get("version_suggest"):
+                rec["version_info"] = rec["version_suggest"]
+            if not rec.get("genre") and rec.get("genre_suggest"):
+                rec["genre"] = rec["genre_suggest"].split(",")[0].strip()
 
-    if updated:
+    if updated or accepted:
         save_records(CSV_PATH, rows)
-    print(f"Import XLSX: updated={updated}")
+    print(f"Import XLSX: updated={updated}, accepted={accepted}")
 
 
 # ============ META-KOMENDY (aliasy) ============
