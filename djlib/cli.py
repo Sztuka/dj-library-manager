@@ -10,7 +10,7 @@ from djlib.config import (
     INBOX_DIR, READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR, LOGS_DIR, CSV_PATH, AUDIO_EXTS
 )
 from djlib.csvdb import load_records, save_records
-from djlib.tags import read_tags
+from djlib.tags import read_tags, write_tags
 from djlib.enrich import suggest_metadata, enrich_online_for_row
 from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 from djlib.metadata.genre_resolver import resolve as resolve_genres
@@ -603,6 +603,8 @@ def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
 def cmd_apply(args: argparse.Namespace) -> None:
     rows = load_records(CSV_PATH)
     changed = False
+    tags_written = 0
+    tags_errors = 0
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -646,6 +648,40 @@ def cmd_apply(args: argparse.Namespace) -> None:
         r["added_date"] = utc_now_str()
         changed = True
         log_rows.append([str(src), str(dest_real), r.get("track_id","")])
+        # Po udanym przeniesieniu spróbuj zapisać zaakceptowane metadane do tagów audio
+        try:
+            if (r.get("review_status") or "").lower() == "accepted":
+                updates = {}
+                artist = (r.get("artist") or r.get("artist_suggest") or "").strip()
+                title_base = (r.get("title") or r.get("title_suggest") or "").strip()
+                version_info = (r.get("version_info") or r.get("version_suggest") or "").strip()
+                if title_base and version_info:
+                    title_out = f"{title_base} ({version_info})"
+                else:
+                    title_out = title_base
+                if artist:
+                    updates["artist"] = artist
+                if title_out:
+                    updates["title"] = title_out
+                genre = (r.get("genre") or r.get("genre_suggest") or "").strip()
+                if genre:
+                    updates["genre"] = genre
+                bpm_raw = (r.get("bpm") or "").strip()
+                if bpm_raw:
+                    try:
+                        bpm_val = int(round(float(bpm_raw)))
+                        updates["bpm"] = str(bpm_val)
+                    except Exception:
+                        updates["bpm"] = bpm_raw
+                key_cam = (r.get("key_camelot") or "").strip().upper()
+                if key_cam:
+                    updates["key_camelot"] = key_cam
+                if updates:
+                    write_tags(dest_real, updates)
+                    tags_written += 1
+        except Exception as e:
+            print(f"[WARN] Tag write failed for {dest_real}: {e}")
+            tags_errors += 1
 
     if not args.dry_run and log_rows:
         with log_path.open("w", newline="", encoding="utf-8") as f:
@@ -657,6 +693,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
     if changed and not args.dry_run:
         save_records(CSV_PATH, rows)
         print("Przeniesiono i zaktualizowano CSV.")
+        print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
     elif not changed and not args.dry_run:
         print("Brak pozycji do przeniesienia.")
 
