@@ -24,6 +24,24 @@ def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
     artist = (tags.get("artist") or "").strip()
     title = (tags.get("title") or "").strip()
     version = (tags.get("version_info") or "").strip()
+    # Heurystyka: jeśli artist z tagów jest pusty/krótki/liczba, a title zawiera ' - ', spróbuj podzielić
+    def _split_title(tt: str):
+        parts = tt.split(" - ", 1)
+        if len(parts) == 2:
+            a, t = parts[0].strip(), parts[1].strip()
+            return a, t
+        return "", tt
+    if (not artist or len(artist) < 2 or artist.isdigit()) and (" - " in title):
+        a2, t2 = _split_title(title)
+        if a2 and t2:
+            artist, title = a2, t2
+            # wydziel wersję z końca tytułu jeśli zawiera nawiasy
+            import re as _re
+            m = _re.search(r"\(([^)]+)\)\s*$", title)
+            if m:
+                version = version or m.group(1).strip()
+                title = title[:m.start()].strip()
+    # Jeżeli dalej pusto — użyj parsowania nazwy pliku
     if not artist and not title:
         pf_artist, pf_title, pf_version = parse_from_filename(path)
         artist = artist or pf_artist
