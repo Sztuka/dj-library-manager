@@ -46,11 +46,16 @@ def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
     if fp and dur_sec:
         online = lookup_acoustid(fp, dur_sec)
         if online:
+            # Preserve filename-derived version if online lacks it
+            if version and not (online.get("version_suggest") or "").strip():
+                online = {**online, "version_suggest": version}
             return online
     
     # Następnie spróbuj MusicBrainz search
     online = lookup_musicbrainz(artist, title)
     if online:
+        if version and not (online.get("version_suggest") or "").strip():
+            online = {**online, "version_suggest": version}
         return online
     
     # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/Spotify

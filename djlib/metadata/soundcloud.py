@@ -51,20 +51,57 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     collected: List[str] = []
     global _SC_REQUESTS
 
+    # Build stopword set from artist/title to drop self-referential tokens
+    at_words = set(_norm((artist or "") + " " + (title or "")).split())
+    # Common non-genre words to ignore
+    common_noise = {"edit", "extended", "original", "mix", "remix", "vip", "club", "radio", "version"}
+
+    # Acceptable single-word genre-like tokens (others are dropped if single words)
+    allow_single = {
+        "house", "techno", "trance", "electronic", "edm", "garage", "dubstep", "amapiano",
+        "breaks", "breakbeat", "disco", "funk", "soul", "hiphop", "hip-hop", "hip",
+        "drill", "afro", "dancehall", "reggaeton", "dnb", "drumstep", "jungle",
+    }
+
+    def _keep_token(t: str) -> bool:
+        if not t:
+            return False
+        if t in at_words:
+            return False
+        if t in common_noise:
+            return False
+        # remove plain years
+        if re.fullmatch(r"20[0-3][0-9]", t):
+            return False
+        # keep multi-word phrases (e.g., 'afro house', 'tech house')
+        if " " in t:
+            return True
+        # keep only certain singletons
+        if t in allow_single:
+            return True
+        # drop very short or person-name-like singles
+        if len(t) <= 4:
+            return False
+        return False
+
     def _extract_from_item(item: Dict[str, str]) -> List[str]:
         toks: List[str] = []
         genre = item.get("genre") or ""
         if genre:
-            toks.append(_norm(genre))
+            normg = _norm(genre)
+            if _keep_token(normg):
+                toks.append(normg)
         tag_list = item.get("tag_list") or ""
         if tag_list:
             quoted = re.findall(r'"([^\"]+)"', tag_list)
             for qv in quoted:
-                toks.append(_norm(qv))
+                nv = _norm(qv)
+                if _keep_token(nv):
+                    toks.append(nv)
             remainder = re.sub(r'"[^\"]+"', "", tag_list)
             for part in remainder.split():
                 pn = _norm(part)
-                if pn and len(pn) > 2:
+                if _keep_token(pn):
                     toks.append(pn)
         # Basic item-level filtering of noise
         noise = {"new", "trending", "viral", "remixes", "remix", "extended", "mix", "summer", "new music"}
@@ -76,7 +113,7 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
             if re.match(r"20[0-3][0-9]", t):
                 continue
             if any(word in t for word in noise):
-                # keep 'afro house' despite 'house' though
+                # keep composite genres like 'afro house' despite containing filtered words
                 if t not in noise and not t.endswith(" mix"):
                     out.append(t)
                 continue
@@ -97,7 +134,7 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
             # Early exit if we already captured strong afro/house tokens
             if any(t in collected for t in ["afro house", "afro tech", "tech house", "house"]):
                 break
-        # de-dup preserve order
+    # de-dup preserve order
         seen = set()
         uniq = [t for t in collected if not (t in seen or seen.add(t))]
         return sorted(uniq) if uniq else None
