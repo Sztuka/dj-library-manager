@@ -14,6 +14,7 @@ musicbrainz:
   spotify_client_id: d8a34ee455eb481d8994e2f0d0a48b09
   spotify_client_secret: 175d716201554e04a11379c61d6d86cd
   soundcloud_client_id: MaZ7bR62GvbulJgV8EUjQnHfbZGDEKaI
+  youtube_api_key: AIzaSyAZSvb7gStr7IPvSegZuhDzfKb9Nq1Ys0Q
 
 preferences:
   auto_format_new_labels: false
