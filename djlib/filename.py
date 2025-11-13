@@ -43,6 +43,8 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     cleaned = name.replace("_", " ")
     # usuń ( ... ) jeśli wygląda jak adres/url lub domena
     cleaned = re.sub(r"\((?:https?://|www\.|[^)]*\.(?:com|net|org|ru|pl|de|uk|fr|it|es|cz|sk|nl|be|info|biz|xyz|site|club|music|fm|to|ua|co|io|me)\b)[^)]*\)", "", cleaned, flags=re.IGNORECASE)
+    # usuń prefiksy numerów ścieżek na początku (01-, 01., [01], (01) itp.)
+    cleaned = re.sub(r"^\s*(?:\[\s*\d{1,3}\s*\]|\(\s*\d{1,3}\s*\)|\d{1,3})[\s\._\-]+", "", cleaned)
     # usuń podwójne spacje i spacje wokół myślników
     cleaned = re.sub(r"\s*-[\-–—]\s*", " - ", cleaned)  # normalizuj łącznik
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
