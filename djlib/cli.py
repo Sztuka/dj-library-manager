@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse, csv, time, os, json
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 
@@ -269,50 +270,87 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
 
     # status plik
     status_path = LOGS_DIR / "enrich_status.json"
-    def _write_status(state: str, last_file: str = "") -> None:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _now_iso() -> str:
+        return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    # Struktura statusu (rozszerzona zgodnie z ARCHITECTURE.md)
+    status_doc = {
+        "started_at": _now_iso(),
+        "completed_at": "",
+        "rows_total": total,
+        "rows_processed": 0,
+        "updated": 0,
+        "state": "running",
+        "last_file": "",
+        "soundcloud": {
+            "client_id_status": "unknown",
+            "decision": "pending",  # active | skipped | aborted
+            "prompt_shown": False,
+            "attempted_requests": 0,
+            "timestamp": _now_iso(),
+        },
+        "sources_counts": {
+            "musicbrainz": 0,
+            "lastfm": 0,
+            "spotify": 0,
+            "soundcloud": 0,
+        }
+    }
+
+    def _flush_status() -> None:
         try:
-            LOGS_DIR.mkdir(parents=True, exist_ok=True)
             with status_path.open("w", encoding="utf-8") as f:
-                json.dump({
-                    "state": state,
-                    "total": total,
-                    "processed": processed,
-                    "updated": changed,
-                    "last_file": last_file,
-                }, f, ensure_ascii=False)
+                json.dump(status_doc, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
-    _write_status("running", "")
+    _flush_status()
 
     # SoundCloud client id health (informative, does not block)
     sc_health_msg = ""
     try:
         from djlib.metadata.soundcloud import client_id_health
         h = client_id_health()
+        if h:
+            status_doc["soundcloud"]["client_id_status"] = h.get("status", "unknown")
         sc_health_msg = f"soundcloud_client_id_status={h.get('status')}" if h else ""
         if h and h.get("status") == "ok":
             print("✅ SoundCloud client_id OK")
+            if not getattr(_, "skip_soundcloud", False):
+                status_doc["soundcloud"]["decision"] = "active"
         elif h and h.get("status") in {"invalid", "error"}:
             print(f"⚠ SoundCloud client_id: {h.get('message')}")
-            if not getattr(_, "skip_soundcloud", False):
-                # interactive decision
+            if getattr(_, "skip_soundcloud", False):
+                status_doc["soundcloud"]["decision"] = "skipped"
+            else:
+                status_doc["soundcloud"]["prompt_shown"] = True
+                _flush_status()
                 try:
                     choice = input("Kontynuować bez SoundCloud? [Y/n]: ").strip().lower()
                 except Exception:
                     choice = "y"
                 if choice in {"n", "no"}:
                     print("Przerwano na prośbę użytkownika (SoundCloud invalid).")
-                    _write_status("done", "")
+                    status_doc["soundcloud"]["decision"] = "aborted"
+                    status_doc["state"] = "done"
+                    status_doc["completed_at"] = _now_iso()
+                    _flush_status()
                     return
                 else:
                     print("→ Pomiń SoundCloud w tym przebiegu.")
                     setattr(_, "skip_soundcloud", True)
+                    status_doc["soundcloud"]["decision"] = "skipped"
         elif h and h.get("status") == "missing":
-            if not getattr(_, "skip_soundcloud", False):
+            if getattr(_, "skip_soundcloud", False):
+                status_doc["soundcloud"]["decision"] = "skipped"
+            else:
                 print("ℹ Brak SoundCloud client_id (można ustawić DJLIB_SOUNDCLOUD_CLIENT_ID).")
+                status_doc["soundcloud"]["decision"] = "skipped"  # treat missing as skipped
     except Exception:
         pass
+    _flush_status()
 
     # przygotuj mapowanie tagów → bucket
     tag_map = load_taxonomy_map()
@@ -324,7 +362,10 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         online = enrich_online_for_row(p, r)
         if not online:
             processed += 1
-            _write_status("running", str(p))
+            status_doc["rows_processed"] = processed
+            status_doc["updated"] = changed
+            status_doc["last_file"] = str(p)
+            _flush_status()
             continue
         # reguła nadpisywania:
         # - zawsze nadpisuj, jeśli źródłem jest AcoustID (najwyższy priorytet)
@@ -438,10 +479,40 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         if any_change:
             changed += 1
         processed += 1
-        _write_status("running", str(p))
+        status_doc["rows_processed"] = processed
+        status_doc["updated"] = changed
+        status_doc["last_file"] = str(p)
+        _flush_status()
     if changed:
         save_records(CSV_PATH, rows)
-    _write_status("done", "")
+    # Oblicz źródła użycia na podstawie wypełnionych kolumn per-source
+    mb_cnt = lfm_cnt = sp_cnt = sc_cnt = 0
+    for r in rows:
+        if r.get("genres_musicbrainz"):
+            mb_cnt += 1
+        if r.get("genres_lastfm"):
+            lfm_cnt += 1
+        if r.get("genres_spotify"):
+            sp_cnt += 1
+        if r.get("genres_soundcloud"):
+            sc_cnt += 1
+    status_doc["sources_counts"] = {
+        "musicbrainz": mb_cnt,
+        "lastfm": lfm_cnt,
+        "spotify": sp_cnt,
+        "soundcloud": sc_cnt,
+    }
+    # Uzupełnij attempted_requests z modułu SoundCloud
+    try:
+        from djlib.metadata.soundcloud import soundcloud_request_count
+        status_doc["soundcloud"]["attempted_requests"] = soundcloud_request_count()
+    except Exception:
+        pass
+    status_doc["rows_processed"] = processed
+    status_doc["updated"] = changed
+    status_doc["state"] = "done"
+    status_doc["completed_at"] = _now_iso()
+    _flush_status()
     print(f"🔎 Enrich online: updated={changed}")
     # Short diagnostics
     if total:

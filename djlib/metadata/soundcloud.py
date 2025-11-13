@@ -1,13 +1,14 @@
 from __future__ import annotations
-from typing import Dict, List
-import requests, re
+from typing import Dict, List, Optional
+import requests, re, time
+from functools import lru_cache
 from djlib.config import get_soundcloud_client_id
 
-API_SEARCH = "https://api-v2.soundcloud.com/search/tracks"
-API_TRACK   = "https://api-v2.soundcloud.com/tracks/{id}"
-API_RESOLVE = "https://api.soundcloud.com/resolve"
+# Licznik prób zapytań do SoundCloud public search (użyteczne dla enrich_status.json)
+_SC_REQUESTS = 0
 
-_DEF_TIMEOUT = 15
+API_SEARCH = "https://api-v2.soundcloud.com/search/tracks"
+_DEF_TIMEOUT = 10
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -15,81 +16,91 @@ def _norm(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s
 
-def track_tags(artist: str, title: str) -> Dict[str, List[str]]:
-    """Fetch SoundCloud genre + tag_list for approximate artist+title.
-    Returns {"genre": [...], "tags": [...]} lists (lowercased).
-    Empty dict if client id missing or nothing found.
+@lru_cache(maxsize=1000)
+def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optional[List[str]]:
+    """Public SoundCloud track search → collect genre + tag_list tokens.
+
+    Returns a sorted list of unique, normalized tokens (lowercase) or None if nothing found.
+    Uses only the public /search/tracks endpoint with the provided client_id.
+    Rate-limit friendly: small sleep per call; results cached (LRU).
     """
     cid = get_soundcloud_client_id()
     if not cid:
-        return {}
-    artist = (artist or "").strip()
-    title = (title or "").strip()
-    q = " ".join([artist, title]).strip()
-    if not q:
-        return {}
+        return None
+    query = f"{artist} {title} {version}".strip()
+    if not query:
+        return None
+    global _SC_REQUESTS
     try:
+        time.sleep(0.5)  # basic pacing to avoid burst hitting daily quota
+        _SC_REQUESTS += 1
         r = requests.get(
             API_SEARCH,
-            params={"q": q, "client_id": cid, "limit": 3},
+            params={"q": query, "client_id": cid, "limit": 3},
             timeout=_DEF_TIMEOUT,
         )
         if r.status_code != 200:
-            return {}
+            return None
         data = r.json() or {}
         coll = (data.get("collection") or [])
         if not coll:
-            return {}
-        # naive: first item
+            return None
+        # Take best match (first); could improve ranking by duration/title similarity later
         item = coll[0]
-        tid = item.get("id")
+        tokens: List[str] = []
         genre = item.get("genre") or ""
-        tag_list = item.get("tag_list") or ""
-        tags = []
         if genre:
-            tags.append(_norm(genre))
-        # tag_list may contain quoted tags and plain words; split respecting quotes
-        raw = tag_list.strip()
-        if raw:
-            # extract quoted tokens first
-            quoted = re.findall(r'"([^"]+)"', raw)
+            tokens.append(_norm(genre))
+        tag_list = item.get("tag_list") or ""
+        if tag_list:
+            # quoted phrases and standalone tokens
+            quoted = re.findall(r'"([^"]+)"', tag_list)
             for qv in quoted:
-                tags.append(_norm(qv))
-            # remove quoted parts, split remainder
-            remainder = re.sub(r'"[^"]+"', "", raw)
+                tokens.append(_norm(qv))
+            remainder = re.sub(r'"[^\"]+"', "", tag_list)
             for part in remainder.split():
-                part = _norm(part)
-                if part:
-                    tags.append(part)
-        # de-dup preserve order
+                part_n = _norm(part)
+                if part_n and len(part_n) > 2:
+                    tokens.append(part_n)
+        # de-dup preserving order
         seen = set()
-        tags = [t for t in tags if not (t in seen or seen.add(t))]
-        return {"genre": tags[:1], "tags": tags}
+        out = [t for t in tokens if not (t in seen or seen.add(t))]
+        return sorted(out) if out else None
     except Exception:
+        return None
+
+def track_tags(artist: str, title: str) -> Dict[str, List[str]]:
+    """Backward-compatible wrapper used by genre_resolver (no version passing yet)."""
+    genres = get_soundcloud_genres(artist, title, "") or []
+    if not genres:
         return {}
+    # first token as primary genre candidate; all tokens as tags
+    return {"genre": genres[:1], "tags": genres}
 
 def client_id_health() -> Dict[str, str]:
-    """Lightweight validation of SoundCloud client_id usefulness.
-    Tries a trivial public resolution to see if rate limits / invalid id.
-    Returns dict with keys: status: ok|invalid|error and message.
+    """Validate client_id by performing a lightweight public search request.
+    Returns dict with status: ok|invalid|missing|error|rate-limit and message.
     """
     cid = get_soundcloud_client_id()
     if not cid:
-        return {"status": "missing", "message": "Brak client_id (DJLIB_SOUNDCLOUD_CLIENT_ID)."}
+        return {"status": "missing", "message": "Brak client_id (SOUNDCLOUD_CLIENT_ID)."}
     try:
-        # use resolve endpoint with a known public profile or track (generic)
-        test_url = "https://soundcloud.com/soundcloud"  # stable profile
         r = requests.get(
-            API_RESOLVE,
-            params={"url": test_url, "client_id": cid},
-            timeout=10,
+            API_SEARCH,
+            params={"q": "test", "client_id": cid, "limit": 1},
+            timeout=5,
         )
         if r.status_code == 200:
-            return {"status": "ok", "message": "Client ID wygląda na działający."}
+            return {"status": "ok", "message": "Client ID działa dla public search."}
         if r.status_code in {401, 403}:
-            return {"status": "invalid", "message": f"Odrzucono (status {r.status_code}) – ID nieakceptowany lub wygasły."}
+            return {"status": "invalid", "message": f"Status {r.status_code} – ID nieakceptowany w public search."}
         if r.status_code == 429:
-            return {"status": "invalid", "message": "Limit zapytań (429) – spróbuj później lub użyj innego client_id."}
+            return {"status": "rate-limit", "message": "Osiągnięto limit (429) – spróbuj później."}
         return {"status": "error", "message": f"Nieoczekiwany status {r.status_code}."}
     except Exception as e:
         return {"status": "error", "message": f"Wyjątek: {e}"}
+
+def soundcloud_request_count() -> int:
+    """Zwraca liczbę prób zapytań wykonanych do public search w tym przebiegu procesu.
+    Używane do logowania w enrich_status.json (attempted_requests)."""
+    return _SC_REQUESTS
