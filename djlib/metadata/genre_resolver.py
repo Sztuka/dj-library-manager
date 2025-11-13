@@ -45,6 +45,8 @@ _NOISE_TERMS = {
     "germany", "deutschland",
     # newly filtered buzz / generic popularity tokens and year/season fluff
     "viral", "trending", "new", "new music", "summer mix", "summer", "remixes", "mix",
+    # project-specific: do not use 'folk indie' at all
+    "folk indie",
 }
 
 import re as _re
@@ -83,11 +85,8 @@ def _downweight_factor(tag: str) -> float:
         return 1.0
     if t == "folk":
         return 0.30
-    if t == "indie":
-        return 0.35
-    if t in {"indie folk", "indie rock"}:
-        return 0.40
-    if t.startswith("indie ") or t.endswith(" indie"):
+    # Indie is OK; only penalize the folk+indie combo (any order)
+    if t in {"indie folk"}:  # 'folk indie' is fully ignored by _NOISE_TERMS
         return 0.40
     if t in {"alternative", "alternative rock"}:
         return 0.60
