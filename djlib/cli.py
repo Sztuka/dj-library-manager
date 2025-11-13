@@ -115,10 +115,10 @@ def cmd_scan(_: argparse.Namespace) -> None:
         rec = {
             "track_id": track_id,
             "file_path": str(p),
-            # Główne pola pozostają puste do czasu akceptacji; korzystamy z suggest_*
-            "artist": "",
-            "title": "",
-            "version_info": "",
+            # Wypełnij główne pola z metatagów jeśli dostępne (ułatwia eksport / filtrowanie)
+            "artist": (tags.get("artist") or "").strip(),
+            "title": (tags.get("title") or "").strip(),
+            "version_info": (tags.get("version_info") or "").strip(),
             "bpm": tags["bpm"],
             "key_camelot": tags["key_camelot"],
             "energy_hint": tags["energy_hint"],
