@@ -20,17 +20,15 @@ def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
 
     Z pliku zachowujemy BPM i Key (poza zakresem tej funkcji).
     """
-    artist, title, version = parse_from_filename(path)
-    # Heurystyka: jeśli wersja zawiera "Remix" bez wskazania stylu, nie zrzynaj sufiksów z tytułu.
-    # Dodatkowo zachowaj wielokrotne nawiasy (np. Karibu Remix, Extended Edit) – nowy parser już to robi.
-
-    # Jeśli parser nic nie znalazł, użyj podstaw z tagów jako minimalny fallback
-    if not artist:
-        artist = (tags.get("artist") or "").strip()
-    if not title:
-        title = (tags.get("title") or "").strip()
-    if not version and tags.get("version_info"):
-        version = (tags.get("version_info") or "").strip()
+    # Preferuj metatagi z pliku (są zwykle najczystsze); dopiero gdy brak, użyj parsowania z nazwy pliku
+    artist = (tags.get("artist") or "").strip()
+    title = (tags.get("title") or "").strip()
+    version = (tags.get("version_info") or "").strip()
+    if not artist and not title:
+        pf_artist, pf_title, pf_version = parse_from_filename(path)
+        artist = artist or pf_artist
+        title = title or pf_title
+        version = version or pf_version
 
     # Najpierw spróbuj lookup online z fingerprintem (AcoustID)
     fp = tags.get("fingerprint", "")
