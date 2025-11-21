@@ -162,7 +162,7 @@ def main() -> int:
                 except Exception:
                     pass
 
-            # genres via resolver (MB + Last.fm + Spotify)
+            # genres via resolver (MB + Last.fm + SoundCloud)
             gr = None
             try:
                 dur_s = None
@@ -170,7 +170,12 @@ def main() -> int:
                 if d and ":" in d:
                     m, ssec = d.split(":", 1)
                     dur_s = int(m) * 60 + int(ssec)
-                gr = resolve_genres(sugg_artist or parsed_artist, sugg_title or parsed_title, duration_s=dur_s)
+                gr = resolve_genres(
+                    sugg_artist or parsed_artist,
+                    sugg_title or parsed_title,
+                    version=ver,
+                    duration_s=dur_s,
+                )
             except Exception:
                 gr = None
             g_main = gr.main if gr else ""

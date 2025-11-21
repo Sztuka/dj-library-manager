@@ -3,7 +3,6 @@ import os
 from typing import Optional
 
 # Global HTTP cache for external APIs (MB, Last.fm endpoints that use requests)
-# We avoid caching Spotify via requests-cache as spotipy uses its own client; we cache our calls implicitly via token TTL.
 
 def _install_requests_cache() -> None:
     try:

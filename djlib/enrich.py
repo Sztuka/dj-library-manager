@@ -74,11 +74,11 @@ def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
             online = {**online, "version_suggest": version}
         return online
     
-    # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/Spotify
+    # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud (resolver)
     try:
         from djlib.metadata.genre_resolver import resolve as resolve_genres
         dur_s = dur_sec if dur_sec else None
-        genre_res = resolve_genres(artist, title, duration_s=dur_s, disable_soundcloud=False)
+        genre_res = resolve_genres(artist, title, version=version, duration_s=dur_s, disable_soundcloud=False)
         if genre_res and genre_res.confidence >= 0.03:
             genres = [genre_res.main] + genre_res.subs[:2]
             genre_str = ", ".join(genres)

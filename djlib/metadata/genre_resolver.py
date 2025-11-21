@@ -7,7 +7,6 @@ import djlib.metadata  # noqa: F401
 
 from . import mb_client
 from . import lastfm
-from ..extern import spotify_artist_genres
 from .soundcloud import track_tags as sc_track_tags
 
 
@@ -101,10 +100,11 @@ class GenreResolution:
     breakdown: List[Tuple[str, float, Dict[str, float]]]
 
 
-def resolve(artist: str, title: str, *, duration_s: int | None = None, disable_soundcloud: bool = False) -> GenreResolution | None:
-    """Resolve genres using MB -> Last.fm -> Spotify with scoring.
+def resolve(artist: str, title: str, version: str = "", *, duration_s: int | None = None, disable_soundcloud: bool = False) -> GenreResolution | None:
+    """Resolve genres using MB -> Last.fm (+ optional SoundCloud) with scoring.
 
-    Weights (relative): MB=3, LFM=6, SP=1. Returns main + up to 2 subs.
+    Version info (remix names) helps SoundCloud queries disambiguate edits.
+    Weights (relative): MB=3, LFM=6, SC=2. Returns main + up to 2 subs.
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
@@ -155,28 +155,10 @@ def resolve(artist: str, title: str, *, duration_s: int | None = None, disable_s
         if local:
             parts.append(("lastfm", lfm_w, local))
 
-    # Spotify
-    sp_w = 1.0
-    tags_sp = spotify_artist_genres(artist, title)
-    if tags_sp:
-        local: Dict[str, float] = {}
-        for name in tags_sp:
-            c = canonical(name)
-            if _is_noise(c):
-                continue
-            f = _downweight_factor(c)
-            w = sp_w * f
-            if w <= 0:
-                continue
-            scores[c] = scores.get(c, 0.0) + w
-            local[c] = local.get(c, 0.0) + w
-        if local:
-            parts.append(("spotify", sp_w, local))
-
     # SoundCloud (light weight)
     if not disable_soundcloud:
-        sc_w = 2.0  # moderate weight: between MB and Last.fm, above Spotify
-        sc = sc_track_tags(artist, title)
+        sc_w = 2.0  # moderate weight: between MB and Last.fm
+        sc = sc_track_tags(artist, title, version)
         if sc.get("tags"):
             local: Dict[str, float] = {}
             for name in sc["tags"]:

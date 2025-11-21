@@ -20,9 +20,9 @@ See `docs/INSTALL.md` for installing Essentia (optional but recommended)
 
 ## Aktualny end‑to‑end workflow (rozszerzony)
 
-Źródła gatunków online: MusicBrainz, Last.fm, Spotify, (opcjonalnie) SoundCloud.
+Źródła gatunków online: MusicBrainz, Last.fm, (opcjonalnie) SoundCloud.
 
-Nowe kolumny CSV: `genres_musicbrainz`, `genres_lastfm`, `genres_spotify`, `genres_soundcloud`, `pop_playcount`, `pop_listeners`.
+Nowe kolumny CSV: `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud`, `pop_playcount`, `pop_listeners`.
 
 Flagi dla wzbogacania:
 
@@ -56,7 +56,7 @@ Workflow:
 
 Komenda: `python -m djlib.cli enrich-online` (alias task "ROUND — 1")
 
-Źródła i wagi w resolverze: Last.fm (6.0), MusicBrainz (3.0), SoundCloud (2.0), Spotify (1.0). Wynik agregowany trafia do `genre_suggest`, a surowe listy do odpowiednich kolumn `genres_*`.
+Źródła i wagi w resolverze: Last.fm (6.0), MusicBrainz (3.0), SoundCloud (2.0). Wynik agregowany trafia do `genre_suggest`, a surowe listy do odpowiednich kolumn `genres_*`.
 
 Przykład wymuszenia ponownego pobrania gatunków i pominięcia SoundCloud:
 
@@ -66,7 +66,10 @@ python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 
 ## Runda zautomatyzowana
 
-Szybki pipeline (analyze + enrich + predict + export): task: `ROUND — 1) Analyze+Enrich+Predict+Export`.
+Szybki pipeline (scan + analyze + enrich + predict + export): task: `ROUND — 1) Analyze+Enrich+Predict+Export`.
+
+- Runda zaczyna się od `scan`, aby odświeżyć `library.csv`. Jeśli jesteś pewny, że stan CSV jest aktualny, dodaj `--skip-scan`.
+- Eksport XLSX zostanie świadomie pominięty (z komunikatem), jeśli po analizie nie ma wierszy do zaprezentowania.
 
 Druga runda (import decyzji, apply, trening lokalny ML + QA): `ROUND — 2) Import+Apply+Train+QA`.
 
@@ -85,7 +88,8 @@ Chcesz, by ML proponował kubełki z Twojej taksonomii (`taxonomy.local.yml`) �
 1. Zadbaj o dane wejściowe
 
 - Analiza audio (Essentia): `analyze-audio` (lub automatycznie podczas treningu).
-- Gatunki z zewnątrz: `enrich-online` – pobiera gatunki (MB/Last.fm/Spotify) i zapisuje do CSV (pole `genre_suggest`).
+- Gatunki z zewnątrz: `enrich-online` – pobiera gatunki (MB/Last.fm/SoundCloud*) i zapisuje do CSV (pole `genre_suggest`).
+  *SoundCloud można pominąć flagą `--skip-soundcloud`.
 - Popularność (opcjonalnie): `enrich-online` zapisze `pop_playcount` i `pop_listeners` z Last.fm (jeśli API KEY ustawiony).
 
 2. Trening lokalnego modelu (na zaakceptowanych bucketach)

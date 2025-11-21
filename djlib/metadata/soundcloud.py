@@ -10,11 +10,63 @@ _SC_REQUESTS = 0
 API_SEARCH = "https://api-v2.soundcloud.com/search/tracks"
 _DEF_TIMEOUT = 10
 
+_REMIX_KEYWORDS = (
+    "remix", "bootleg", "rework", "refix", "flip", "vip", "mashup", "re-edit", "re edit"
+)
+_GENERIC_VERSION_WORDS = {
+    "extended", "radio", "original", "mix", "edit", "version", "club", "dub", "instrumental",
+    "clean", "dirty", "album", "single", "main mix"
+}
+
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = s.replace("_", " ")
     s = re.sub(r"\s+", " ", s)
     return s
+
+def _split_version_segments(text: str) -> List[str]:
+    if not text:
+        return []
+    normalized = re.sub(r"[()\[\]{}]+", ",", text)
+    parts = [seg.strip() for seg in re.split(r"[,/|]+", normalized) if seg.strip()]
+    return parts
+
+
+def _focus_version_tokens(title: str, version: str) -> List[str]:
+    segments = []
+    segments.extend(_split_version_segments(version))
+    # also collect from parentheses in title if version missing
+    if title:
+        segments.extend(_split_version_segments(title))
+    tokens: List[str] = []
+    seen = set()
+    for seg in segments:
+        lower = seg.lower()
+        if not any(kw in lower for kw in _REMIX_KEYWORDS):
+            continue
+        # drop if it's only a generic descriptor without remixer name
+        if all(word in _GENERIC_VERSION_WORDS for word in lower.split()):
+            continue
+        if lower not in seen:
+            tokens.append(seg)
+            seen.add(lower)
+    return tokens
+
+
+def _candidate_queries(artist: str, title: str, version: str) -> List[str]:
+    base = f"{artist} {title}".strip()
+    if not base:
+        return []
+    queries: List[str] = []
+    for tok in _focus_version_tokens(title, version):
+        queries.append(f"{base} {tok}".strip())
+    queries.append(base)
+    if "remix" not in base.lower():
+        queries.append(f"{base} remix")
+    # de-dup preserve order
+    seen = set()
+    return [q for q in queries if q and not (q in seen or seen.add(q))]
+
 
 @lru_cache(maxsize=1000)
 def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optional[List[str]]:
@@ -32,21 +84,9 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     cid = get_soundcloud_client_id()
     if not cid:
         return None
-    base = f"{artist} {title}".strip()
-    if not base:
+    queries = _candidate_queries(artist, title, version)
+    if not queries:
         return None
-    queries: List[str] = []
-    # include version raw tokens if provided (split by comma / space)
-    if version:
-        version_tokens = [v.strip() for v in re.split(r"[,]+", version) if v.strip()]
-        # join version tokens back to one query
-        queries.append(" ".join([base] + version_tokens))
-    queries.append(base)
-    queries.append(base + " remix")
-    queries.append(base + " extended edit")
-    # de-dup preserve order
-    seen_q = set()
-    queries = [q for q in queries if not (q in seen_q or seen_q.add(q))]
 
     collected: List[str] = []
     global _SC_REQUESTS
@@ -141,10 +181,10 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     except Exception:
         return None
 
-def track_tags(artist: str, title: str) -> Dict[str, List[str]]:
+def track_tags(artist: str, title: str, version: str = "") -> Dict[str, List[str]]:
     """Wrapper used by genre_resolver.
-    Uses enhanced multi-query function without explicit version (filename parser not integrated here yet)."""
-    genres = get_soundcloud_genres(artist, title, "") or []
+    Accepts optional version/remix tokens to improve search precision."""
+    genres = get_soundcloud_genres(artist, title, version) or []
     if not genres:
         return {}
     return {"genre": genres[:1], "tags": genres}
