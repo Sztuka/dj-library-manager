@@ -11,8 +11,6 @@ musicbrainz:
   contact: https://github.com/Sztuka/dj-library-manager
 
   lastfm_api_key: REDACTED_LASTFM_KEY
-  spotify_client_id: d8a34ee455eb481d8994e2f0d0a48b09
-  spotify_client_secret: 175d716201554e04a11379c61d6d86cd
   soundcloud_client_id: REDACTED_SOUNDCLOUD_ID
   youtube_api_key: REDACTED_YOUTUBE_KEY
 

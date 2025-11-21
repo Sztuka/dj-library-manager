@@ -389,38 +389,6 @@ def get_lastfm_api_key() -> str:
             pass
     return ""
 
-# Spotify API (Client Credentials)
-def get_spotify_credentials() -> tuple[str, str]:
-    # ENV first (.env file or system env)
-    cid = (os.getenv("DJLIB_SPOTIFY_CLIENT_ID") or os.getenv("SPOTIPY_CLIENT_ID") or "").strip()
-    secret = (os.getenv("DJLIB_SPOTIFY_CLIENT_SECRET") or os.getenv("SPOTIPY_CLIENT_SECRET") or "").strip()
-    if cid and secret:
-        return cid, secret
-    # Then config files
-    existing = _first_existing(_CANDIDATES)
-    if existing:
-        d = _read_yaml(existing)
-        cid = str(d.get("spotify_client_id", "") or "").strip()
-        secret = str(d.get("spotify_client_secret", "") or "").strip()
-        if cid and secret:
-            return cid, secret
-    # Fallback: repository-level config.yml (supports both top-level and nested under 'musicbrainz')
-    repo_cfg = _REPO / "config.yml"
-    if repo_cfg.exists():
-        try:
-            d = _read_yaml(repo_cfg)
-            cid = str(d.get("spotify_client_id", "") or "").strip()
-            secret = str(d.get("spotify_client_secret", "") or "").strip()
-            if not (cid and secret):
-                mb = (d.get("musicbrainz") or {}) or {}
-                cid = cid or str(mb.get("spotify_client_id", "") or "").strip()
-                secret = secret or str(mb.get("spotify_client_secret", "") or "").strip()
-            if cid and secret:
-                return cid, secret
-        except Exception:
-            pass
-    return "", ""
-
 # SoundCloud (public, client_id-based)
 def get_soundcloud_client_id() -> str:
     # ENV first

@@ -22,15 +22,15 @@
 
 ## Przegląd Systemu
 
-DJ Library Manager to narzędzie do zarządzania biblioteką muzyczną DJ-a. System skanuje nowe pliki audio, ekstrahuje metadane, wzbogaca je danymi online (MusicBrainz, Last.fm, Spotify, opcjonalnie SoundCloud), klasyfikuje utwory według gatunków i organizuje je w strukturze folderów.
+DJ Library Manager to narzędzie do zarządzania biblioteką muzyczną DJ-a. System skanuje nowe pliki audio, ekstrahuje metadane, wzbogaca je danymi online (MusicBrainz, Last.fm, opcjonalnie SoundCloud), klasyfikuje utwory według gatunków i organizuje je w strukturze folderów.
 
 ### Główne funkcjonalności:
 
 - Skanowanie INBOX i ekstrakcja tagów audio
-- **Online enrichment**: Wzbogacanie metadanych z MusicBrainz, AcoustID, Last.fm, Spotify, SoundCloud (opcjonalnie)
+- **Online enrichment**: Wzbogacanie metadanych z MusicBrainz, AcoustID, Last.fm, SoundCloud (opcjonalnie)
 - **Local audio analysis**: Ekstrakcja BPM/Key/Energy z Essentia (bez Traktora)
 - **Tag writing**: Zapis metryk do ID3 tagów plików (Camelot notation)
-- **Genre resolution**: Rozpoznawanie gatunków z wielu źródeł (MusicBrainz / Last.fm / Spotify / SoundCloud) z wagami źródeł + per-source kolumny w CSV
+- **Genre resolution**: Rozpoznawanie gatunków z wielu źródeł (MusicBrainz / Last.fm / SoundCloud) z wagami źródeł + per-source kolumny w CSV
 - Automatyczna klasyfikacja utworów (AI guessing + taxonomy mapping)
 - Zarządzanie taksonomią kategorii (buckets)
 - Automatyczne decyzje na podstawie reguł lub heurystyk
@@ -58,7 +58,7 @@ dj-library-manager/
 │   ├── placement.py    # Automatyczne decyzje o bucketach
 │   ├── enrich.py       # Online enrichment metadanych
 │   ├── genre.py        # Genre resolution i taxonomy mapping
-│   ├── extern.py       # Integracje zewnętrzne (Last.fm, Spotify)
+│   ├── extern.py       # Integracje zewnętrzne (Last.fm)
 │   ├── buckets.py      # Walidacja bucketów
 │   ├── audio/          # Lokalna analiza audio
 │   │   ├── __init__.py
@@ -71,7 +71,6 @@ dj-library-manager/
 │       ├── mb_client.py        # MusicBrainz client
 │       ├── lastfm.py           # Last.fm client
 │       ├── soundcloud.py       # SoundCloud: tag_list + health check
-│       └── spotify_client.py   # Spotify artist genres (jeśli wyodrębniony)
 ├── scripts/            # Skrypty CLI
 ├── webui/              # Interfejs webowy (TODO)
 ├── docs/               # Dokumentacja
@@ -207,7 +206,6 @@ Baza danych główna w formacie CSV. Kolumny zdefiniowane w `djlib/csvdb.py::FIE
 | `genre_suggest`                            | Proponowany główny gatunek (agregowany) | `House, Electronic, Dance`            |
 | `genres_musicbrainz`                       | Surowe gatunki z MusicBrainz            | `house; electronic`                   |
 | `genres_lastfm`                            | Surowe tagi z Last.fm                   | `house; french; disco`                |
-| `genres_spotify`                           | Gatunki artysty (Spotify)               | `french house; filter house`          |
 | `genres_soundcloud`                        | Tag list z SoundCloud (opcjonalnie)     | `house; afro; remix`                  |
 | `pop_playcount`                            | Last.fm playcount (jeśli dostępny)      | `123456`                              |
 | `pop_listeners`                            | Last.fm listeners (jeśli dostępny)      | `34567`                               |
@@ -320,7 +318,7 @@ review_buckets:
 **Funkcje**:
 
 - `load_records(csv_path)`: Ładuje wszystkie rekordy z CSV
-- `save_records(csv_path, rows)`: Zapisuje rekordy do CSV
+- `save_records(csv_path, rows)`: Zapisuje rekordy do CSV i filtruje wiersze wyłącznie do `FIELDNAMES`, aby legacy kolumny (np. `genres_spotify`) nie wracały do pliku
 - `FIELDNAMES`: Lista kolumn CSV
 
 ### `djlib/tags.py`
@@ -433,7 +431,7 @@ Korzyść: zachowanie kompletu wariantów (Remix / Edit / Radio / Extended) dla 
 **Funkcje kluczowe**:
 
 - `load_taxonomy_map()`: Ładuje mapowanie tagów → bucketów z `taxonomy_map.yml`
-- `external_genre_votes(artist, title)`: Zbiera głosy gatunków z Last.fm/Spotify
+- `external_genre_votes(artist, title)`: Zbiera głosy gatunków z Last.fm
 - `suggest_bucket_from_votes(votes, mapping)`: Sugeruje bucket na podstawie głosów
 
 **Plik konfiguracyjny**: `taxonomy_map.yml`
@@ -450,11 +448,11 @@ map:
 
 **Zadanie**: Klienci API dla zewnętrznych źródeł metadanych
 
-#### `genre_resolver.py`
+-#### `genre_resolver.py`
 
-- `resolve(artist, title, duration_s, disable_soundcloud=False)`: Główny resolver gatunków
-- Łączy dane z MusicBrainz, Last.fm, Spotify oraz opcjonalnie SoundCloud
-- Wagi (domyślne): Last.fm 6.0, MusicBrainz 3.0, SoundCloud 2.0, Spotify 1.0
+- `resolve(artist, title, duration_s, version=None, disable_soundcloud=False)`: Główny resolver gatunków
+- Łączy dane z MusicBrainz, Last.fm oraz opcjonalnie SoundCloud (SoundCloud korzysta z `version`/remix tokens przekazanych z CLI, by wyszukiwać właściwe warianty)
+- Wagi (domyślne): Last.fm 6.0, MusicBrainz 3.0, SoundCloud 2.0
 - Zwraca agregat + per-source listy (`genres_*`) i confidence
 
 #### `mb_client.py`
@@ -467,19 +465,23 @@ map:
 
 - `get_top_tags(artist, title)`: Pobieranie top tagów z Last.fm
 
+#### `soundcloud.py`
+
+- `track_tags(artist, title, version=None)`: Próbuje pobrać `genre` i `tag_list` z SoundCloud API, korzystając z `version`/remix tokens (np. `Extended Mix`, `Karibu Remix`) do budowy zapytań.
+- `_focus_version_tokens()` i `_candidate_queries()` filtrują wersję, aby preferować właściwe remiksy i rozszerzenia (np. Extended Edit vs Radio Edit), co zwiększa trafność wyników.
+- Obsługuje cache HTTP i health check `SOUNDCLOUD_CLIENT_ID` (brak/invalid/rate limit) zanim enrichment wystartuje.
+
 ### `djlib/extern.py`
 
-**Zadanie**: Integracje z zewnętrznymi API (Last.fm, Spotify)
+**Zadanie**: Integracje zewnętrzne (Last.fm)
 
 **Funkcje**:
 
 - `lastfm_toptags(artist, title)`: Tagi z Last.fm
-- `spotify_artist_genres(artist)`: Gatunki artysty ze Spotify
 
 **Konfiguracja API**:
 
 - Last.fm: `lastfm_api_key` w config
-- Spotify: `spotify_client_id`, `spotify_client_secret` w config
 
 ### `djlib/placement.py`
 
@@ -509,7 +511,7 @@ map:
 - `sync-audio-metrics`: Lokalna analiza BPM/Key/Energy z Essentia
   - `--write-tags`: Zapisuje metryki do tagów ID3 plików
   - `--force`: Wymusza re-analizę wszystkich plików
-- `enrich-online`: Wzbogacanie metadanych online (MB, AcoustID, Last.fm, Spotify, SoundCloud)
+- `enrich-online`: Wzbogacanie metadanych online (MB, AcoustID, Last.fm, SoundCloud)
   - `--force-genres` – wymusza nadpisanie kolumn `genres_*` i `genre_suggest`
   - `--skip-soundcloud` – pomija SoundCloud bez pytania
   - Interaktywny prompt przy nieważnym/missing `SOUNDCLOUD_CLIENT_ID`
@@ -519,8 +521,10 @@ map:
 - `apply`: Przenoszenie plików zgodnie z target_subfolder
 - `undo`: Cofanie ostatniej operacji przenoszenia
 - `dupes`: Raport duplikatów
-- `genres resolve`: Rozpoznawanie gatunków dla pojedynczego utworu
+- `genres resolve`: Rozpoznawanie gatunków dla pojedynczego utworu (obsługuje `--version` do przekazania info o remixach/edycjach)
 - `detect-taxonomy`: Wykrywanie taksonomii z istniejącej struktury folderów
+- `round-1`: Złożona runda (scan + analyze + enrich + predict + export). Domyślnie zaczyna od `scan`, a flaga `--skip-scan` pomija ten krok przy świeżym `library.csv`. Eksport XLSX jest wstrzymywany, gdy brak wierszy do zaprezentowania.
+- `round-2`: Kontynuuje workflow (import z XLSX, apply decyzji, trening lokalnego ML, szybkie QA).
 
 ---
 
@@ -567,13 +571,15 @@ map:
 **Proces**:
 
 1. Dla rekordów z `review_status != "accepted"`:
-   - **AcoustID lookup**: Jeśli fingerprint dostępny → MusicBrainz recording
-   - **MusicBrainz search**: Bezpośrednie wyszukiwanie artist/title
-   - **SoundCloud probe** (opcjonalnie): próba pobrania `genre` + `tag_list` (jeśli dostępny `SOUNDCLOUD_CLIENT_ID`)
-   - **Genre resolution**: Agreguje MB / Last.fm / Spotify / SoundCloud (4 źródła; SoundCloud może być wyłączony)
-   - **Popularity hints**: Last.fm playcount / listeners → kolumny `pop_playcount`, `pop_listeners`
-   - **Bucket suggestion**: Mapuje gatunki na buckety przez `taxonomy_map.yml`
-   - Aktualizuje `suggest_*` pola jeśli lepsze od istniejących
+
+- **AcoustID lookup**: Jeśli fingerprint dostępny → MusicBrainz recording
+- **MusicBrainz search**: Bezpośrednie wyszukiwanie artist/title
+- **SoundCloud probe** (opcjonalnie, remix-aware): próba pobrania `genre` + `tag_list` (jeśli dostępny `SOUNDCLOUD_CLIENT_ID`), z użyciem `version`/remix info do budowania zapytań
+
+- **Genre resolution**: Agreguje MB / Last.fm / SoundCloud (SoundCloud może być wyłączony); `resolve()` przyjmuje `version`, aby trafiać w konkretne remiksy
+- **Popularity hints**: Last.fm playcount / listeners → kolumny `pop_playcount`, `pop_listeners`
+- **Bucket suggestion**: Mapuje gatunki na buckety przez `taxonomy_map.yml`
+- Aktualizuje `suggest_*` pola jeśli lepsze od istniejących
 
 **Priorytety nadpisywania**:
 
@@ -622,6 +628,23 @@ map:
    - Przenosi plik z powrotem
    - Czyści `final_filename`, `final_path` w CSV
 
+### 5. Zautomatyzowane rundy (`round-1`, `round-2`)
+
+**round-1** (Analyze+Enrich+Predict+Export):
+
+1. **Scan (wymuszone)** – komenda zawsze startuje od `cmd_scan`, chyba że użytkownik poda `--skip-scan` (przy świeżym `library.csv`). Dzięki temu pipeline nie korzysta ze starych rekordów.
+2. **Analyze audio** – zapewnia brakujące metryki BPM/Key/Energy (Essentia) przed enrichmentem.
+3. **Enrich online** – multi-source (MB/Last.fm/SoundCloud) z opcjonalnym pominięciem SoundCloud (`--skip-soundcloud`). Version/remix tokens są przekazywane do klienta SoundCloud, by szukać właściwych remiksów.
+4. **Predict buckets** – lokalny model ML + heurystyki.
+5. **Export XLSX** – zakończy rundę tylko wtedy, gdy istnieją rekordy do pokazania; w przeciwnym razie wypisze komunikat i nie wygeneruje pustego arkusza.
+
+**round-2** (Import+Apply+Train+QA):
+
+1. Import zmian z XLSX (akceptacja/sugestie).
+2. `apply` – przeniesienie plików zgodnie z decyzjami.
+3. `ml-train-local` – aktualizacja lokalnego modelu na zaakceptowanych rekordach.
+4. QA – szybkie sanity check (docelowo raport metryk).
+
 ---
 
 ## Rozwiązania Techniczne
@@ -644,7 +667,7 @@ map:
 ### System propozycji metadanych
 
 - **Suggest/Accept workflow**: Metadane dzielone na zaakceptowane (główne pola) i proponowane (`suggest_*`)
-- **Źródła**: Filename parsing, tagi audio, MusicBrainz, AcoustID, Last.fm, Spotify, SoundCloud (opcjonalnie)
+- **Źródła**: Filename parsing, tagi audio, MusicBrainz, AcoustID, Last.fm, SoundCloud (opcjonalnie)
 - **Priorytety**: AcoustID > MusicBrainz > filename/tags
 - **Status**: `review_status` = "pending" | "accepted"
 
@@ -653,12 +676,11 @@ map:
 - **MusicBrainz**: Recording search, genre/tags z recording/release-group/artist
 - **AcoustID**: Fingerprint-based lookup (wymaga API key)
 - **Last.fm**: Top tags dla utworów
-- **Spotify**: Artist genres (wymaga Client Credentials)
 - **Rate limiting**: 1 req/s dla MB, caching z `requests-cache`
 
 ### Genre Resolution
 
-- **Multi-source aggregation**: Łączy dane z 4 źródeł (MB / Last.fm / Spotify / SoundCloud) z wagami: Last.fm 6.0, MB 3.0, SoundCloud 2.0, Spotify 1.0
+- **Multi-source aggregation**: Łączy dane z 3 źródeł (MB / Last.fm / SoundCloud) z wagami: Last.fm 6.0, MB 3.0, SoundCloud 2.0
 - **Format wyjściowy**: "Main Genre, Sub1, Sub2" (max 3)
 - **Confidence threshold**: Bazowy próg dla dodania tagu: >= 0.03; override istniejącego: >= 0.08 (parametry można stroić przy zwiększeniu liczby źródeł)
 - **Taxonomy mapping**: Tagi → buckety przez `taxonomy_map.yml`
@@ -731,7 +753,6 @@ from djlib.taxonomy import allowed_targets
 
 - **AcoustID**: `acoustid_api_key` w config (Application API key)
 - **Last.fm**: `lastfm_api_key` w config lub env `LASTFM_API_KEY`
-- **Spotify**: `spotify_client_id`, `spotify_client_secret` w config lub env
 - **MusicBrainz**: User-Agent w config (`app_name`, `app_version`, `contact`)
 
 ### Zależności zewnętrzne:
@@ -748,7 +769,6 @@ essentia>=2.1b6.dev0   # Local BPM/Key/Energy extraction
 
 # Optional for enrichment
 musicbrainzngs>=0.7   # MusicBrainz API client
-spotipy>=2.23         # Spotify API
 pylast>=5.2           # Last.fm API
 ## Testowanie i jakość
 
@@ -870,7 +890,6 @@ Format (propozycja) dodający sekcję SoundCloud audytu:
   "sources_counts": {
     "musicbrainz": 250,
     "lastfm": 260,
-    "spotify": 210,
     "soundcloud": 0
   }
 }

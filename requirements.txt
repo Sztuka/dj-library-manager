@@ -7,7 +7,6 @@ ruff              # linter (opcjonalnie)
 pyyaml            # do konfiguracji (jeśli używasz YAML)
 requests          # online enrichment (MusicBrainz)
 musicbrainzngs    # oficjalny klient MusicBrainz Web Service 2
-spotipy           # Spotify Web API (Client Credentials)
 tenacity          # retry/backoff na 429/5xx
 requests-cache    # cache HTTP (TTL)
 pandas            # data processing dla ML i CSV

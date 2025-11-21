@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Tuple, List
 import re
-from djlib.extern import lastfm_toptags, spotify_artist_genres
+from djlib.extern import lastfm_toptags
 from djlib.taxonomy import normalize_label  # reuse normalization
 from pathlib import Path
 import yaml
@@ -41,7 +41,7 @@ def _simplify(tag: str) -> str:
 
 
 def external_genre_votes(artist: str, title: str) -> Dict[str, float]:
-    """Aggregate external tags from Last.fm and Spotify into votes with weights."""
+    """Aggregate external tags from Last.fm into votes with weights."""
     artist = (artist or "").strip()
     title = (title or "").strip()
     votes: Dict[str, float] = {}
@@ -55,11 +55,6 @@ def external_genre_votes(artist: str, title: str) -> Dict[str, float]:
         import math
         w = min(0.9, math.log(max(1, cnt + 1), 10))
         votes[x] = votes.get(x, 0.0) + w
-    # Spotify artist genres flat weight
-    sp = spotify_artist_genres(artist, title)
-    for g in sp or []:
-        x = _simplify(g)
-        votes[x] = votes.get(x, 0.0) + 0.6
     # Discogs removed
     # normalize small noise
     return {k: v for k, v in votes.items() if v >= 0.2}

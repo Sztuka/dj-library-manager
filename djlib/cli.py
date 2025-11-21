@@ -243,7 +243,7 @@ def cmd_auto_decide_smart(_: argparse.Namespace) -> None:
     print(f"✅ Auto-decide (smart): set={set_cnt}, suggested={sug_cnt}")
 
 def cmd_enrich_online(_: argparse.Namespace) -> None:
-    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm/Spotify.
+    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
     """
@@ -256,17 +256,12 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
     changed = 0
     mb_set = 0
     lfm_set = 0
-    sp_set = 0
-
     # Check API credentials presence for diagnostics
     try:
-        from djlib.config import get_lastfm_api_key, get_spotify_credentials
+        from djlib.config import get_lastfm_api_key
         _lfm_key_present = bool(get_lastfm_api_key())
-        _sp_cid, _sp_sec = get_spotify_credentials()
-        _sp_present = bool(_sp_cid and _sp_sec)
     except Exception:
         _lfm_key_present = False
-        _sp_present = False
 
     # status plik
     status_path = LOGS_DIR / "enrich_status.json"
@@ -294,7 +289,6 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         "sources_counts": {
             "musicbrainz": 0,
             "lastfm": 0,
-            "spotify": 0,
             "soundcloud": 0,
         }
     }
@@ -387,10 +381,16 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         if any_change and (online.get("meta_source") or "").strip():
             r["meta_source"] = online["meta_source"]
         
-        # Zawsze spróbuj wzbogacić gatunki używając wszystkich źródeł (MB + Last.fm + Spotify)
+    # Zawsze spróbuj wzbogacić gatunki używając wszystkich źródeł (MB + Last.fm + SoundCloud)
         try:
             a = (r.get("artist_suggest") or r.get("artist") or "").strip()
             t = (r.get("title_suggest") or r.get("title") or "").strip()
+            v = (
+                r.get("version_suggest")
+                or r.get("version_info")
+                or r.get("parsed_version")
+                or ""
+            ).strip()
             dur_s = None
             if r.get("duration_suggest"):
                 try:
@@ -401,7 +401,13 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
                     pass
             
             from djlib.metadata.genre_resolver import resolve as resolve_genres
-            genre_res = resolve_genres(a, t, duration_s=dur_s, disable_soundcloud=bool(getattr(_, "skip_soundcloud", False)))
+            genre_res = resolve_genres(
+                a,
+                t,
+                version=v,
+                duration_s=dur_s,
+                disable_soundcloud=bool(getattr(_, "skip_soundcloud", False)),
+            )
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
                 # Ustaw 3 gatunki: main + subs
                 genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
@@ -428,10 +434,6 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
                         r["genres_lastfm"] = _top_k(src_map["lastfm"])  # type: ignore[index]
                         any_change = True
                         lfm_set += 1
-                    if src_map.get("spotify") and (force_genres or not (r.get("genres_spotify") or "")):
-                        r["genres_spotify"] = _top_k(src_map["spotify"])  # type: ignore[index]
-                        any_change = True
-                        sp_set += 1
                     if src_map.get("soundcloud") and (force_genres or not (r.get("genres_soundcloud") or "")):
                         r["genres_soundcloud"] = _top_k(src_map["soundcloud"])  # type: ignore[index]
                         any_change = True
@@ -491,20 +493,17 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
     if changed:
         save_records(CSV_PATH, rows)
     # Oblicz źródła użycia na podstawie wypełnionych kolumn per-source
-    mb_cnt = lfm_cnt = sp_cnt = sc_cnt = 0
+    mb_cnt = lfm_cnt = sc_cnt = 0
     for r in rows:
         if r.get("genres_musicbrainz"):
             mb_cnt += 1
         if r.get("genres_lastfm"):
             lfm_cnt += 1
-        if r.get("genres_spotify"):
-            sp_cnt += 1
         if r.get("genres_soundcloud"):
             sc_cnt += 1
     status_doc["sources_counts"] = {
         "musicbrainz": mb_cnt,
         "lastfm": lfm_cnt,
-        "spotify": sp_cnt,
         "soundcloud": sc_cnt,
     }
     # Uzupełnij attempted_requests z modułu SoundCloud
@@ -521,11 +520,9 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
     print(f"🔎 Enrich online: updated={changed}")
     # Short diagnostics
     if total:
-        print(f"   → genres set — MB:{mb_set}, LFM:{lfm_set}, SP:{sp_set}")
+        print(f"   → genres set — MB:{mb_set}, LFM:{lfm_set}")
     if not _lfm_key_present:
         print("   ⚠ Brak LASTFM_API_KEY (DJLIB_LASTFM_API_KEY) — kolumna genres_lastfm może pozostać pusta.")
-    if not _sp_present:
-        print("   ⚠ Brak SPOTIFY client credentials (DJLIB_SPOTIFY_CLIENT_ID/SECRET) — kolumna genres_spotify może pozostać pusta.")
     if sc_health_msg:
         print(f"   ℹ {sc_health_msg}")
 
@@ -599,6 +596,72 @@ def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
         save_records(CSV_PATH, rows)
     _write_status("done", "")
     print(f"🧩 Fix fingerprints: updated={updated}, errors={errors}")
+
+def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
+    """Napraw rekordy z pustym/niewłaściwym artist/title korzystając z nazwy pliku."""
+    from djlib.filename import parse_from_filename
+    rows = load_records(CSV_PATH)
+    if not rows:
+        print("Brak rekordów w CSV.")
+        return
+
+    def _should_replace(current: str | None, base_tokens: set[str]) -> bool:
+        v = (current or "").strip()
+        if not v:
+            return True
+        low = v.lower()
+        if low.isdigit():
+            return True
+        if low.startswith("track") and len(low.split()) <= 2:
+            return True
+        if base_tokens:
+            cur_tokens = {tok for tok in low.split() if len(tok) > 1}
+            if not cur_tokens:
+                return True
+            # jeśli brak wspólnych tokenów z nazwą pliku – traktuj jako błędne
+            if cur_tokens.isdisjoint(base_tokens):
+                return True
+        return False
+
+    updated = 0
+    for r in rows:
+        fp = (r.get("file_path") or "").strip()
+        if not fp:
+            continue
+        p = Path(fp)
+        a, t, v = parse_from_filename(p)
+        if not a and not t:
+            continue
+        changed = False
+        base_artist_tokens = {tok for tok in a.lower().split() if len(tok) > 1}
+        base_title_tokens = {tok for tok in t.lower().split() if len(tok) > 1}
+        if _should_replace(r.get("artist"), base_artist_tokens) and a:
+            r["artist"] = a
+            changed = True
+        if _should_replace(r.get("title"), base_title_tokens) and t:
+            r["title"] = t
+            changed = True
+        if _should_replace(r.get("artist_suggest"), base_artist_tokens) and a:
+            r["artist_suggest"] = a
+            changed = True
+        if _should_replace(r.get("title_suggest"), base_title_tokens) and t:
+            r["title_suggest"] = t
+            changed = True
+        if not (r.get("version_info") or "").strip() and v:
+            r["version_info"] = v
+            changed = True
+        if not (r.get("version_suggest") or "").strip() and v:
+            r["version_suggest"] = v
+            changed = True
+        if changed:
+            meta = (r.get("meta_source") or "").strip()
+            if "fix_filename" not in meta:
+                r["meta_source"] = (meta + "+fix_filename").strip("+")
+            updated += 1
+
+    if updated:
+        save_records(CSV_PATH, rows)
+    print(f"🛠️  Fix titles from filenames: updated={updated}")
 
 def cmd_apply(args: argparse.Namespace) -> None:
     rows = load_records(CSV_PATH)
@@ -830,9 +893,10 @@ def cmd_genres_resolve(args: argparse.Namespace) -> None:
     artist = (getattr(args, "artist", None) or "").strip()
     title = (getattr(args, "title", None) or "").strip()
     dur = getattr(args, "duration", None)
-    res = resolve_genres(artist, title, duration_s=dur)
+    version = (getattr(args, "version", None) or "").strip()
+    res = resolve_genres(artist, title, version=version, duration_s=dur)
     if not res:
-        print("Brak wyników z zewnętrznych źródeł (MB/LFM/Spotify).")
+        print("Brak wyników z zewnętrznych źródeł (MB/LFM/SoundCloud).")
         return
     print(f"Main: {res.main}")
     if res.subs:
@@ -1240,6 +1304,9 @@ def cmd_export_xlsx(args: argparse.Namespace) -> None:
     rows = load_records(CSV_PATH)
     if only_pending:
         rows = [r for r in rows if (r.get("review_status") or "").lower() != "accepted"]
+    if not rows:
+        print("⚠️  Brak rekordów do eksportu (library.csv jest pusty). Uruchom najpierw scan.")
+        return
 
     # Wczytaj (opcjonalnie) ostatnie predykcje ML, aby pokazać audio_genre i confidence
     ml_pred_by_path: Dict[str, tuple[str, float]] = {}
@@ -1280,7 +1347,7 @@ def cmd_export_xlsx(args: argparse.Namespace) -> None:
         "track_id", "artist", "title", "artist_suggest", "title_suggest", "version_info", "version_suggest",
         "genre", "genre_suggest",
         "bpm", "key_camelot",
-        "genres_musicbrainz", "genres_lastfm", "genres_spotify", "genres_soundcloud", "audio_genre", "audio_confidence",
+    "genres_musicbrainz", "genres_lastfm", "genres_soundcloud", "audio_genre", "audio_confidence",
         "pop_playcount", "pop_listeners",
         "ai_guess_bucket", "ai_guess_comment", "target_subfolder", "file_path"
     ]
@@ -1315,7 +1382,6 @@ def cmd_export_xlsx(args: argparse.Namespace) -> None:
             r.get("key_camelot", ""),
             r.get("genres_musicbrainz", ""),
             r.get("genres_lastfm", ""),
-            r.get("genres_spotify", ""),
             r.get("genres_soundcloud", ""),
             audio_genre,
             audio_conf,
@@ -1438,7 +1504,18 @@ def cmd_import_xlsx(args: argparse.Namespace) -> None:
 # ============ META-KOMENDY (aliasy) ============
 
 def cmd_round_1(args: argparse.Namespace) -> None:
-    """Uruchom pełny pierwszy etap: analyze → enrich-online → ml-predict (suggest) → export-xlsx."""
+    """Uruchom pełny pierwszy etap: scan → analyze → enrich-online → ml-predict (suggest) → export-xlsx."""
+    # scan inbox first (unless explicitly skipped) to make sure library.csv has fresh rows
+    skip_scan = bool(getattr(args, "skip_scan", False))
+    if not skip_scan:
+        cmd_scan(argparse.Namespace())
+
+    # Abort early if library.csv still empty
+    existing = load_records(CSV_PATH)
+    if not existing:
+        print("⚠️  Brak rekordów w library.csv — najpierw uruchom scan lub dodaj pliki do INBOX.")
+        return
+
     # analyze-audio
     aargs = argparse.Namespace(
         path=str(INBOX_DIR), check_env=False, recompute=False, workers=1, target_bpm="80:180"
@@ -1517,8 +1594,9 @@ def build_parser() -> argparse.ArgumentParser:
     sap.add_argument("--write-tags", action="store_true", help="Zapisz metadane (BPM/Key) do plików audio")
     sap.set_defaults(func=cmd_sync_audio_metrics)
     sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
+    sp.add_parser("fix-filenames").set_defaults(func=cmd_fix_titles_from_filenames)
     ep = sp.add_parser("enrich-online")
-    ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm/spotify nawet jeśli już wypełnione")
+    ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm nawet jeśli już wypełnione")
     ep.add_argument("--skip-soundcloud", action="store_true", help="Pomiń źródło SoundCloud nawet jeśli client_id jest ustawiony")
     ep.set_defaults(func=cmd_enrich_online)
 
@@ -1573,15 +1651,17 @@ def build_parser() -> argparse.ArgumentParser:
     res.add_argument("--artist", required=True)
     res.add_argument("--title", required=True)
     res.add_argument("--duration", type=int, default=None, help="Duration in seconds (optional)")
+    res.add_argument("--version", default="", help="Version/remix info to improve SoundCloud lookup")
     res.set_defaults(func=cmd_genres_resolve)
 
     sp.add_parser("detect-taxonomy").set_defaults(func=cmd_detect_taxonomy)
 
     # --- Meta-komendy: round-1 i round-2 ---
-    r1 = sp.add_parser("round-1", help="Analyze + Enrich + ML Predict (suggest) + Export XLSX")
+    r1 = sp.add_parser("round-1", help="Scan + Analyze + Enrich + ML Predict (suggest) + Export XLSX")
     r1.add_argument("--min-confidence", type=float, default=0.40)
     r1.add_argument("--suggest-threshold", type=float, default=0.65)
     r1.add_argument("--xlsx-out", default=str(LOGS_DIR / "library_edit.xlsx"))
+    r1.add_argument("--skip-scan", action="store_true", help="Pomiń automatyczne skanowanie INBOX (gdy library.csv już zawiera rekordy)")
     r1.set_defaults(func=cmd_round_1)
 
     r2 = sp.add_parser("round-2", help="Import XLSX + Apply + Train local model + QA acceptance")

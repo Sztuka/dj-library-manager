@@ -7,7 +7,7 @@ Dokument opisuje plan przejścia na lokalną analizę audio (Essentia) jako źr�
 - Priorytet jakości: BPM i Key z Essentia (TempoTap/RhythmExtractor, KeyExtractor) → rezygnujemy z Traktora.
 - Energia + cechy audio: lokalne metryki (LUFS, Dynamic Complexity, Spectral Centroid/Rolloff, Onset Rate) → baza do „energy score”.
 - Bucketowanie: najpierw deterministyczne reguły (v0), potem klasyczny ML (v0.1), opcjonalnie hybryda z embeddingiem (v0.3).
-- Sieć (MB/Last.fm/Spotify/SoundCloud*): pozostaje pomocnicza; główne decyzje (BPM/Key/Energy/Bucket) oparte o audio. (*SoundCloud opcjonalny, z health check i możliwością pominięcia.)
+- Sieć (MB/Last.fm/SoundCloud*): pozostaje pomocnicza; główne decyzje (BPM/Key/Energy/Bucket) oparte o audio. (*SoundCloud opcjonalny, z health check i możliwością pominięcia.)
 - Caching, powtarzalność i audyt: analiza deterministyczna, cache po hash pliku + wersja algorytmu.
 
 ## 2) Architektura modułów
@@ -20,7 +20,7 @@ djlib/
     features.py         # normalizacja, sampling, korekty 0.5×/2×, energy score
     cache.py            # cache SQLite/JSON + wersjonowanie algorytmu
   tags.py               # odczyt tagów (bpm, key, …)
-  metadata/             # MB/LFM/Spotify (opcjonalne)
+  metadata/             # MB/LFM/SoundCloud (opcjonalne)
   genre_resolver.py     # z filtrami noise + multi-source wagi (MB/LFM/SP/SC)
   bucketing/
     base.py             # interfejsy
@@ -50,7 +50,9 @@ scripts/
    - `energy_score` + składowe
 
 - `genre_main/sub*` (opcjonalnie), `bucket_suggest`
-- per-source gatunki: `genres_musicbrainz`, `genres_lastfm`, `genres_spotify`, `genres_soundcloud` (DONE)
+- per-source gatunki: `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (DONE)
+
+**Uwaga:** CLI `round-1` orkiestruje kroki 2–4 automatycznie (wymuszony `scan` → analiza → enrichment) i pomija eksport XLSX, jeśli nie ma czego pokazać.
 
 5. Bucket v0 (reguły deterministyczne):
    - Mapuj na podstawie BPM (zakresy), Key (tryb A/B), Energy (progi), perkusyjności i prostych heurystyk.
@@ -179,10 +181,12 @@ scripts/
 
 ## 13) Nowe elementy zrealizowane poza pierwotnym planem
 
-- Multi-source genre enrichment (MB / Last.fm / Spotify / SoundCloud) z wagami.
+- Multi-source genre enrichment (MB / Last.fm / SoundCloud) z wagami.
 - Per-source kolumny `genres_*` + popularność (`pop_playcount`, `pop_listeners`).
 - Interaktywny prompt przy nieważnym SoundCloud client id + flaga `--skip-soundcloud`.
 - Wielokrotne nawiasy w nazwie pliku → łączone jako lista w `version_suggest`.
+- Remix-aware SoundCloud zapytania (przekazywanie `version` z CLI/resolvera, filtrowanie Extended/Radio/Remix tokenów).
+- `round-1` jako w pełni zautomatyzowany pipeline: zawsze rozpoczyna od `scan`, posiada `--skip-scan`, oraz blokadę eksportu pustych XLSX.
 
 ## 14) Backlog dodatków (proponowane)
 

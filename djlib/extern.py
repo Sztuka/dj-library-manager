@@ -1,12 +1,10 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, Tuple, List
+from typing import Dict
 import time
 import json
-import base64
-import os
 
-from djlib.config import LOGS_DIR, get_lastfm_api_key, get_spotify_credentials
+from djlib.config import LOGS_DIR, get_lastfm_api_key
 
 CACHE_DIR = LOGS_DIR / "cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -120,104 +118,6 @@ def lastfm_toptags(artist: str, title: str) -> Dict[str, int]:
     except Exception:
         cache_set(key, {})
         return {}
-
-# --- Spotify ---
-
-# Spotify Web API terms limit how long you may cache metadata.
-# Use a conservative 24h TTL to stay within typical guidance.
-SPOTIFY_TTL = 24 * 3600
-TOKEN_CACHE = CACHE_DIR / "spotify_token.json"
-
-
-def _spotify_token() -> str | None:
-    now = time.time()
-    if TOKEN_CACHE.exists():
-        try:
-            data = json.loads(TOKEN_CACHE.read_text())
-            if data.get("expires_at", 0) > now + 30:
-                return data.get("access_token")
-        except Exception:
-            pass
-    cid, sec = get_spotify_credentials()
-    if not cid or not sec:
-        return None
-    import requests
-    try:
-        _ext_throttle()
-        resp = requests.post(
-            "https://accounts.spotify.com/api/token",
-            data={"grant_type": "client_credentials"},
-            headers={
-                "Authorization": "Basic " + base64.b64encode(f"{cid}:{sec}".encode()).decode(),
-            },
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        tok = data.get("access_token")
-        expires_in = int(data.get("expires_in", 3600))
-        TOKEN_CACHE.write_text(json.dumps({"access_token": tok, "expires_at": now + expires_in}))
-        return tok
-    except Exception:
-        return None
-
-
-def spotify_artist_genres(artist: str, title: str) -> List[str]:
-    """Use track search to find artist, then return artist genres. Requires client credentials.
-    Returns a list of lowercased genres. Cached.
-    """
-    tok = _spotify_token()
-    if not tok:
-        return []
-    import requests
-    artist = (artist or "").strip()
-    title = (title or "").strip()
-    if not artist and not title:
-        return []
-    key = f"spotify_genres:{artist}|{title}"
-    cached = cache_get(key, SPOTIFY_TTL)
-    if cached is not None:
-        return cached.get("genres", []) if isinstance(cached, dict) else []
-    try:
-        q = " ".join([artist, title]).strip()
-        _ext_throttle()
-        resp = requests.get(
-            "https://api.spotify.com/v1/search",
-            params={"q": q, "type": "track", "limit": 1},
-            headers={"Authorization": f"Bearer {tok}"},
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            cache_set(key, {"genres": []})
-            return []
-        items = ((resp.json().get("tracks") or {}).get("items") or [])
-        if not items:
-            cache_set(key, {"genres": []})
-            return []
-        track = items[0]
-        artists = track.get("artists") or []
-        genres: List[str] = []
-        for a in artists[:2]:  # first 1-2 artists
-            aid = a.get("id")
-            if not aid:
-                continue
-            _ext_throttle()
-            r2 = requests.get(
-                f"https://api.spotify.com/v1/artists/{aid}",
-                headers={"Authorization": f"Bearer {tok}"},
-                timeout=15,
-            )
-            if r2.status_code == 200:
-                genres.extend([g.lower() for g in r2.json().get("genres", []) or []])
-        # de-dup
-        seen = set()
-        genres = [g for g in genres if not (g in seen or seen.add(g))]
-        cache_set(key, {"genres": genres})
-        return genres
-    except Exception:
-        cache_set(key, {"genres": []})
-        return []
 
 # --- Discogs removed ---
 

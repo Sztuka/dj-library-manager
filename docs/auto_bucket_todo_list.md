@@ -10,7 +10,7 @@
 ## Wkrótce (lepsze cechy i hybryda reguły+ML)
 
 - [ ] Dodać cechy rytmiczne (tempo confidence, beat histogram) do wektora ML. [SOON]
-- [ ] Ensemble: reguły (`placement.decide_bucket`) + ML + głosy gatunków (MB/LFM/Spotify) – łączenie z wagami. [SOON]
+- [ ] Ensemble: reguły (`placement.decide_bucket`) + ML + głosy gatunków (MB/LFM/SoundCloud) – łączenie z wagami. [SOON]
 - [ ] Wykorzystać popularność: progi singalong/party dance oraz decade buckety (80s/90s/…): (rok w metadanych + popularność). [SOON]
 
 ## Przyszłościowo (multi-user)
@@ -22,7 +22,6 @@
 ## Popularność – skąd dane?
 
 - Last.fm API – track.getInfo: `playcount`, `listeners` (już wspieramy, wymaga API key w configu).
-- Spotify API – `popularity` (0–100) dla track/artist; wymaga client credentials (opcjonalna integracja).
 - YouTube – liczba wyświetleń dla oficjalnego audio/clipu (opcjonalne; scraping/YouTube Data API v3).
 - (Mniej priorytetowe) Wikipedia/Chart archives (peak positions), Discogs (liczby „have/want”), TheAudioDB.
 

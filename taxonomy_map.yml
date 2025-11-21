@@ -1,4 +1,4 @@
-# Map external tags (Last.fm/Spotify) to your taxonomy buckets
+# Map external tags (Last.fm/SoundCloud) to your taxonomy buckets
 # Keys are lowercased tags; values must match entries in taxonomy.yml ready_buckets
 # Feel free to extend and tweak weights/coverage later.
 map:

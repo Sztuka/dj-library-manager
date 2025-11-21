@@ -38,7 +38,6 @@ FIELDNAMES = [
     # --- enrichment sources ---
     "genres_musicbrainz",
     "genres_lastfm",
-    "genres_spotify",
     # --- popularity (Last.fm) ---
     "pop_playcount",
     "pop_listeners",
@@ -57,4 +56,5 @@ def save_records(csv_path: Path, rows: List[Dict[str, str]]) -> None:
         w = csv.DictWriter(f, fieldnames=FIELDNAMES)
         w.writeheader()
         for r in rows:
-            w.writerow(r)
+            clean = {k: r.get(k, "") for k in FIELDNAMES}
+            w.writerow(clean)
