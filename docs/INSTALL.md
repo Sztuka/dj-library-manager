@@ -97,7 +97,7 @@ No local Essentia install is needed on the host.
 ## 3) Run audio analysis
 
 - Check env: "TOOLS — Check audio env"
-- Analyze and cache features: "STEP 2 — Analyze audio (cache)"
+- Analyze and cache features: "WORKFLOW 2 — Analyze audio (Essentia)"
 - Generate preview CSV with detected columns:
   - python scripts/report_preview.py
 

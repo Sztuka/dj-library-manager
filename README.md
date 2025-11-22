@@ -4,19 +4,20 @@ Quick start (local BPM/Key without Traktor):
 
 See `docs/INSTALL.md` for installing Essentia (optional but recommended)
 
-- Run tasks:
-  - STEP 0 — Setup: create venv & install deps
-  - TOOLS — Check audio env (verifies Essentia)
-  - STEP 2 — Analyze audio (cache)
-  - STEP 3 — Auto-decide (rules.yml) — only empty
-  - STEP 4 — Apply decisions (dry-run)
-  - STEP 5 — Apply decisions
-- Generate a preview: `python scripts/report_preview.py` (adds detected bpm/key/energy columns)
+1. **Setup deps** – task _STEP 0 — Setup: create venv & install deps_ (or run the equivalent commands manually).
+2. **Verify audio toolchain** – task _TOOLS — Check audio env_ (runs `python -m djlib.cli analyze-audio --check-env`).
+3. **Scan INBOX → `unsorted.xlsx`** – task _WORKFLOW 1 — Scan UNSORTED_ (`python -m djlib.cli scan`).
+4. **Analyze BPM/Key/Energy** – task _WORKFLOW 2 — Analyze audio (Essentia)_ (`python -m djlib.cli analyze-audio`).
+   - Optional: `python -m djlib.cli sync-audio-metrics --write-tags` updates both the cache and the ID3 tags.
+5. **Edit `unsorted.xlsx`** – fill `artist`/`title`/`version_info`/`genre`, pick `target_subfolder`, set `done = TRUE` only for tracks ready to export.
+6. **Export approved tracks** – task _WORKFLOW 3 — Export approved tracks_ (`python -m djlib.cli apply`).
+7. **(Optional) Build ML dataset** – task _WORKFLOW 4 — ML dataset export_ (`python -m djlib.cli ml-export-training-dataset`).
+8. Generate a preview any time with `python scripts/report_preview.py` (adds detected bpm/key/energy columns).
 
-**NEW: Local audio analysis with tag writing** (alternative to Traktor):
+**Local audio analysis with tag writing** (alternative to Traktor):
 
-- Run `python -m djlib.cli sync-audio-metrics --write-tags` to analyze BPM/Key/Energy locally and write them to file tags
-- This creates complete metadata in both cache and ID3 tags for DJ software compatibility
+- `python -m djlib.cli sync-audio-metrics --write-tags` analyzes BPM/Key/Energy locally and writes them to file tags.
+- Results land both in the Essentia cache and in ID3 tags, so any DJ software can read them immediately.
 
 ## Aktualny end‑to‑end workflow (rozszerzony)
 
@@ -60,28 +61,29 @@ python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 ## Workflow (unsorted.xlsx → library.csv)
 
 1. **Scan UNSORTED**  
-   Uruchom `python -m djlib.cli scan` (VS Code task: *WORKFLOW 1 — Scan UNSORTED*).  
+   Uruchom `python -m djlib.cli scan` (VS Code task: _WORKFLOW 1 — Scan UNSORTED_).  
    Komenda przeszukuje folder INBOX, liczy fingerprinty, zbiera podpowiedzi z Last.fm/MusicBrainz/SoundCloud i zapisuje wszystko do `unsorted.xlsx` (w `LIB_ROOT`).  
    Arkusz zawiera:
+
    - kolumny techniczne (track_id, file_path, file_hash, fingerprint, added_date, is_duplicate) – domyślnie ukryte,
    - oryginalne tagi z pliku (`tag_*`), listy gatunków z usług online, pola popularności,
    - sugestie AI/reguł (`ai_guess_bucket`, `ai_guess_comment`),
    - pola do edycji ręcznej: `artist`, `title`, `version_info`, `genre`, `target_subfolder`, `must_play`, `occasion_tags`, `notes`,
    - podstawowe metryki audio (`bpm`, `key_camelot`, `energy_hint`),
    - **kolumnę `done` na końcu arkusza** – dropdown TRUE/FALSE pełniący rolę checkboxa.
-   Dropdown dla `target_subfolder` korzysta z aktualnej taksonomii, więc unikamy literówek.
+     Dropdown dla `target_subfolder` korzysta z aktualnej taksonomii, więc unikamy literówek.
 
 2. **Analyze audio (Essentia)**  
-   `python -m djlib.cli analyze-audio` (VS Code: *WORKFLOW 2 — Analyze audio (Essentia)*) liczy cechy i zapisuje je do cache (`LOGS/audio_analysis.sqlite`). Możesz opcjonalnie uruchomić `sync-audio-metrics`, aby przepisać BPM/Key/Energy do arkusza.
+   `python -m djlib.cli analyze-audio` (VS Code: _WORKFLOW 2 — Analyze audio (Essentia)_) liczy cechy i zapisuje je do cache (`LOGS/audio_analysis.sqlite`). Możesz opcjonalnie uruchomić `sync-audio-metrics`, aby przepisać BPM/Key/Energy do arkusza.
 
 3. **Manual edits w `unsorted.xlsx`**  
    Otwórz arkusz w Excelu/Numbers/LibreOffice i uzupełnij `artist`, `title`, `version_info`, `genre`, `target_subfolder`, `must_play`, `occasion_tags`, `notes`. Gdy utwór jest gotowy, ustaw `done = TRUE`. Wszystko, co ma `FALSE`, pozostaje w stagingu.
 
 4. **Export approved tracks do `library.csv`**  
-   `python -m djlib.cli apply` (VS Code: *WORKFLOW 3 — Export approved tracks*) bierze tylko wiersze z `done = TRUE`, przenosi pliki do docelowych folderów, zapisuje finalne tagi i dopisuje rekordy do `library.csv`. Wiersze z wyeksportowanych utworów znikają z arkusza.
+   `python -m djlib.cli apply` (VS Code: _WORKFLOW 3 — Export approved tracks_) bierze tylko wiersze z `done = TRUE`, przenosi pliki do docelowych folderów, zapisuje finalne tagi i dopisuje rekordy do `library.csv`. Wiersze z wyeksportowanych utworów znikają z arkusza.
 
 5. **ML dataset export**  
-   `python -m djlib.cli ml-export-training-dataset` (VS Code: *WORKFLOW 4 — ML dataset export*) łączy cechy Essentii z `library.csv` i zapisuje `data/training_dataset_full.csv`.  
+   `python -m djlib.cli ml-export-training-dataset` (VS Code: _WORKFLOW 4 — ML dataset export_) łączy cechy Essentii z `library.csv` i zapisuje `data/training_dataset_full.csv`.
    - `genre` → `genre_label`.
    - `target_subfolder` → `bucket_label`.
    - Dodajemy dodatkowe kolumny `library_*` (np. `library_bpm`, `library_pop_playcount`) jako cechy pomocnicze.

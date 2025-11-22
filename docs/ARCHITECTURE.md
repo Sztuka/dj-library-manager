@@ -523,8 +523,7 @@ map:
 - `dupes`: Raport duplikatów
 - `genres resolve`: Rozpoznawanie gatunków dla pojedynczego utworu (obsługuje `--version` do przekazania info o remixach/edycjach)
 - `detect-taxonomy`: Wykrywanie taksonomii z istniejącej struktury folderów
-- `round-1`: Złożona runda (scan + analyze + enrich + predict + export). Domyślnie zaczyna od `scan`, a flaga `--skip-scan` pomija ten krok przy świeżym `library.csv`. Eksport XLSX jest wstrzymywany, gdy brak wierszy do zaprezentowania.
-- `round-2`: Kontynuuje workflow (import z XLSX, apply decyzji, trening lokalnego ML, szybkie QA).
+- _(wstrzymane)_ meta-komendy `round-1`/`round-2`: orchestration wróci w nowym workflow, aktualnie wyłączone by wymusić ręczną kontrolę nad `unsorted.xlsx`.
 
 ---
 
@@ -628,22 +627,18 @@ map:
    - Przenosi plik z powrotem
    - Czyści `final_filename`, `final_path` w CSV
 
-### 5. Zautomatyzowane rundy (`round-1`, `round-2`)
+### 5. Manualny flow z `unsorted.xlsx`
 
-**round-1** (Analyze+Enrich+Predict+Export):
+Obecny MVP wymaga sekwencyjnego przejścia przez arkusz stagingowy zamiast automatycznych „rund”. Zalecany przebieg:
 
-1. **Scan (wymuszone)** – komenda zawsze startuje od `cmd_scan`, chyba że użytkownik poda `--skip-scan` (przy świeżym `library.csv`). Dzięki temu pipeline nie korzysta ze starych rekordów.
-2. **Analyze audio** – zapewnia brakujące metryki BPM/Key/Energy (Essentia) przed enrichmentem.
-3. **Enrich online** – multi-source (MB/Last.fm/SoundCloud) z opcjonalnym pominięciem SoundCloud (`--skip-soundcloud`). Version/remix tokens są przekazywane do klienta SoundCloud, by szukać właściwych remiksów.
-4. **Predict buckets** – lokalny model ML + heurystyki.
-5. **Export XLSX** – zakończy rundę tylko wtedy, gdy istnieją rekordy do pokazania; w przeciwnym razie wypisze komunikat i nie wygeneruje pustego arkusza.
+1. **`scan`** – gromadzi nowe pliki w `unsorted.xlsx`, dopełnia fingerprint, tagi i sugestie AI.
+2. **`analyze-audio` / `sync-audio-metrics`** – uzupełnia BPM/Key/Energy i zapisuje je w cache/tagach.
+3. **(Opcjonalnie) `enrich-online` oraz `auto-decide(-smart)`** – poprawia `suggest_*` kolumny i/lub wypełnia `target_subfolder` tam, gdzie reguły są pewne.
+4. **Manualna edycja `unsorted.xlsx`** – użytkownik uzupełnia finalne metadane, wybiera bucket z dropdownu i ustawia `done = TRUE` tylko dla zaakceptowanych rekordów.
+5. **`apply`** – eksportuje jedynie wiersze oznaczone `done = TRUE`, przenosi pliki i czyści staging.
+6. **`ml-export-training-dataset`** – łączy przyjęte rekordy z cechami Essentii dla trenowania nowych modeli.
 
-**round-2** (Import+Apply+Train+QA):
-
-1. Import zmian z XLSX (akceptacja/sugestie).
-2. `apply` – przeniesienie plików zgodnie z decyzjami.
-3. `ml-train-local` – aktualizacja lokalnego modelu na zaakceptowanych rekordach.
-4. QA – szybkie sanity check (docelowo raport metryk).
+Meta-komendy `round-1`/`round-2` zostały odłączone, aby dopracować powyższy flow i uniknąć automatycznego „przeklikiwania” niezweryfikowanych rekordów. Powrócą jako orkiestrator budujący na tym samym zestawie kroków.
 
 ---
 
