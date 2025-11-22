@@ -52,7 +52,7 @@ scripts/
 - `genre_main/sub*` (opcjonalnie), `bucket_suggest`
 - per-source gatunki: `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (DONE)
 
-**Uwaga:** CLI `round-1` orkiestruje kroki 2–4 automatycznie (wymuszony `scan` → analiza → enrichment) i pomija eksport XLSX, jeśli nie ma czego pokazać.
+**Uwaga:** Orkiestrator `round-1` został tymczasowo wyłączony; docelowo wróci jako automat łączący kroki 2–4 (`scan` → analiza → enrichment) bez generowania pustych arkuszy.
 
 5. Bucket v0 (reguły deterministyczne):
    - Mapuj na podstawie BPM (zakresy), Key (tryb A/B), Energy (progi), perkusyjności i prostych heurystyk.
@@ -186,7 +186,7 @@ scripts/
 - Interaktywny prompt przy nieważnym SoundCloud client id + flaga `--skip-soundcloud`.
 - Wielokrotne nawiasy w nazwie pliku → łączone jako lista w `version_suggest`.
 - Remix-aware SoundCloud zapytania (przekazywanie `version` z CLI/resolvera, filtrowanie Extended/Radio/Remix tokenów).
-- `round-1` jako w pełni zautomatyzowany pipeline: zawsze rozpoczyna od `scan`, posiada `--skip-scan`, oraz blokadę eksportu pustych XLSX.
+- Reaktywacja `round-1` jako pełnego pipeline'u (wymuszony `scan`, `--skip-scan`, blokada pustych XLSX) po dopięciu nowego flow `unsorted.xlsx`.
 
 ## 14) Backlog dodatków (proponowane)
 

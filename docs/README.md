@@ -30,7 +30,66 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 5. Edytuj `unsorted.xlsx` – uzupełnij `artist`/`title`/`genre`/`target_subfolder`, oznacz wiersze `done = TRUE`.
 6. **WORKFLOW 3 — Export approved tracks** (`python -m djlib.cli apply`): przenosi tylko wiersze z `done = TRUE`, zapisuje finalne tagi i dopisuje rekordy do `library.csv`.
 7. **WORKFLOW 4 — ML dataset export** (`python -m djlib.cli ml-export-training-dataset`): tworzy `data/training_dataset_full.csv` na podstawie cache Essentii i `library.csv`.
-8. Testy: *TESTS — run* / *TESTS — coverage* (opcjonalnie przed commitem).
+8. Testy: _TESTS — run_ / _TESTS — coverage_ (opcjonalnie przed commitem).
+
+## How-to: praca z `unsorted.xlsx`
+
+1. **Po skanie sprawdź status**
+
+- `LOGS/scan_status.json` pokaże liczbę plików i ewentualne błędy (`missing_fpcalc`).
+- Jeśli pojawiły się duplikaty, kolumna `is_duplicate` ma `true` – takich wierszy zwykle nie oznaczamy `done`.
+
+2. **Zamknij alternatywne edytory**
+
+- Upewnij się, że Excel/Numbers nie ma otwartej starej wersji arkusza; w przeciwnym razie `scan` nie zapisze nowych danych.
+
+3. **Otwórz `unsorted.xlsx`**
+
+- Pierwszy wiersz to nagłówki, kolumny techniczne są ukryte.
+- Włącz filtr (`A1` → Filtr) jeżeli chcesz szybciej filtrować po `target_subfolder`, `done` lub `ai_guess_bucket`.
+
+4. **Korzystaj z dropdownów**
+
+- `target_subfolder` pobiera wartości z `_lists` → to zawsze aktualna taksonomia; nie wpisuj nazw ręcznie.
+- Kolumna `done` akceptuje tylko `TRUE/FALSE`; Excel pokazuje listę wyboru.
+
+5. **Uzupełnij metadane**
+
+- Kolumny `artist`, `title`, `version_info`, `genre`, `must_play`, `occasion_tags`, `notes` są edytowalne.
+- Jeśli sugerowane wartości (`*_suggest`) są poprawne, możesz je skopiować: `artist_suggest → artist` itp.
+- `bpm` i `key_camelot` są kopiowane z tagów lub Essentii – popraw je ręcznie, jeśli trzeba.
+
+6. **Weryfikuj wskazówki**
+
+- `ai_guess_bucket` i `ai_guess_comment` opisują heurystyki/reguły; traktuj je jako inspirację, nie pewnik.
+- `pop_playcount`/`pop_listeners` pomagają priorytetyzować hity – możesz filtrować po tych kolumnach przed edycją.
+
+7. **Ustaw `done = TRUE` wyłącznie, gdy**
+
+- plik ma finalny bucket, nazwy są poprawne, a tagi nie wymagają dodatkowej edycji;
+- duplikaty (`is_duplicate = true`) zostały manualnie przeanalizowane – często zostają w stanie `FALSE` do decyzji.
+
+8. **Zapisz i zamknij arkusz przed `apply`**
+
+- `djlib.cli apply` blokuje się, gdy `unsorted.xlsx` jest otwarty w trybie wyłącznym (np. Excel na Windows).
+- Po zapisaniu warto zrobić kopię np. `unsorted-backup.xlsx` jeśli edytujesz większe partie.
+
+9. **Uruchom `python -m djlib.cli apply`**
+
+- Pliki z `done = TRUE` i poprawnym `target_subfolder` zostaną przeniesione do docelowych folderów, `library.csv` zostanie uzupełniony, a wiersze znikną z `unsorted.xlsx`.
+- Jeśli chcesz zobaczyć plan bez przenosin, dodaj `--dry-run`.
+
+10. **Cofnij się w razie błędu**
+
+- `python -m djlib.cli undo` wykorzystuje log `LOGS/moves-*.csv`, aby przywrócić poprzedni stan i usunąć wpisy z `library.csv`.
+
+### Tipy i diagnostyka
+
+- Jeżeli dropdowny zniknęły, uruchom ponownie `scan` lub `apply` (obie komendy regenerują arkusz).
+- Gdy Essentia nie policzyła BPM/Key, uruchom `python -m djlib.cli analyze-audio --recompute` lub `sync-audio-metrics --force`.
+- Kolumny `genres_*` są tylko do odczytu – edytuj jedynie `genre`/`target_subfolder`.
+- Filtrowanie po `done = FALSE` + `target_subfolder` pusty to szybki sposób na znalezienie rekordów wymagających decyzji.
+- Jeśli Excel pokazuje komunikat o edycji tylko do odczytu, skopiuj plik w inne miejsce, edytuj i nadpisz oryginał po zamknięciu programu.
 
 ## Pliki konfiguracyjne i klucze
 
@@ -73,18 +132,19 @@ python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 
 ## CLI Cheat‑Sheet
 
-| Komenda                                  | Cel                                                | Kluczowe opcje                                 |
-| ---------------------------------------- | -------------------------------------------------- | ---------------------------------------------- |
-| `python -m djlib.cli scan`               | Skan INBOX → `unsorted.xlsx`                       | –                                              |
-| `python -m djlib.cli analyze-audio`      | Lokalne obliczenie cech (Essentia)                 | `--check-env`, `--recompute`, `--path`         |
-| `python -m djlib.cli enrich-online`      | Wzbogacanie multi-source                           | `--force-genres`, `--skip-soundcloud`          |
-| `python -m djlib.cli auto-decide`        | Uzupełnienie pustych targetów                      | `--only-empty`                                 |
-| `python -m djlib.cli apply`              | Export `done=TRUE` → biblioteka                    | `--dry-run`                                    |
-| `python -m djlib.cli undo`               | Cofnięcie ostatnich przenosin                      | –                                              |
-| `python -m djlib.cli dupes`              | Raport duplikatów                                  | –                                              |
-| `python -m djlib.cli detect-taxonomy`    | Odtworzenie taxonomy z folderów                    | –                                              |
-| `python -m djlib.cli sync-audio-metrics` | Przepisanie BPM/Key/Energy do arkusza              | `--write-tags`, `--force`                      |
-| `python -m djlib.cli ml-export-training-dataset` | Zbiór treningowy (Essentia + library labels) | `--out`, `--require-both-labels`               |
+| Komenda                                          | Cel                                          | Kluczowe opcje                         |
+| ------------------------------------------------ | -------------------------------------------- | -------------------------------------- |
+| `python -m djlib.cli scan`                       | Skan INBOX → `unsorted.xlsx`                 | –                                      |
+| `python -m djlib.cli analyze-audio`              | Lokalne obliczenie cech (Essentia)           | `--check-env`, `--recompute`, `--path` |
+| `python -m djlib.cli enrich-online`              | Wzbogacanie multi-source                     | `--force-genres`, `--skip-soundcloud`  |
+| `python -m djlib.cli auto-decide`                | Uzupełnienie pustych targetów                | `--only-empty`                         |
+| `python -m djlib.cli apply`                      | Export `done=TRUE` → biblioteka              | `--dry-run`                            |
+| `python -m djlib.cli undo`                       | Cofnięcie ostatnich przenosin                | –                                      |
+| `python -m djlib.cli dupes`                      | Raport duplikatów                            | –                                      |
+| `python -m djlib.cli detect-taxonomy`            | Odtworzenie taxonomy z folderów              | –                                      |
+| `python -m djlib.cli sync-audio-metrics`         | Przepisanie BPM/Key/Energy do arkusza        | `--write-tags`, `--force`              |
+| `python -m djlib.cli ml-export-training-dataset` | Zbiór treningowy (Essentia + library labels) | `--out`, `--require-both-labels`       |
+
 ## Planowane rozszerzenie `enrich_status.json`
 
 Plik w `LOGS/` będzie rozszerzony o zapisy decyzji SoundCloud:
@@ -115,4 +175,4 @@ Zalety: audyt decyzji, łatwiejsza telemetria jakości (które źródła często
 
 ---
 
-Jeśli potrzebujesz szybkiego skrótu działań: użyj `round-1` (domyślnie rozpoczyna od `scan`, aby odświeżyć `library.csv`), przejrzyj XLSX i popraw `target_subfolder`, potem `round-2`.
+Jeśli potrzebujesz szybkiego skrótu działań, trzymaj się sekwencji z sekcji **Szybki start (Tasks w VS Code)**: `scan` → `analyze-audio` → edycja `unsorted.xlsx` → `apply` (opcjonalnie zakończ `ml-export-training-dataset`). Automatyczne meta-komendy są obecnie wstrzymane do czasu wdrożenia nowego orkiestratora.
