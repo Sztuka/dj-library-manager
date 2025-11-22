@@ -6,6 +6,12 @@ from typing import List, Dict
 FIELDNAMES = [
     "track_id",
     "file_path",
+    "original_path",
+    "file_hash",
+    "fingerprint",
+    "added_date",
+    "final_filename",
+    "final_path",
     "artist",
     "title",
     "version_info",
@@ -13,36 +19,13 @@ FIELDNAMES = [
     "bpm",
     "key_camelot",
     "energy_hint",
-    "file_hash",
-    "fingerprint",
-    "is_duplicate",
-    "ai_guess_bucket",
-    "ai_guess_comment",
     "target_subfolder",
     "must_play",
     "occasion_tags",
     "notes",
-    "final_filename",
-    "final_path",
-    "added_date",
-    # --- proposed metadata (to review/accept) ---
-    "artist_suggest",
-    "title_suggest",
-    "version_suggest",
-    "genre_suggest",
-    "album_suggest",
-    "year_suggest",
-    "duration_suggest",
-    "meta_source",
-    "review_status",
-    # --- enrichment sources ---
-    "genres_musicbrainz",
-    "genres_lastfm",
-    # --- popularity (Last.fm) ---
+    "is_duplicate",
     "pop_playcount",
     "pop_listeners",
-    # --- external (SoundCloud) ---
-    "genres_soundcloud",
 ]
 
 def load_records(csv_path: Path) -> List[Dict[str, str]]:

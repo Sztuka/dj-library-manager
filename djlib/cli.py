@@ -2,12 +2,12 @@ from __future__ import annotations
 import argparse, csv, time, os, json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR, LOGS_DIR, CSV_PATH, AUDIO_EXTS
+    INBOX_DIR, READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR, LOGS_DIR, CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
 )
 from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
@@ -20,6 +20,9 @@ from djlib.filename import build_final_filename, extension_for
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 from djlib.buckets import is_valid_target
 from djlib.placement import decide_bucket
+from djlib.ml.export_dataset import export_training_dataset
+from djlib.taxonomy import load_taxonomy, allowed_targets
+from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, is_done
 try:
     from djlib.audio import check_env as audio_check_env
     from djlib.audio import analyze as audio_analyze
@@ -30,14 +33,33 @@ except Exception:
     audio_analyze = None  # type: ignore
     get_analysis = None  # type: ignore
 
-# ML bucket assigner (optional)
-try:
-    from djlib.bucketing.simple_ml import SimpleMLBucketAssigner
-except Exception:
-    SimpleMLBucketAssigner = None  # type: ignore
-
 # --- Pomocnicze ---
 REPO_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_ML_MSG = (
+    "Legacy ML pipeline (FMA) został usunięty. "
+    "Trenowanie i predykcje ML wrócą po wdrożeniu lokalnych modeli na bazie Essentia. "
+    "Na razie skorzystaj z `ml-export-training-dataset`, aby przygotować CSV do dalszej pracy."
+)
+
+
+def _safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _load_unsorted() -> List[Dict[str, str]]:
+    return load_unsorted_rows(UNSORTED_XLSX)
+
+
+def _save_unsorted(rows: List[Dict[str, str]]) -> None:
+    try:
+        choices = allowed_targets()
+    except Exception:
+        choices = []
+    write_unsorted_rows(UNSORTED_XLSX, rows, choices)
 
 # ============ KOMENDY ============
 
@@ -50,12 +72,15 @@ def cmd_configure(_: argparse.Namespace) -> None:
 
 def cmd_scan(_: argparse.Namespace) -> None:
     ensure_base_dirs()
-    rows = load_records(CSV_PATH)
-    known_hashes = {r.get("file_hash", "") for r in rows if r.get("file_hash")}
-    known_fps    = {r.get("fingerprint", "") for r in rows if r.get("fingerprint")}
+    library_rows = load_records(CSV_PATH)
+    staging_rows = _load_unsorted()
+    known_hashes = {r.get("file_hash", "") for r in library_rows if r.get("file_hash")}
+    known_fps = {r.get("fingerprint", "") for r in library_rows if r.get("fingerprint")}
+    known_hashes.update({r.get("file_hash", "") for r in staging_rows if r.get("file_hash")})
+    known_fps.update({r.get("fingerprint", "") for r in staging_rows if r.get("fingerprint")})
 
-    # przygotuj plik statusu skanowania
     status_path = LOGS_DIR / "scan_status.json"
+
     def _write_status(data: Dict[str, Any]) -> None:
         try:
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,21 +95,32 @@ def cmd_scan(_: argparse.Namespace) -> None:
     added = 0
     errors = 0
     missing_fpcalc = False
-    _write_status({
-        "state": "running",
-        "total": total,
-        "processed": 0,
-        "added": 0,
-        "errors": 0,
-        "last_file": "",
-    })
+    _write_status(
+        {
+            "state": "running",
+            "total": total,
+            "processed": 0,
+            "added": 0,
+            "errors": 0,
+            "last_file": "",
+        }
+    )
 
-    new_rows = []
+    new_rows: List[Dict[str, str]] = []
     for p in all_files:
         fhash = file_sha256(p)
         if fhash in known_hashes:
             processed += 1
-            _write_status({"state": "running", "total": total, "processed": processed, "added": added, "errors": errors, "last_file": str(p)})
+            _write_status(
+                {
+                    "state": "running",
+                    "total": total,
+                    "processed": processed,
+                    "added": added,
+                    "errors": errors,
+                    "last_file": str(p),
+                }
+            )
             continue
 
         tags = read_tags(p)
@@ -103,73 +139,92 @@ def cmd_scan(_: argparse.Namespace) -> None:
             tags["artist"], tags["title"], tags["bpm"], tags["genre"], tags["comment"]
         )
 
-        # Proponowane metadane (preferuj online w przyszłości; teraz filename+fallback)
         sugg = suggest_metadata(p, tags)
-        # jeśli nie mamy duration z online, wstaw lokalny czas z fingerprintu
         if (sugg.get("duration_suggest") or "").strip() == "" and dur:
             mm = dur // 60
             ss = dur % 60
             sugg["duration_suggest"] = f"{mm}:{ss:02d}"
 
         track_id = f"{fhash[:12]}_{int(time.time())}"
-        rec = {
+        rec: Dict[str, str] = {
             "track_id": track_id,
             "file_path": str(p),
-            # Wypełnij główne pola z metatagów jeśli dostępne (ułatwia eksport / filtrowanie)
-            "artist": (tags.get("artist") or "").strip(),
-            "title": (tags.get("title") or "").strip(),
-            "version_info": (tags.get("version_info") or "").strip(),
-            "bpm": tags["bpm"],
-            "key_camelot": tags["key_camelot"],
-            "energy_hint": tags["energy_hint"],
             "file_hash": fhash,
             "fingerprint": fp,
+            "added_date": utc_now_str(),
             "is_duplicate": is_dup,
-            "ai_guess_bucket": ai_bucket,
-            "ai_guess_comment": ai_comment,
+            "artist": _safe_str(tags.get("artist")).strip(),
+            "title": _safe_str(tags.get("title")).strip(),
+            "version_info": _safe_str(tags.get("version_info")).strip(),
+            "genre": _safe_str(tags.get("genre")).strip(),
+            "bpm": _safe_str(tags.get("bpm")),
+            "key_camelot": _safe_str(tags.get("key_camelot")),
+            "energy_hint": _safe_str(tags.get("energy_hint")),
+            "tag_artist_original": _safe_str(tags.get("artist")),
+            "tag_title_original": _safe_str(tags.get("title")),
+            "tag_genre_original": _safe_str(tags.get("genre")),
+            "tag_bpm_original": _safe_str(tags.get("bpm")),
+            "tag_key_original": _safe_str(tags.get("key_camelot")),
+            "ai_guess_bucket": _safe_str(ai_bucket),
+            "ai_guess_comment": _safe_str(ai_comment),
             "target_subfolder": "",
             "must_play": "",
             "occasion_tags": "",
             "notes": "",
-            "final_filename": "",
-            "final_path": "",
-            "added_date": "",
-            # propozycje do weryfikacji
-            **sugg,
-            "review_status": "pending",
+            "pop_playcount": _safe_str(sugg.get("pop_playcount")),
+            "pop_listeners": _safe_str(sugg.get("pop_listeners")),
+            "meta_source": _safe_str(sugg.get("meta_source")),
+            "done": "FALSE",
         }
+        for key in [
+            "artist_suggest",
+            "title_suggest",
+            "version_suggest",
+            "genre_suggest",
+            "album_suggest",
+            "year_suggest",
+            "duration_suggest",
+            "genres_musicbrainz",
+            "genres_lastfm",
+            "genres_soundcloud",
+        ]:
+            rec[key] = _safe_str(sugg.get(key, ""))
+        staging_rows.append(rec)
         new_rows.append(rec)
         known_hashes.add(fhash)
         if fp:
             known_fps.add(fp)
         added += 1
         processed += 1
-        _write_status({
-            "state": "running",
+        _write_status(
+            {
+                "state": "running",
+                "total": total,
+                "processed": processed,
+                "added": added,
+                "errors": errors,
+                "last_file": str(p),
+                "missing_fpcalc": missing_fpcalc,
+            }
+        )
+
+    if new_rows:
+        _save_unsorted(staging_rows)
+        print(f"Zeskanowano {len(new_rows)} plików. Zapisano {UNSORTED_XLSX}.")
+    else:
+        print("Brak nowych plików do dodania.")
+
+    _write_status(
+        {
+            "state": "done",
             "total": total,
             "processed": processed,
             "added": added,
             "errors": errors,
-            "last_file": str(p),
             "missing_fpcalc": missing_fpcalc,
-        })
-
-    if new_rows:
-        rows.extend(new_rows)
-        save_records(CSV_PATH, rows)
-        print(f"Zeskanowano {len(new_rows)} plików. Zapisano {CSV_PATH}.")
-    else:
-        print("Brak nowych plików do dodania.")
-
-    _write_status({
-        "state": "done",
-        "total": total,
-        "processed": processed,
-        "added": added,
-        "errors": errors,
-        "csv_rows": len(load_records(CSV_PATH)),
-        "missing_fpcalc": missing_fpcalc,
-    })
+            "unsorted_rows": len(staging_rows),
+        }
+    )
 
 def _load_rules(path: Path) -> Dict[str, Any]:
     import yaml
@@ -199,10 +254,12 @@ def _decide_for_row(row: Dict[str, str], rules: Dict[str, Any]) -> str:
 def cmd_auto_decide(args: argparse.Namespace) -> None:
     rules_path = Path(args.rules or (REPO_ROOT / "rules.yml"))
     rules = _load_rules(rules_path)
-    rows = load_records(CSV_PATH)
+    rows = _load_unsorted()
     updated = 0
 
     for r in rows:
+        if is_done(r.get("done")):
+            continue
         if args.only_empty and (r.get("target_subfolder") or "").strip():
             continue
         proposal = _decide_for_row(r, rules)
@@ -211,19 +268,19 @@ def cmd_auto_decide(args: argparse.Namespace) -> None:
             updated += 1
 
     if updated:
-        save_records(CSV_PATH, rows)
-        print(f"Zaktualizowano {updated} wierszy.")
-    else:
-        print("Brak zmian.")
+        _save_unsorted(rows)
+    print(f"Auto-decide: updated={updated}")
 
 def cmd_auto_decide_smart(_: argparse.Namespace) -> None:
     """Lepsze auto-decide: używa heurystyk z djlib.placement z progami ufności.
     ≥0.85: ustaw docelowy kubełek; 0.65..0.85: tylko sugestia (ai_guess_*)."""
     HARDCOMMIT_CONF = 0.85
     SUGGEST_CONF = 0.65
-    rows = load_records(CSV_PATH)
+    rows = _load_unsorted()
     set_cnt = sug_cnt = 0
     for r in rows:
+        if is_done(r.get("done")):
+            continue
         if r.get("target_subfolder"):
             continue
         tgt, conf, reason = decide_bucket(r)
@@ -239,18 +296,17 @@ def cmd_auto_decide_smart(_: argparse.Namespace) -> None:
             r["ai_guess_comment"] = f"rule:{reason}; conf={conf:.2f}"
             sug_cnt += 1
     if set_cnt or sug_cnt:
-        save_records(CSV_PATH, rows)
+        _save_unsorted(rows)
     print(f"✅ Auto-decide (smart): set={set_cnt}, suggested={sug_cnt}")
 
-def cmd_enrich_online(_: argparse.Namespace) -> None:
+def cmd_enrich_online(args: argparse.Namespace) -> None:
     """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
     """
-    rows = load_records(CSV_PATH)
-    # Jeśli podano --force-genres w args, będziemy nadpisywać źródłowe kolumny even if present
-    force_genres = bool(getattr(_, "force_genres", False))  # '_' is args Namespace
-    todo = [r for r in rows if (r.get("review_status") or "").lower() != "accepted"]
+    rows = _load_unsorted()
+    force_genres = bool(getattr(args, "force_genres", False))
+    todo = [r for r in rows if not is_done(r.get("done"))]
     total = len(todo)
     processed = 0
     changed = 0
@@ -312,11 +368,11 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         sc_health_msg = f"soundcloud_client_id_status={h.get('status')}" if h else ""
         if h and h.get("status") == "ok":
             print("✅ SoundCloud client_id OK")
-            if not getattr(_, "skip_soundcloud", False):
+            if not getattr(args, "skip_soundcloud", False):
                 status_doc["soundcloud"]["decision"] = "active"
         elif h and h.get("status") in {"invalid", "error"}:
             print(f"⚠ SoundCloud client_id: {h.get('message')}")
-            if getattr(_, "skip_soundcloud", False):
+            if getattr(args, "skip_soundcloud", False):
                 status_doc["soundcloud"]["decision"] = "skipped"
             else:
                 status_doc["soundcloud"]["prompt_shown"] = True
@@ -334,10 +390,10 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
                     return
                 else:
                     print("→ Pomiń SoundCloud w tym przebiegu.")
-                    setattr(_, "skip_soundcloud", True)
+                    setattr(args, "skip_soundcloud", True)
                     status_doc["soundcloud"]["decision"] = "skipped"
         elif h and h.get("status") == "missing":
-            if getattr(_, "skip_soundcloud", False):
+            if getattr(args, "skip_soundcloud", False):
                 status_doc["soundcloud"]["decision"] = "skipped"
             else:
                 print("ℹ Brak SoundCloud client_id (można ustawić DJLIB_SOUNDCLOUD_CLIENT_ID).")
@@ -350,7 +406,7 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
     tag_map = load_taxonomy_map()
 
     for r in rows:
-        if (r.get("review_status") or "").lower() == "accepted":
+        if is_done(r.get("done")):
             continue
         p = Path(r.get("file_path",""))
         online = enrich_online_for_row(p, r)
@@ -406,7 +462,7 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
                 t,
                 version=v,
                 duration_s=dur_s,
-                disable_soundcloud=bool(getattr(_, "skip_soundcloud", False)),
+                disable_soundcloud=bool(getattr(args, "skip_soundcloud", False)),
             )
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
                 # Ustaw 3 gatunki: main + subs
@@ -491,7 +547,7 @@ def cmd_enrich_online(_: argparse.Namespace) -> None:
         status_doc["last_file"] = str(p)
         _flush_status()
     if changed:
-        save_records(CSV_PATH, rows)
+        _save_unsorted(rows)
     # Oblicz źródła użycia na podstawie wypełnionych kolumn per-source
     mb_cnt = lfm_cnt = sc_cnt = 0
     for r in rows:
@@ -533,9 +589,11 @@ def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
     Pisz postęp do LOGS/fingerprint_status.json, aby UI mogło pokazywać pasek.
     """
     from djlib.config import LOGS_DIR
-    rows = load_records(CSV_PATH)
+    rows = _load_unsorted()
     targets = []
     for r in rows:
+        if is_done(r.get("done")):
+            continue
         fp = (r.get("fingerprint") or "").strip()
         if fp:
             continue
@@ -593,16 +651,16 @@ def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
         _write_status("running", str(p))
 
     if updated:
-        save_records(CSV_PATH, rows)
+        _save_unsorted(rows)
     _write_status("done", "")
     print(f"🧩 Fix fingerprints: updated={updated}, errors={errors}")
 
 def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
     """Napraw rekordy z pustym/niewłaściwym artist/title korzystając z nazwy pliku."""
     from djlib.filename import parse_from_filename
-    rows = load_records(CSV_PATH)
+    rows = _load_unsorted()
     if not rows:
-        print("Brak rekordów w CSV.")
+        print("Brak rekordów do korekty.")
         return
 
     def _should_replace(current: str | None, base_tokens: set[str]) -> bool:
@@ -625,6 +683,8 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
 
     updated = 0
     for r in rows:
+        if is_done(r.get("done")):
+            continue
         fp = (r.get("file_path") or "").strip()
         if not fp:
             continue
@@ -660,12 +720,17 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
             updated += 1
 
     if updated:
-        save_records(CSV_PATH, rows)
+        _save_unsorted(rows)
     print(f"🛠️  Fix titles from filenames: updated={updated}")
 
 def cmd_apply(args: argparse.Namespace) -> None:
-    rows = load_records(CSV_PATH)
-    changed = False
+    rows = _load_unsorted()
+    ready = [r for r in rows if is_done(r.get("done"))]
+    if not ready:
+        print("Brak wierszy z oznaczeniem done=TRUE.")
+        return
+    library_rows = load_records(CSV_PATH)
+    processed_ids: set[str] = set()
     tags_written = 0
     tags_errors = 0
 
@@ -674,14 +739,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
     log_path = LOGS_DIR / f"moves-{stamp}.csv"
     log_rows = []
 
-    for r in rows:
+    for r in ready:
         target = (r.get("target_subfolder") or "").strip()
-        if not target or target.upper() == "REJECT":
+        if not target:
             continue
-        if r.get("final_path"):
-            continue
-
-        src = Path(r["file_path"])
+        src = Path(r.get("file_path") or "")
         if not src.exists():
             print(f"[WARN] Nie znaleziono pliku: {src}")
             continue
@@ -691,12 +753,12 @@ def cmd_apply(args: argparse.Namespace) -> None:
             continue
 
         final_name = build_final_filename(
-            r.get("artist_suggest") or r.get("artist", ""), 
-            r.get("title_suggest") or r.get("title", ""),
-            r.get("version_suggest") or r.get("version_info", ""), 
+            r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or "",
+            r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or "",
+            r.get("version_info") or r.get("version_suggest") or "",
             r.get("key_camelot", ""),
-            r.get("bpm", ""), 
-            extension_for(src)
+            r.get("bpm", ""),
+            extension_for(src),
         )
 
         dest_path = dest_dir / final_name
@@ -706,63 +768,87 @@ def cmd_apply(args: argparse.Namespace) -> None:
             continue
 
         dest_real = move_with_rename(src, dest_dir, final_name)
-        r["final_filename"] = final_name
-        r["final_path"] = str(dest_real)
-        r["added_date"] = utc_now_str()
-        changed = True
-        log_rows.append([str(src), str(dest_real), r.get("track_id","")])
+        log_rows.append([str(src), str(dest_real), r.get("track_id", "")])
+        processed_ids.add(r.get("track_id", ""))
+        record = {
+            "track_id": r.get("track_id", ""),
+            "file_path": str(dest_real),
+            "original_path": r.get("file_path") or "",
+            "file_hash": r.get("file_hash") or "",
+            "fingerprint": r.get("fingerprint") or "",
+            "added_date": utc_now_str(),
+            "final_filename": final_name,
+            "final_path": str(dest_real),
+            "artist": r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or "",
+            "title": r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or "",
+            "version_info": r.get("version_info") or r.get("version_suggest") or "",
+            "genre": r.get("genre") or r.get("genre_suggest") or "",
+            "bpm": r.get("bpm") or "",
+            "key_camelot": r.get("key_camelot") or "",
+            "energy_hint": r.get("energy_hint") or "",
+            "target_subfolder": target,
+            "must_play": r.get("must_play") or "",
+            "occasion_tags": r.get("occasion_tags") or "",
+            "notes": r.get("notes") or "",
+            "is_duplicate": r.get("is_duplicate") or "",
+            "pop_playcount": r.get("pop_playcount") or "",
+            "pop_listeners": r.get("pop_listeners") or "",
+        }
+        library_rows.append(record)
         # Po udanym przeniesieniu spróbuj zapisać zaakceptowane metadane do tagów audio
         try:
-            if (r.get("review_status") or "").lower() == "accepted":
-                updates = {}
-                artist = (r.get("artist") or r.get("artist_suggest") or "").strip()
-                title_base = (r.get("title") or r.get("title_suggest") or "").strip()
-                version_info = (r.get("version_info") or r.get("version_suggest") or "").strip()
-                if title_base and version_info:
-                    parts = [p.strip() for p in version_info.split(",") if p.strip()]
-                    if parts:
-                        title_out = title_base + " " + " ".join(f"({p})" for p in parts)
-                    else:
-                        title_out = title_base
+            updates = {}
+            artist = (record["artist"] or "").strip()
+            title_base = (record["title"] or "").strip()
+            version_info = (record["version_info"] or "").strip()
+            if title_base and version_info:
+                parts = [p.strip() for p in version_info.split(",") if p.strip()]
+                if parts:
+                    title_out = title_base + " " + " ".join(f"({p})" for p in parts)
                 else:
                     title_out = title_base
-                if artist:
-                    updates["artist"] = artist
-                if title_out:
-                    updates["title"] = title_out
-                genre = (r.get("genre") or r.get("genre_suggest") or "").strip()
-                if genre:
-                    updates["genre"] = genre
-                bpm_raw = (r.get("bpm") or "").strip()
-                if bpm_raw:
-                    try:
-                        bpm_val = int(round(float(bpm_raw)))
-                        updates["bpm"] = str(bpm_val)
-                    except Exception:
-                        updates["bpm"] = bpm_raw
-                key_cam = (r.get("key_camelot") or "").strip().upper()
-                if key_cam:
-                    updates["key_camelot"] = key_cam
-                if updates:
-                    write_tags(dest_real, updates)
-                    tags_written += 1
+            else:
+                title_out = title_base
+            if artist:
+                updates["artist"] = artist
+            if title_out:
+                updates["title"] = title_out
+            genre = (record["genre"] or "").strip()
+            if genre:
+                updates["genre"] = genre
+            bpm_raw = (record["bpm"] or "").strip()
+            if bpm_raw:
+                try:
+                    bpm_val = int(round(float(bpm_raw)))
+                    updates["bpm"] = str(bpm_val)
+                except Exception:
+                    updates["bpm"] = bpm_raw
+            key_cam = (record["key_camelot"] or "").strip().upper()
+            if key_cam:
+                updates["key_camelot"] = key_cam
+            if updates:
+                write_tags(dest_real, updates)
+                tags_written += 1
         except Exception as e:
             print(f"[WARN] Tag write failed for {dest_real}: {e}")
             tags_errors += 1
 
-    if not args.dry_run and log_rows:
+    if args.dry_run:
+        print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (oznaczone done=TRUE).")
+        return
+
+    if log_rows:
         with log_path.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["src_before", "dest_after", "track_id"])
             w.writerows(log_rows)
         print(f"Zapisano log: {log_path}")
 
-    if changed and not args.dry_run:
-        save_records(CSV_PATH, rows)
-        print("Przeniesiono i zaktualizowano CSV.")
-        print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
-    elif not changed and not args.dry_run:
-        print("Brak pozycji do przeniesienia.")
+    remaining = [r for r in rows if r.get("track_id") not in processed_ids]
+    _save_unsorted(remaining)
+    save_records(CSV_PATH, library_rows)
+    print(f"Przeniesiono {len(processed_ids)} pozycji do biblioteki.")
+    print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
 
 def scan_command() -> None:
     """Funkcja wywołująca skanowanie (używana przez webapp i inne moduły)."""
@@ -818,9 +904,9 @@ def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
     if get_analysis is None:
         print("Audio cache backend niedostępny.")
         return
-    rows = load_records(CSV_PATH)
+    rows = _load_unsorted()
     if not rows:
-        print("Brak wierszy w CSV.")
+        print("Brak rekordów do aktualizacji.")
         return
     force = bool(getattr(args, "force", False))
     write_tags_flag = bool(getattr(args, "write_tags", False))
@@ -886,7 +972,7 @@ def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
                 print(f"[WARN] Nie udało się zapisać tagów do {p}: {e}")
     
     if updated:
-        save_records(CSV_PATH, rows)
+        _save_unsorted(rows)
     print(f"🔄 Sync audio metrics: updated={updated}, tags_written={tags_written}")
 
 def cmd_genres_resolve(args: argparse.Namespace) -> None:
@@ -1037,93 +1123,8 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
     _write_status("done", "")
     print(f"🎧 Analyze-audio: files={total}, analyzed={updated}")
 
-def _normalize_ml_features_from_analysis(res: Dict[str, Any]) -> Dict[str, Any]:
-    """Map fields from analyze() payload to ML feature dict expected by SimpleMLBucketAssigner."""
-    # Keep only scalar-like entries; ignore meta keys
-    feat: Dict[str, Any] = {}
-    for k, v in res.items():
-        if k in {"algo_version", "config_hash", "analyzed_at", "source", "audio_id"}:
-            continue
-        feat[k] = v
-    # Aliases
-    if "bpm_detected" not in feat and "bpm" in res:
-        feat["bpm_detected"] = res.get("bpm")
-    if "energy_score" not in feat and "energy" in res:
-        feat["energy_score"] = res.get("energy")
-    return feat
-
-def cmd_ml_predict(args: argparse.Namespace) -> None:
-    if SimpleMLBucketAssigner is None:
-        print("ML assigner not available (scikit-learn missing or import failure).")
-        return
-    if audio_analyze is None:
-        print("Audio analyze backend niedostępny — zainstaluj Essentia lub użyj analyze-audio --check-env.")
-        return
-
-    model_path = Path(getattr(args, "model", "") or (REPO_ROOT / "models" / "fma_trained_model_balanced.pkl"))
-    if not model_path.exists():
-        print(f"Brak modelu ML pod: {model_path}")
-        return
-    assigner = SimpleMLBucketAssigner(model_path)
-
-    base = Path(getattr(args, "path", "") or INBOX_DIR)
-    targets = [base] if base.is_file() else [p for p in base.glob("**/*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
-    total = len(targets)
-    print(f"ML Predict: model={model_path}, files={total}")
-
-    rows = load_records(CSV_PATH)
-    by_path = {r.get("file_path"): r for r in rows}
-    hard_t = float(getattr(args, "hard_threshold", 0.85))
-    suggest_t = float(getattr(args, "suggest_threshold", 0.65))
-    min_conf = float(getattr(args, "min_confidence", 0.40))
-    set_cnt = sug_cnt = 0
-
-    log_path = LOGS_DIR / "ml_predictions.csv"
-    if not log_path.exists():
-        try:
-            LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            with log_path.open("w", encoding="utf-8") as f:
-                f.write("file_path,bucket,confidence\n")
-        except Exception:
-            pass
-
-    for p in targets:
-        try:
-            res = audio_analyze(p, recompute=bool(getattr(args, "recompute", False))) or {}
-            feat = _normalize_ml_features_from_analysis(res)
-            bucket, conf = assigner.predict(feat)
-            # Log
-            try:
-                with log_path.open("a", encoding="utf-8") as f:
-                    f.write(f"{p},{bucket},{conf:.4f}\n")
-            except Exception:
-                pass
-            print(f"{p.name}: {bucket} (conf={conf:.2f})")
-
-            # Optionally write to CSV
-            if getattr(args, "set_target", False) or getattr(args, "suggest", False):
-                r = by_path.get(str(p))
-                if not r:
-                    continue
-                # globalny bezpiecznik: jeśli conf poniżej min_conf – nie zapisuj nic
-                if conf < min_conf:
-                    continue
-                if conf >= hard_t and getattr(args, "set_target", False):
-                    r["target_subfolder"] = f"READY TO PLAY/{bucket}"
-                    r["ai_guess_bucket"] = ""
-                    r["ai_guess_comment"] = f"ml; conf={conf:.2f}"
-                    set_cnt += 1
-                elif conf >= suggest_t and getattr(args, "suggest", False):
-                    r["ai_guess_bucket"] = f"READY TO PLAY/{bucket}"
-                    r["ai_guess_comment"] = f"ml; conf={conf:.2f}"
-                    sug_cnt += 1
-        except Exception as e:
-            print(f"[WARN] ML predict failed for {p}: {e}")
-
-    if (getattr(args, "set_target", False) or getattr(args, "suggest", False)) and (set_cnt or sug_cnt):
-        save_records(CSV_PATH, rows)
-    if set_cnt or sug_cnt:
-        print(f"ML Predict: set={set_cnt}, suggested={sug_cnt}")
+def cmd_ml_predict(_: argparse.Namespace) -> None:
+    print(LEGACY_ML_MSG)
 
 
 def _strip_ready_prefix(target: str) -> str:
@@ -1135,92 +1136,20 @@ def _strip_ready_prefix(target: str) -> str:
     return t
 
 
-def cmd_ml_train_local(args: argparse.Namespace) -> None:
-    """Wytrenuj model ML na Twoich lokalnych bucketach z CSV.
+def cmd_ml_train_local(_: argparse.Namespace) -> None:
+    print(LEGACY_ML_MSG)
 
-    Zbiera utwory z ustawionym target_subfolder, zapewnia analizę Essentia,
-    tworzy wektor cech i trenuje model. Filtruje rzadkie klasy.
-    """
-    if SimpleMLBucketAssigner is None:
-        print("ML assigner not available (scikit-learn missing or import failure).")
-        return
-    if audio_analyze is None or get_analysis is None:
-        print("Audio backend cache niedostępny — zainstaluj Essentia.")
-        return
 
-    rows = load_records(CSV_PATH)
-    # Kandydaci: mają target_subfolder i istniejący plik (preferuj final_path)
-    candidates = []
-    for r in rows:
-        tgt = (r.get("target_subfolder") or "").strip()
-        if not tgt:
-            continue
-        p = None
-        fp1 = r.get("final_path") or ""
-        fp2 = r.get("file_path") or ""
-        f1 = Path(fp1) if fp1 else None
-        f2 = Path(fp2) if fp2 else None
-        if f1 and f1.exists():
-            p = f1
-        elif f2 and f2.exists():
-            p = f2
-        if p is None:
-            continue
-        candidates.append((p, tgt))
-
-    if not candidates:
-        print("Brak danych z etykietami (target_subfolder) do treningu.")
-        return
-
-    print(f"Znaleziono {len(candidates)} oznaczonych utworów do treningu…")
-
-    # Zbuduj labeled_tracks
-    from djlib.audio.cache import compute_audio_id as _cmp
-    labeled_tracks = []
-    for p, tgt in candidates:
-        try:
-            aid = _cmp(p)
-            res = get_analysis(aid)
-            if (res is None) or bool(getattr(args, "recompute", False)):
-                # policz analizę jeśli brak
-                _ = audio_analyze(p)
-                res = get_analysis(aid)
-            if not res:
-                continue
-            feat = _normalize_ml_features_from_analysis(res)
-            feat["bucket"] = _strip_ready_prefix(tgt)
-            labeled_tracks.append(feat)
-        except Exception:
-            continue
-
-    if not labeled_tracks:
-        print("Brak gotowych cech do treningu.")
-        return
-
-    # Filtrowanie rzadkich klas
-    from collections import Counter
-    cnt = Counter(t["bucket"] for t in labeled_tracks)
-    min_per_class = int(getattr(args, "min_per_class", 20) or 0)
-    kept = [t for t in labeled_tracks if cnt[t["bucket"]] >= min_per_class]
-    dropped_labels = sorted({b for b, n in cnt.items() if n < min_per_class})
-    if not kept:
-        print("Po odfiltrowaniu rzadkich klas nie zostało danych. Obniż --min-per-class.")
-        return
-
-    # Limit próbek
-    limit = getattr(args, "limit", None)
-    if isinstance(limit, int) and limit and limit > 0:
-        kept = kept[:limit]
-
-    print(f"Trenuję na {len(kept)} próbkach, klasy: {sorted({t['bucket'] for t in kept})}")
-    if dropped_labels:
-        print(f"Pominięte (zbyt mało próbek): {', '.join(dropped_labels)}")
-
-    # Trening i zapis modelu
-    assigner = SimpleMLBucketAssigner()
-    assigner.train(kept)
-    out_path = Path(getattr(args, "out", REPO_ROOT / "models" / "local_trained_model.pkl"))
-    assigner.save_model(out_path)
+def cmd_ml_export_dataset(args: argparse.Namespace) -> None:
+    """Export Essentia features + genre/bucket labels to CSV."""
+    out_path = Path(getattr(args, "out", "") or (REPO_ROOT / "data" / "training_dataset_full.csv"))
+    require_both = bool(getattr(args, "require_both_labels", False))
+    stats = export_training_dataset(out_path=out_path, require_both_labels=require_both)
+    print(
+        f"ML dataset export: rows={stats['rows_exported']}, "
+        f"missing_features={stats['missing_features']}, missing_labels={stats['missing_labels']}"
+    )
+    print(f" → CSV: {stats['output_path']}")
 
 
 def cmd_qa_acceptance(args: argparse.Namespace) -> None:
@@ -1282,292 +1211,6 @@ def cmd_qa_acceptance(args: argparse.Namespace) -> None:
             print(f"  - {b}: {c}")
 
 
-def cmd_export_xlsx(args: argparse.Namespace) -> None:
-    """Eksport CSV do XLSX z dropdownem dla target_subfolder (lista bucketów).
-
-    Edytuj w Excel/Numbers, potem użyj import-xlsx do wczytania zmian.
-    """
-    try:
-        import openpyxl
-        from openpyxl.worksheet.datavalidation import DataValidation
-        from openpyxl.utils import get_column_letter
-        from typing import cast
-    except Exception:
-        print("Brak openpyxl — zainstaluj zależności (requirements.txt).")
-        return
-    from djlib.taxonomy import load_taxonomy, allowed_targets
-
-    # Domyślnie eksportuj WSZYSTKIE rekordy; przefiltruj tylko jeśli podano --only-pending
-    only_pending = bool(getattr(args, "only_pending", False))
-    out_path = Path(getattr(args, "out", LOGS_DIR / "library_edit.xlsx"))
-
-    rows = load_records(CSV_PATH)
-    if only_pending:
-        rows = [r for r in rows if (r.get("review_status") or "").lower() != "accepted"]
-    if not rows:
-        print("⚠️  Brak rekordów do eksportu (library.csv jest pusty). Uruchom najpierw scan.")
-        return
-
-    # Wczytaj (opcjonalnie) ostatnie predykcje ML, aby pokazać audio_genre i confidence
-    ml_pred_by_path: Dict[str, tuple[str, float]] = {}
-    try:
-        import csv as _csv
-        log_path = LOGS_DIR / "ml_predictions.csv"
-        if log_path.exists():
-            with log_path.open("r", encoding="utf-8") as f:
-                reader = _csv.DictReader(f)
-                for rec in reader:
-                    fp = rec.get("file_path") or rec.get("file") or rec.get("path") or rec.get("0")
-                    if not fp:
-                        # no headers case handled earlier when writing; skip ambiguous
-                        vals = list(rec.values())
-                        if len(vals) >= 3:
-                            fp = vals[0]
-                            pb = vals[1]
-                            try:
-                                cf = float(vals[2])
-                            except Exception:
-                                cf = 0.0
-                            ml_pred_by_path[str(fp)] = (str(pb), cf)
-                            continue
-                    pb = rec.get("bucket") or ""
-                    try:
-                        cf = float(rec.get("confidence") or 0)
-                    except Exception:
-                        cf = 0.0
-                    if fp:
-                        ml_pred_by_path[str(fp)] = (pb, cf)
-    except Exception:
-        pass
-
-    wb = openpyxl.Workbook()
-    ws = cast("openpyxl.worksheet.worksheet.Worksheet", wb.active)  # type: ignore[name-defined]
-    ws.title = "Library"  # type: ignore[assignment]
-    headers = [
-        "track_id", "artist", "title", "artist_suggest", "title_suggest", "version_info", "version_suggest",
-        "genre", "genre_suggest",
-        "bpm", "key_camelot",
-    "genres_musicbrainz", "genres_lastfm", "genres_soundcloud", "audio_genre", "audio_confidence",
-        "pop_playcount", "pop_listeners",
-        "ai_guess_bucket", "ai_guess_comment", "target_subfolder", "file_path"
-    ]
-    ws.append(headers)
-    for r in rows:
-        fp = r.get("file_path", "")
-        audio_genre = ""
-        audio_conf = ""
-        if fp and fp in ml_pred_by_path:
-            pb, cf = ml_pred_by_path[fp]
-            audio_genre = pb
-            audio_conf = f"{cf:.2f}"
-        # Round BPM to integer (display only)
-        bpm_raw = (r.get("bpm") or "").strip()
-        bpm_disp = ""
-        try:
-            if bpm_raw:
-                bpm_disp = str(int(round(float(bpm_raw))))
-        except Exception:
-            bpm_disp = bpm_raw
-        ws.append([
-            r.get("track_id", ""),
-            r.get("artist", ""),
-            r.get("title", ""),
-            r.get("artist_suggest", ""),
-            r.get("title_suggest", ""),
-            r.get("version_info", ""),
-            r.get("version_suggest", ""),
-            r.get("genre", ""),
-            r.get("genre_suggest", ""),
-            bpm_disp,
-            r.get("key_camelot", ""),
-            r.get("genres_musicbrainz", ""),
-            r.get("genres_lastfm", ""),
-            r.get("genres_soundcloud", ""),
-            audio_genre,
-            audio_conf,
-            r.get("pop_playcount", ""),
-            r.get("pop_listeners", ""),
-            r.get("ai_guess_bucket", ""),
-            r.get("ai_guess_comment", ""),
-            r.get("target_subfolder", ""),
-            fp,
-        ])
-
-    # Arkusz z bucketami
-    # Użyj pełnych nazw z prefiksami (READY TO PLAY/…, REVIEW QUEUE/…)
-    tax = load_taxonomy()
-    buckets = allowed_targets()
-    ws2 = wb.create_sheet("Buckets")
-    for i, b in enumerate(buckets, start=1):
-        ws2.cell(row=i, column=1, value=b)
-    # Data validation: dopasuj do kolumny 'target_subfolder' niezależnie od zmian układu kolumn
-    max_row = ws.max_row
-    dv = DataValidation(type="list", formula1=f"=Buckets!$A$1:$A${len(buckets)}", allow_blank=True)
-    try:
-        tgt_idx = headers.index("target_subfolder") + 1
-        col_letter = get_column_letter(tgt_idx)
-        rng = f"{col_letter}2:{col_letter}{max_row}"
-        dv.add(rng)  # type: ignore[arg-type]
-    except ValueError:
-        # jeśli brak kolumny (nie powinno się zdarzyć), pomiń walidację, ale zapisz plik
-        pass
-    ws.add_data_validation(dv)
-    # kosmetyka
-    ws.freeze_panes = "A2"
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out_path)
-    print(f"Zapisano: {out_path}")
-
-
-def cmd_import_xlsx(args: argparse.Namespace) -> None:
-    """Wczytaj zmiany z XLSX (kolumna target_subfolder) z powrotem do CSV.
-
-    Dopasowanie po track_id; jeśli brak, próba po file_path.
-    """
-    try:
-        import openpyxl
-    except Exception:
-        print("Brak openpyxl — zainstaluj zależności (requirements.txt).")
-        return
-
-    src = Path(getattr(args, "path", LOGS_DIR / "library_edit.xlsx"))
-    if not src.exists():
-        print(f"Brak pliku: {src}")
-        return
-    wb = openpyxl.load_workbook(src)
-    ws = wb["Library"]
-
-    rows = load_records(CSV_PATH)
-    by_id = {r.get("track_id"): r for r in rows}
-    by_path = {r.get("file_path"): r for r in rows}
-
-    # Map header indices
-    header = [cell.value for cell in ws[1]]
-    idx = {name: i for i, name in enumerate(header)}
-
-    def _cell(row_vals, key):
-        i = idx.get(key)
-        return row_vals[i] if i is not None and i < len(row_vals) else None
-
-    updated = 0
-    accepted = 0
-    for i, row_vals in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        track_id = str(_cell(row_vals, "track_id") or "").strip()
-        file_path = str(_cell(row_vals, "file_path") or "").strip()
-        rec = by_id.get(track_id) or by_path.get(file_path)
-        if not rec:
-            continue
-        # Target subfolder
-        tgt = str(_cell(row_vals, "target_subfolder") or "").strip()
-        if tgt and tgt != rec.get("target_subfolder", ""):
-            rec["target_subfolder"] = tgt
-            updated += 1
-        # Accept metadata edits: if user filled artist/title/genre columns
-        artist_edit = str(_cell(row_vals, "artist") or "").strip()
-        title_edit = str(_cell(row_vals, "title") or "").strip()
-        version_info_edit = str(_cell(row_vals, "version_info") or "").strip()
-        genre_edit = str(_cell(row_vals, "genre") or "").strip()
-        if artist_edit and artist_edit != rec.get("artist", ""):
-            rec["artist"] = artist_edit
-            updated += 1
-        if title_edit and title_edit != rec.get("title", ""):
-            rec["title"] = title_edit
-            updated += 1
-        if version_info_edit and version_info_edit != rec.get("version_info", ""):
-            rec["version_info"] = version_info_edit
-            updated += 1
-        if genre_edit and genre_edit != rec.get("genre", ""):
-            rec["genre"] = genre_edit
-            updated += 1
-        # If user modified any accepted fields or set target, mark as accepted
-        if tgt or artist_edit or title_edit or genre_edit:
-            if (rec.get("review_status") or "") != "accepted":
-                rec["review_status"] = "accepted"
-                accepted += 1
-        # Sync suggests to accepted if accepted but main empty
-        if rec.get("review_status") == "accepted":
-            if not rec.get("artist") and rec.get("artist_suggest"):
-                rec["artist"] = rec["artist_suggest"]
-            if not rec.get("title") and rec.get("title_suggest"):
-                rec["title"] = rec["title_suggest"]
-            if not rec.get("version_info") and rec.get("version_suggest"):
-                rec["version_info"] = rec["version_suggest"]
-            if not rec.get("genre") and rec.get("genre_suggest"):
-                rec["genre"] = rec["genre_suggest"].split(",")[0].strip()
-
-    if updated or accepted:
-        save_records(CSV_PATH, rows)
-    print(f"Import XLSX: updated={updated}, accepted={accepted}")
-
-
-# ============ META-KOMENDY (aliasy) ============
-
-def cmd_round_1(args: argparse.Namespace) -> None:
-    """Uruchom pełny pierwszy etap: scan → analyze → enrich-online → ml-predict (suggest) → export-xlsx."""
-    # scan inbox first (unless explicitly skipped) to make sure library.csv has fresh rows
-    skip_scan = bool(getattr(args, "skip_scan", False))
-    if not skip_scan:
-        cmd_scan(argparse.Namespace())
-
-    # Abort early if library.csv still empty
-    existing = load_records(CSV_PATH)
-    if not existing:
-        print("⚠️  Brak rekordów w library.csv — najpierw uruchom scan lub dodaj pliki do INBOX.")
-        return
-
-    # analyze-audio
-    aargs = argparse.Namespace(
-        path=str(INBOX_DIR), check_env=False, recompute=False, workers=1, target_bpm="80:180"
-    )
-    cmd_analyze_audio(aargs)
-
-    # enrich-online
-    cmd_enrich_online(argparse.Namespace())
-
-    # ml-predict (sugestie)
-    pargs = argparse.Namespace(
-        model=str(REPO_ROOT / "models" / "fma_trained_model_balanced.pkl"),
-        path=str(INBOX_DIR),
-        recompute=False,
-        set_target=False,
-        suggest=True,
-        hard_threshold=0.85,
-        suggest_threshold=float(getattr(args, "suggest_threshold", 0.65)),
-        min_confidence=float(getattr(args, "min_confidence", 0.40)),
-    )
-    cmd_ml_predict(pargs)
-
-    # export-xlsx
-    exargs = argparse.Namespace(
-        out=str(getattr(args, "xlsx_out", LOGS_DIR / "library_edit.xlsx")),
-        only_pending=True,
-    )
-    cmd_export_xlsx(exargs)
-    print(f"➡️  Otwórz do edycji: {exargs.out}")
-
-
-def cmd_round_2(args: argparse.Namespace) -> None:
-    """Uruchom drugi etap: import-xlsx → apply → ml-train-local → qa-acceptance."""
-    # import-xlsx
-    imargs = argparse.Namespace(path=str(getattr(args, "xlsx_path", LOGS_DIR / "library_edit.xlsx")))
-    cmd_import_xlsx(imargs)
-
-    # apply
-    cmd_apply(argparse.Namespace(dry_run=False))
-
-    # ml-train-local
-    tlargs = argparse.Namespace(
-        min_per_class=int(getattr(args, "min_per_class", 20)),
-        limit=None,
-        recompute=False,
-        out=str(getattr(args, "model_out", REPO_ROOT / "models" / "local_trained_model.pkl"))
-    )
-    cmd_ml_train_local(tlargs)
-
-    # qa-acceptance
-    qaargs = argparse.Namespace(min_confidence=float(getattr(args, "qa_min_confidence", 0.65)))
-    cmd_qa_acceptance(qaargs)
 
 # ============ PARSER ============
 
@@ -1611,7 +1254,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ml predict
     mp = sp.add_parser("ml-predict")
-    mp.add_argument("--model", default=str(REPO_ROOT / "models" / "fma_trained_model_balanced.pkl"))
+    mp.add_argument("--model", default=str(REPO_ROOT / "models" / "bucket_model.pkl"))
     mp.add_argument("--path", default=str(INBOX_DIR), help="Plik lub folder (domyślnie INBOX)")
     mp.add_argument("--recompute", action="store_true", help="Przelicz analizę audio na nowo")
     mp.add_argument("--set-target", action="store_true", help="Ustawiaj docelowy kubełek powyżej progu hard")
@@ -1626,8 +1269,13 @@ def build_parser() -> argparse.ArgumentParser:
     tl.add_argument("--min-per-class", type=int, default=20, help="Minimalna liczba próbek na klasę (odfiltruj rzadkie)")
     tl.add_argument("--limit", type=int, default=None, help="Limit próbek do szybkiego treningu (opcjonalnie)")
     tl.add_argument("--recompute", action="store_true", help="Przelicz analizę Essentia jeśli brak w cache")
-    tl.add_argument("--out", default=str(REPO_ROOT / "models" / "local_trained_model.pkl"))
+    tl.add_argument("--out", default=str(REPO_ROOT / "models" / "bucket_model.pkl"))
     tl.set_defaults(func=cmd_ml_train_local)
+
+    ds = sp.add_parser("ml-export-training-dataset")
+    ds.add_argument("--out", default=str(REPO_ROOT / "data" / "training_dataset_full.csv"))
+    ds.add_argument("--require-both-labels", action="store_true", help="Uwzględnij tylko rekordy z kompletnymi etykietami")
+    ds.set_defaults(func=cmd_ml_export_dataset)
 
     # QA: acceptance rate
     qa = sp.add_parser("qa-acceptance")
@@ -1635,15 +1283,6 @@ def build_parser() -> argparse.ArgumentParser:
     qa.set_defaults(func=cmd_qa_acceptance)
 
     # XLSX export/import z dropdownem na bucket
-    ex = sp.add_parser("export-xlsx")
-    ex.add_argument("--out", default=str(LOGS_DIR / "library_edit.xlsx"))
-    ex.add_argument("--only-pending", action="store_true", help="Eksportuj tylko niezaakceptowane")
-    ex.set_defaults(func=cmd_export_xlsx)
-
-    im = sp.add_parser("import-xlsx")
-    im.add_argument("--path", default=str(LOGS_DIR / "library_edit.xlsx"))
-    im.set_defaults(func=cmd_import_xlsx)
-
     # genres resolve (single lookup)
     gp = sp.add_parser("genres")
     gsp = gp.add_subparsers(dest="subcmd", required=True)
@@ -1657,20 +1296,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_parser("detect-taxonomy").set_defaults(func=cmd_detect_taxonomy)
 
     # --- Meta-komendy: round-1 i round-2 ---
-    r1 = sp.add_parser("round-1", help="Scan + Analyze + Enrich + ML Predict (suggest) + Export XLSX")
-    r1.add_argument("--min-confidence", type=float, default=0.40)
-    r1.add_argument("--suggest-threshold", type=float, default=0.65)
-    r1.add_argument("--xlsx-out", default=str(LOGS_DIR / "library_edit.xlsx"))
-    r1.add_argument("--skip-scan", action="store_true", help="Pomiń automatyczne skanowanie INBOX (gdy library.csv już zawiera rekordy)")
-    r1.set_defaults(func=cmd_round_1)
-
-    r2 = sp.add_parser("round-2", help="Import XLSX + Apply + Train local model + QA acceptance")
-    r2.add_argument("--xlsx-path", default=str(LOGS_DIR / "library_edit.xlsx"))
-    r2.add_argument("--min-per-class", type=int, default=20)
-    r2.add_argument("--qa-min-confidence", type=float, default=0.65)
-    r2.add_argument("--model-out", default=str(REPO_ROOT / "models" / "local_trained_model.pkl"))
-    r2.set_defaults(func=cmd_round_2)
-
     tb = sp.add_parser("taxonomy-backup", help="Zrób snapshot taksonomii na podstawie folderów i zapisz backup")
     tb.set_defaults(func=cmd_taxonomy_backup)
     return p

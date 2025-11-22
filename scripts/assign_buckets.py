@@ -12,8 +12,6 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-import pandas as pd
-
 # Use project modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -24,11 +22,10 @@ try:
 except ImportError:
     rules_available = False
 
-try:
-    from djlib.bucketing.simple_ml import SimpleMLBucketAssigner
-    ml_available = True
-except ImportError:
-    ml_available = False
+LEGACY_ML_MSG = (
+    "Legacy ML bucket assigner (FMA-based) has been removed. "
+    "Future Essentia models will replace it once implemented."
+)
 
 
 def load_tracks_from_csv(csv_path: Path) -> List[Dict[str, Any]]:
@@ -62,69 +59,8 @@ def assign_buckets_with_ml(
     model_path: Path = Path('models/bucket_model.pkl'),
     feedback_csv: Optional[Path] = None
 ) -> List[Dict[str, Any]]:
-    """Assign buckets using ML model."""
-    from djlib.bucketing.simple_ml import SimpleMLBucketAssigner
-    from djlib.audio import analyze as analyze_audio
-
-    # Initialize ML assigner
-    assigner = SimpleMLBucketAssigner()
-
-    # Load model if exists
-    if model_path.exists():
-        assigner.load_model(model_path)
-        print(f"Loaded ML model from {model_path}")
-    else:
-        print(f"Warning: Model not found at {model_path}, using untrained model")
-
-    # Process each track
-    for idx, track in enumerate(tracks):
-        if idx % 100 == 0:
-            print(f"Processing track {idx+1}/{len(tracks)}")
-
-        # Extract features from audio file
-        audio_path = Path(track.get('path', ''))
-        if not audio_path.exists():
-            print(f"Warning: Audio file not found: {audio_path}")
-            track['bucket_suggest'] = 'REVIEW QUEUE/MISSING_FILE'
-            track['bucket_confidence'] = '0.0'
-            continue
-
-        try:
-            # Analyze audio to get features
-            audio_features = analyze_audio(str(audio_path))
-            
-            # Merge features into track dict
-            track_with_features = {**track, **audio_features}
-            
-            # Predict bucket
-            bucket, confidence = assigner.predict(track_with_features)
-            
-            track['bucket_suggest'] = bucket
-            track['bucket_confidence'] = f"{confidence:.2f}"
-            track['decision'] = 'ml_predict'
-            
-        except Exception as e:
-            print(f"Error processing {audio_path}: {e}")
-            track['bucket_suggest'] = 'REVIEW QUEUE/ERROR'
-            track['bucket_confidence'] = '0.0'
-            track['decision'] = 'error'
-
-    # Save feedback if provided
-    if feedback_csv:
-        feedback_data = []
-        for track in tracks:
-            feedback_data.append({
-                'path': track.get('path', ''),
-                'predicted_bucket': track.get('bucket_suggest', ''),
-                'confidence': track.get('bucket_confidence', '0.0'),
-                'user_decision': ''  # To be filled by user
-            })
-        
-        feedback_df = pd.DataFrame(feedback_data)
-        feedback_df.to_csv(feedback_csv, index=False)
-        print(f"Saved feedback template to {feedback_csv}")
-
-    return tracks
+    """Legacy ML path retained for compatibility, but not active."""
+    raise RuntimeError(LEGACY_ML_MSG)
 
 
 def main() -> int:
@@ -192,13 +128,8 @@ def main() -> int:
         tracks = assign_buckets_with_rules(tracks, args.rules_file)
 
     elif args.method == 'ml':
-        if not ml_available:
-            print("ERROR: ML method requires djlib.bucketing.simple_ml and scikit-learn")
-            return 1
-
-        model_path = args.model_path or lib_root / "models" / "bucket_model.pkl"
-        print(f"Assigning buckets using ML (model: {model_path})...")
-        tracks = assign_buckets_with_ml(tracks, model_path, args.feedback_csv)
+        print(f"ERROR: {LEGACY_ML_MSG}")
+        return 1
 
     # Handle feedback for ML retraining
     if args.feedback_csv and args.feedback_csv.exists():

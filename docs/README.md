@@ -24,25 +24,13 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 ## Szybki start (Tasks w VS Code)
 
 1. **STEP 0 — Setup: create venv & install deps**
-2. **STEP 1 — Start Web Wizard (server)** → **STEP 1.1 — Open Wizard URL**  
-   Przejdź w przeglądarce:
-   - **Krok 1 (Lokalizacja):** wskaż `LIB ROOT` (gdzie powstanie struktura) i `INBOX_UNSORTED`.
-   - **Krok 2 (Taksonomia):** zdefiniuj subkubełki:
-     - `CLUB`: np. HOUSE, AFRO HOUSE, TECHNO, DNB, ELECTRO SWING …
-     - `OPEN FORMAT`: np. PARTY DANCE, FUNK SOUL, HIP-HOP, RNB, 70s/80s/90s/2000s/2010s, POLISH SINGALONG …
-     - `MIXES` jest zawsze top-level.
-   - **Krok 3 (Foldery & Skan):** utworzymy foldery; opcjonalnie od razu skan INBOX.
-3. **STEP 2 — Scan INBOX_UNSORTED** _(jeśli nie skanowałeś w kroku 3; runda `round-1` i tak startuje od `scan`, więc krok może być pominięty)_
-4. **ROUND — 1) Analyze+Enrich+Predict+Export** – pełna runda (autorun: scan → analyze → enrich → predict → export XLSX).
-
-- Domyślnie startuje od `scan`, aby odświeżyć `library.csv` (użyj `--skip-scan`, gdy masz świeży stan).
-- Eksport XLSX zostanie pominięty z komunikatem, jeśli po analizie brak wierszy do pokazania (koniec pustych arkuszy).
-
-5. **ROUND — 2) Import+Apply+Train+QA** – wczytanie zmian z XLSX, apply, trening lokalnego modelu, kontrola jakości.
-6. **STEP 3 — Auto-decide (rules.yml) — only empty** _(alternatywa / manualny krok)_
-7. **STEP 4 — Apply decisions (dry-run)** – pokazuje co zostanie przeniesione.
-8. **STEP 5 — Apply decisions** – wykonuje przenosiny.  
-   Dodatkowo: **TOOLS — Undo last moves**, **TOOLS — Report duplicates**, **TOOLS — Check audio env**, **TOOLS — Detect taxonomy**.
+2. **TOOLS — Install Essentia (Homebrew)** (opcjonalnie) oraz **TOOLS — Check audio env**.
+3. **WORKFLOW 1 — Scan UNSORTED**: zbiera fingerprinty/metadane i aktualizuje `unsorted.xlsx`.
+4. **WORKFLOW 2 — Analyze audio (Essentia)**: liczy cechy i zapisuje je do cache (`LOGS/audio_analysis.sqlite`).
+5. Edytuj `unsorted.xlsx` – uzupełnij `artist`/`title`/`genre`/`target_subfolder`, oznacz wiersze `done = TRUE`.
+6. **WORKFLOW 3 — Export approved tracks** (`python -m djlib.cli apply`): przenosi tylko wiersze z `done = TRUE`, zapisuje finalne tagi i dopisuje rekordy do `library.csv`.
+7. **WORKFLOW 4 — ML dataset export** (`python -m djlib.cli ml-export-training-dataset`): tworzy `data/training_dataset_full.csv` na podstawie cache Essentii i `library.csv`.
+8. Testy: *TESTS — run* / *TESTS — coverage* (opcjonalnie przed commitem).
 
 ## Pliki konfiguracyjne i klucze
 
@@ -87,17 +75,16 @@ python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 
 | Komenda                                  | Cel                                                | Kluczowe opcje                                 |
 | ---------------------------------------- | -------------------------------------------------- | ---------------------------------------------- |
-| `python -m djlib.cli scan`               | Skan INBOX → CSV                                   | `--force` (jeśli dodamy), brak aktualnie       |
+| `python -m djlib.cli scan`               | Skan INBOX → `unsorted.xlsx`                       | –                                              |
+| `python -m djlib.cli analyze-audio`      | Lokalne obliczenie cech (Essentia)                 | `--check-env`, `--recompute`, `--path`         |
 | `python -m djlib.cli enrich-online`      | Wzbogacanie multi-source                           | `--force-genres`, `--skip-soundcloud`          |
 | `python -m djlib.cli auto-decide`        | Uzupełnienie pustych targetów                      | `--only-empty`                                 |
-| `python -m djlib.cli apply`              | Przeniesienie plików                               | `--dry-run`                                    |
+| `python -m djlib.cli apply`              | Export `done=TRUE` → biblioteka                    | `--dry-run`                                    |
 | `python -m djlib.cli undo`               | Cofnięcie ostatnich przenosin                      | –                                              |
 | `python -m djlib.cli dupes`              | Raport duplikatów                                  | –                                              |
 | `python -m djlib.cli detect-taxonomy`    | Odtworzenie taxonomy z folderów                    | –                                              |
-| `python -m djlib.cli sync-audio-metrics` | Lokalne BPM/Key/Energy                             | `--write-tags`, `--force`                      |
-| `python -m djlib.cli round-1`            | Złożona runda (scan+analyze+enrich+predict+export) | `--skip-scan` jeśli biblioteka już zeskanowana |
-| `python -m djlib.cli round-2`            | Import zmian + apply + train + QA                  | (wewn. sekwencja)                              |
-
+| `python -m djlib.cli sync-audio-metrics` | Przepisanie BPM/Key/Energy do arkusza              | `--write-tags`, `--force`                      |
+| `python -m djlib.cli ml-export-training-dataset` | Zbiór treningowy (Essentia + library labels) | `--out`, `--require-both-labels`               |
 ## Planowane rozszerzenie `enrich_status.json`
 
 Plik w `LOGS/` będzie rozszerzony o zapisy decyzji SoundCloud:
