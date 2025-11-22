@@ -1,3 +1,4 @@
+# NOTE: See docs/BUCKETING_LEGACY.md – bucketing/ML here is legacy and currently not active.
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional, Tuple

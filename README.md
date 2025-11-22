@@ -37,24 +37,17 @@ SoundCloud:
 
 Wielokrotne nawiasy w nazwie pliku (np. `Artist - Title (Karibu Remix) (Extended Edit).mp3`) są łączone w `version_suggest`: `Karibu Remix, Extended Edit`.
 
-Workflow:
+Szybkie kroki:
 
-1. Skopiuj nowe pliki do folderu inbox (domyślnie `~/Unsorted` lub skonfigurowany).
-2. **W Traktorze** zrób Analyze (BPM + Key), potem **Write Tags to File**.  
-   **LUB** użyj lokalnej analizy: `python -m djlib.cli sync-audio-metrics --write-tags`
-3. Uruchom `scripts/scan_inbox.py` – powstanie/uzupełni się `library.csv`.
-4. Otwórz `library.csv` i uzupełnij `target_subfolder`, np.:
-   - `READY TO PLAY/CLUB/AFRO HOUSE`
-   - `READY TO PLAY/OPEN FORMAT/PARTY DANCE`
-   - `REVIEW QUEUE/UNDECIDED`
-   - `REJECT`
-5. Uruchom `scripts/apply_decisions.py` – pliki zostaną:
-   - ponazywane: `Artist - Title (VersionInfo) [Key BPM].ext`
-   - przeniesione do wskazanych folderów
+1. `python -m djlib.cli scan` – zapełnia `unsorted.xlsx`.
+2. `python -m djlib.cli analyze-audio` – Essentia cache (`LOGS/audio_analysis.sqlite`).
+3. Edytuj `unsorted.xlsx`, wyznacz docelowy bucket, ustaw `done = TRUE`.
+4. `python -m djlib.cli apply` – przenosi pliki i dopisuje do `library.csv`.
+5. (Opcjonalnie) `python -m djlib.cli ml-export-training-dataset` – buduje `data/training_dataset_full.csv`.
 
 ## Multi-source genre enrichment
 
-Komenda: `python -m djlib.cli enrich-online` (alias task "ROUND — 1")
+Komenda: `python -m djlib.cli enrich-online`
 
 Źródła i wagi w resolverze: Last.fm (6.0), MusicBrainz (3.0), SoundCloud (2.0). Wynik agregowany trafia do `genre_suggest`, a surowe listy do odpowiednich kolumn `genres_*`.
 
@@ -64,51 +57,39 @@ Przykład wymuszenia ponownego pobrania gatunków i pominięcia SoundCloud:
 python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 ```
 
-## Runda zautomatyzowana
+## Workflow (unsorted.xlsx → library.csv)
 
-Szybki pipeline (scan + analyze + enrich + predict + export): task: `ROUND — 1) Analyze+Enrich+Predict+Export`.
+1. **Scan UNSORTED**  
+   Uruchom `python -m djlib.cli scan` (VS Code task: *WORKFLOW 1 — Scan UNSORTED*).  
+   Komenda przeszukuje folder INBOX, liczy fingerprinty, zbiera podpowiedzi z Last.fm/MusicBrainz/SoundCloud i zapisuje wszystko do `unsorted.xlsx` (w `LIB_ROOT`).  
+   Arkusz zawiera:
+   - kolumny techniczne (track_id, file_path, file_hash, fingerprint, added_date, is_duplicate) – domyślnie ukryte,
+   - oryginalne tagi z pliku (`tag_*`), listy gatunków z usług online, pola popularności,
+   - sugestie AI/reguł (`ai_guess_bucket`, `ai_guess_comment`),
+   - pola do edycji ręcznej: `artist`, `title`, `version_info`, `genre`, `target_subfolder`, `must_play`, `occasion_tags`, `notes`,
+   - podstawowe metryki audio (`bpm`, `key_camelot`, `energy_hint`),
+   - **kolumnę `done` na końcu arkusza** – dropdown TRUE/FALSE pełniący rolę checkboxa.
+   Dropdown dla `target_subfolder` korzysta z aktualnej taksonomii, więc unikamy literówek.
 
-- Runda zaczyna się od `scan`, aby odświeżyć `library.csv`. Jeśli jesteś pewny, że stan CSV jest aktualny, dodaj `--skip-scan`.
-- Eksport XLSX zostanie świadomie pominięty (z komunikatem), jeśli po analizie nie ma wierszy do zaprezentowania.
+2. **Analyze audio (Essentia)**  
+   `python -m djlib.cli analyze-audio` (VS Code: *WORKFLOW 2 — Analyze audio (Essentia)*) liczy cechy i zapisuje je do cache (`LOGS/audio_analysis.sqlite`). Możesz opcjonalnie uruchomić `sync-audio-metrics`, aby przepisać BPM/Key/Energy do arkusza.
 
-Druga runda (import decyzji, apply, trening lokalny ML + QA): `ROUND — 2) Import+Apply+Train+QA`.
+3. **Manual edits w `unsorted.xlsx`**  
+   Otwórz arkusz w Excelu/Numbers/LibreOffice i uzupełnij `artist`, `title`, `version_info`, `genre`, `target_subfolder`, `must_play`, `occasion_tags`, `notes`. Gdy utwór jest gotowy, ustaw `done = TRUE`. Wszystko, co ma `FALSE`, pozostaje w stagingu.
 
-## XLSX export / import (podgląd + akceptacja)
+4. **Export approved tracks do `library.csv`**  
+   `python -m djlib.cli apply` (VS Code: *WORKFLOW 3 — Export approved tracks*) bierze tylko wiersze z `done = TRUE`, przenosi pliki do docelowych folderów, zapisuje finalne tagi i dopisuje rekordy do `library.csv`. Wiersze z wyeksportowanych utworów znikają z arkusza.
 
-Eksporter dodaje wszystkie kolumny, w tym `genres_*`, miary popularności i listę dozwolonych targetów jako dropdown. Zmiany w arkuszu można później zaimportować (ROUND 2) do CSV.
+5. **ML dataset export**  
+   `python -m djlib.cli ml-export-training-dataset` (VS Code: *WORKFLOW 4 — ML dataset export*) łączy cechy Essentii z `library.csv` i zapisuje `data/training_dataset_full.csv`.  
+   - `genre` → `genre_label`.
+   - `target_subfolder` → `bucket_label`.
+   - Dodajemy dodatkowe kolumny `library_*` (np. `library_bpm`, `library_pop_playcount`) jako cechy pomocnicze.
+   - Więcej szczegółów: `docs/ML_PIPELINE.md`.
 
 ## Afro house / remix heuristics (planowane)
 
 Plan: dodatkowe heurystyki dla afro house jeśli `version_suggest` zawiera wzorce typu `Karibu Remix`. (Jeszcze nie wdrożone.)
-
-## Lokalne trenowanie ML + pętla feedback (Twoje buckety)
-
-Chcesz, by ML proponował kubełki z Twojej taksonomii (`taxonomy.local.yml`) – nie z ogólnych FMA. Workflow:
-
-1. Zadbaj o dane wejściowe
-
-- Analiza audio (Essentia): `analyze-audio` (lub automatycznie podczas treningu).
-- Gatunki z zewnątrz: `enrich-online` – pobiera gatunki (MB/Last.fm/SoundCloud*) i zapisuje do CSV (pole `genre_suggest`).
-  *SoundCloud można pominąć flagą `--skip-soundcloud`.
-- Popularność (opcjonalnie): `enrich-online` zapisze `pop_playcount` i `pop_listeners` z Last.fm (jeśli API KEY ustawiony).
-
-2. Trening lokalnego modelu (na zaakceptowanych bucketach)
-
-- Komenda: `ml-train-local`
-- Zbiera wiersze z ustawionym `target_subfolder`, zapewnia analizę, buduje cechy (~80+) i trenuje model RF.
-- Filtruje rzadkie klasy (`--min-per-class`, domyślnie 20). Model zapisuje się do `models/local_trained_model.pkl`.
-
-3. Predykcja i bezpieczne progi
-
-- `ml-predict` – użyj lokalnego modelu: `--model models/local_trained_model.pkl`.
-- Progi: `--hard-threshold 0.85`, `--suggest-threshold 0.65`; zalecamy w ogóle nie sugerować przy conf < 0.40.
-
-4. Feedback loop (ręczne korekty)
-
-- Koryguj `ai_guess_*` lub ustaw `target_subfolder` ręcznie; kolejne treningi będą trafiać lepiej.
-- Plan: dodać osobną komendę do zbierania poprawek i incremental retraining.
-
-Uwagi: Docelowo rozdzielimy: (A) predykcję tagów/genres (uniwersalną) oraz (B) mapowanie tagów→buckety według Twojej taksonomii. Dzięki temu jeden model będzie działał u różnych użytkowników, a tylko mapowanie będzie lokalne.
 
 ## Konfiguracja
 

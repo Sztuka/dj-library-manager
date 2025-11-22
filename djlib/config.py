@@ -268,6 +268,7 @@ REVIEW_QUEUE_DIR  = LIB_ROOT / "REVIEW QUEUE"
 
 LOGS_DIR = LIB_ROOT / "LOGS"
 CSV_PATH = LIB_ROOT / "library.csv"
+UNSORTED_XLSX = LIB_ROOT / "unsorted.xlsx"
 
 AUDIO_EXTS = {
     ".mp3", ".wav", ".aiff", ".aif", ".flac", ".m4a", ".aac", ".ogg", ".alac", ".wv"

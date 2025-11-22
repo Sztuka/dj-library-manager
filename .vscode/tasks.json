@@ -2,9 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "TOOLS — Install Homebrew (macOS)",
+      "label": "STEP 0 — Setup: create venv & install deps",
       "type": "shell",
-      "command": "/usr/bin/env bash -lc '/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"'",
+      "command": "/usr/bin/env bash -lc 'python3 -m venv .venv && source .venv/bin/activate && pip install -U pip && pip install -r requirements.txt && pip install -e .'",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
@@ -12,14 +12,6 @@
       "label": "TOOLS — Install Essentia (Homebrew)",
       "type": "shell",
       "command": "/usr/bin/env bash -lc '${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_essentia.py'",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "TOOLS — Install Essentia CLI (vendor/manual)",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_essentia_cli.py",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
@@ -33,7 +25,15 @@
       "problemMatcher": []
     },
     {
-      "label": "STEP 2 — Analyze audio (cache)",
+      "label": "WORKFLOW 1 — Scan UNSORTED",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli scan",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "WORKFLOW 2 — Analyze audio (Essentia)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli analyze-audio",
       "dependsOn": [
@@ -44,77 +44,7 @@
       "problemMatcher": []
     },
     {
-      "label": "TOOLS — Generate preview CSV",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/report_preview.py",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "STEP 0 — Setup: create venv & install deps",
-      "type": "shell",
-      "command": "/usr/bin/env bash -lc 'python3 -m venv .venv && source .venv/bin/activate && pip install -U pip && pip install -r requirements.txt && pip install -e .'",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "TOOLS — Install fpcalc (Homebrew)",
-      "type": "shell",
-      "command": "/usr/bin/env bash -lc 'if command -v brew >/dev/null; then (brew list chromaprint >/dev/null 2>&1 || brew install chromaprint); else echo \"❌ Brak Homebrew\" && exit 1; fi'",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "TOOLS — Install fpcalc (Download vendor)",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_fpcalc.py",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "STEP 1 — Scan INBOX_UNSORTED",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli scan",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "TOOLS — Detect taxonomy from filesystem",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli detect-taxonomy",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "STEP 3 — Auto-decide (rules.yml) — only empty",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli auto-decide --only-empty",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "STEP 3 (alt) — Auto-decide (rules → set/suggest)",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/auto_decide_rules.py",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "STEP 4 — Apply decisions (dry-run)",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli apply --dry-run",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "STEP 5 — Apply decisions",
+      "label": "WORKFLOW 3 — Export approved tracks",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli apply",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
@@ -122,17 +52,9 @@
       "problemMatcher": []
     },
     {
-      "label": "TOOLS — Undo last moves",
+      "label": "WORKFLOW 4 — ML dataset export",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli undo",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "TOOLS — Report duplicates",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dupes",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli ml-export-training-dataset",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
@@ -141,6 +63,7 @@
       "label": "TESTS — run",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/pytest -q",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
@@ -148,21 +71,6 @@
       "label": "TESTS — coverage",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/pytest --cov=djlib --cov-report=term-missing",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "ROUND — 1) Analyze+Enrich+Predict+Export",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli round-1",
-      "dependsOn": "STEP 0 — Setup: create venv & install deps",
-      "options": { "cwd": "${workspaceFolder}" },
-      "problemMatcher": []
-    },
-    {
-      "label": "ROUND — 2) Import+Apply+Train+QA",
-      "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli round-2",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
