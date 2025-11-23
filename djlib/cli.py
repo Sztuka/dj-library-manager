@@ -11,7 +11,7 @@ from djlib.config import (
 )
 from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
-from djlib.enrich import suggest_metadata, enrich_online_for_row
+from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
 from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 from djlib.metadata.genre_resolver import resolve as resolve_genres
 from djlib.classify import guess_bucket
@@ -124,6 +124,11 @@ def cmd_scan(_: argparse.Namespace) -> None:
             continue
 
         tags = read_tags(p)
+        tags_original = dict(tags)
+        artist_local, title_local, version_local = derive_local_metadata(p, tags)
+        tags["artist"] = artist_local
+        tags["title"] = title_local
+        tags["version_info"] = version_local
         try:
             dur, fp = fingerprint_info(p)
         except Exception as e:
@@ -160,11 +165,11 @@ def cmd_scan(_: argparse.Namespace) -> None:
             "bpm": _safe_str(tags.get("bpm")),
             "key_camelot": _safe_str(tags.get("key_camelot")),
             "energy_hint": _safe_str(tags.get("energy_hint")),
-            "tag_artist_original": _safe_str(tags.get("artist")),
-            "tag_title_original": _safe_str(tags.get("title")),
-            "tag_genre_original": _safe_str(tags.get("genre")),
-            "tag_bpm_original": _safe_str(tags.get("bpm")),
-            "tag_key_original": _safe_str(tags.get("key_camelot")),
+            "tag_artist_original": _safe_str(tags_original.get("artist")),
+            "tag_title_original": _safe_str(tags_original.get("title")),
+            "tag_genre_original": _safe_str(tags_original.get("genre")),
+            "tag_bpm_original": _safe_str(tags_original.get("bpm")),
+            "tag_key_original": _safe_str(tags_original.get("key_camelot")),
             "ai_guess_bucket": _safe_str(ai_bucket),
             "ai_guess_comment": _safe_str(ai_comment),
             "target_subfolder": "",
@@ -441,9 +446,13 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         try:
             a = (r.get("artist_suggest") or r.get("artist") or "").strip()
             t = (r.get("title_suggest") or r.get("title") or "").strip()
+            version_from_cols = (r.get("version_info") or "").strip()
+            if not version_from_cols:
+                _, parsed = split_title_and_version(r.get("title") or "")
+                version_from_cols = parsed
             v = (
                 r.get("version_suggest")
-                or r.get("version_info")
+                or version_from_cols
                 or r.get("parsed_version")
                 or ""
             ).strip()
@@ -752,10 +761,24 @@ def cmd_apply(args: argparse.Namespace) -> None:
         if dest_dir is None:
             continue
 
+        title_candidate = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
+        version_pref = (
+            r.get("version_info")
+            or r.get("version_suggest")
+            or ""
+        )
+        title_base, title_version = split_title_and_version(title_candidate)
+        if title_version and not version_pref:
+            version_pref = title_version
+        final_title = title_base or title_candidate
+        if not version_pref:
+            _, parsed_version = split_title_and_version(final_title)
+            if parsed_version:
+                version_pref = parsed_version
         final_name = build_final_filename(
             r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or "",
-            r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or "",
-            r.get("version_info") or r.get("version_suggest") or "",
+            final_title,
+            version_pref,
             r.get("key_camelot", ""),
             r.get("bpm", ""),
             extension_for(src),
@@ -780,8 +803,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "final_filename": final_name,
             "final_path": str(dest_real),
             "artist": r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or "",
-            "title": r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or "",
-            "version_info": r.get("version_info") or r.get("version_suggest") or "",
+            "title": final_title,
+            "version_info": version_pref,
             "genre": r.get("genre") or r.get("genre_suggest") or "",
             "bpm": r.get("bpm") or "",
             "key_camelot": r.get("key_camelot") or "",
@@ -799,16 +822,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         try:
             updates = {}
             artist = (record["artist"] or "").strip()
-            title_base = (record["title"] or "").strip()
-            version_info = (record["version_info"] or "").strip()
-            if title_base and version_info:
-                parts = [p.strip() for p in version_info.split(",") if p.strip()]
-                if parts:
-                    title_out = title_base + " " + " ".join(f"({p})" for p in parts)
-                else:
-                    title_out = title_base
-            else:
-                title_out = title_base
+            title_out = merge_title_and_version(record.get("title", ""), record.get("version_info", ""))
             if artist:
                 updates["artist"] = artist
             if title_out:
@@ -1122,6 +1136,50 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
 
     _write_status("done", "")
     print(f"🎧 Analyze-audio: files={total}, analyzed={updated}")
+    
+    # Update unsorted.xlsx with BPM/Key from cache
+    if get_analysis is not None:
+        try:
+            from djlib.audio.cache import compute_audio_id
+            rows = _load_unsorted()
+            changed = 0
+            for r in rows:
+                if is_done(r.get("done")):
+                    continue
+                fpath = r.get("file_path", "")
+                if not fpath:
+                    continue
+                p = Path(fpath)
+                if not p.exists():
+                    continue
+                
+                # Get analysis from cache using audio_id (file hash)
+                audio_id = compute_audio_id(p)
+                analysis = get_analysis(audio_id)
+                if not analysis:
+                    continue
+                
+                # Always update BPM from analysis (overwrite existing)
+                if analysis.get("bpm"):
+                    new_bpm = str(int(round(analysis["bpm"])))
+                    old_bpm = r.get("bpm", "")
+                    if new_bpm != old_bpm:
+                        r["bpm"] = new_bpm
+                        changed += 1
+                
+                # Always update Key from analysis (overwrite existing)
+                if analysis.get("key_camelot"):
+                    new_key = analysis["key_camelot"]
+                    old_key = r.get("key_camelot", "")
+                    if new_key != old_key:
+                        r["key_camelot"] = new_key
+                        changed += 1
+            
+            if changed > 0:
+                _save_unsorted(rows)
+                print(f"✅ Updated {changed} BPM/Key values in unsorted.xlsx")
+        except Exception as e:
+            print(f"⚠️ Failed to update unsorted.xlsx: {e}")
 
 def cmd_ml_predict(_: argparse.Namespace) -> None:
     print(LEGACY_ML_MSG)

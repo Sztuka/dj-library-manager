@@ -44,7 +44,15 @@
       "problemMatcher": []
     },
     {
-      "label": "WORKFLOW 3 — Export approved tracks",
+      "label": "WORKFLOW 3 — Enrich online",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli enrich-online",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "WORKFLOW 4 — Export approved tracks",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli apply",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
@@ -52,7 +60,7 @@
       "problemMatcher": []
     },
     {
-      "label": "WORKFLOW 4 — ML dataset export",
+      "label": "WORKFLOW 5 — ML dataset export",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli ml-export-training-dataset",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",

@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any, Tuple
 import re
+import unicodedata
 from mutagen import File as MutFile  # type: ignore
+from djlib.filename import split_title_and_version
 
 def _first_str(v: Any) -> str:
     if v is None:
@@ -14,14 +16,26 @@ def _first_str(v: Any) -> str:
         v = v[0]
     return str(v)
 
-def _extract_version_from_title(title: str) -> Tuple[str, str]:
-    title = title.strip()
-    m = re.search(r"\(([^)]+)\)\s*$", title)
-    if not m:
-        return title, ""
-    version = m.group(1).strip()
-    clean = title[: m.start()].strip()
-    return clean, version
+
+def _normalize_token(text: str) -> str:
+    """Lowercase alnum slug without diacritics for safe comparisons."""
+    if not text:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", text)
+    ascii_only = decomposed.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", ascii_only.lower())
+
+
+def _strip_artist_prefix(title: str, artist: str) -> str:
+    """Drop leading "artist - " from title when tags duplicate artist."""
+    if not title or not artist:
+        return title
+    if " - " not in title:
+        return title
+    prefix, rest = title.split(" - ", 1)
+    if _normalize_token(prefix) == _normalize_token(artist):
+        return rest.strip()
+    return title
 
 _CAM_MAJOR = {
     "C": "8B", "G": "9B", "D": "10B", "A": "11B", "E": "12B",
@@ -127,9 +141,8 @@ def read_tags(path: Path) -> Dict[str, str]:
         except Exception:
             pass
 
-    version_info = ""
-    if title:
-        title, version_info = _extract_version_from_title(title)
+    title, version_info = split_title_and_version(title)
+    title = _strip_artist_prefix(title, artist)
 
     energy_hint = (_first_str(tags.get("energy")) or _first_str(tags.get("grouping"))).strip()
 

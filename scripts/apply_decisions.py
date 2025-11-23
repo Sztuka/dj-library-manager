@@ -5,7 +5,7 @@ import argparse, csv, time
 
 from djlib.config import CSV_PATH, LOGS_DIR
 from djlib.csvdb import load_records, save_records
-from djlib.filename import build_final_filename, extension_for
+from djlib.filename import build_final_filename, extension_for, split_title_and_version
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 
 def main():
@@ -37,10 +37,12 @@ def main():
         if dest_dir is None:
             continue
 
+        title_base, title_version = split_title_and_version(r.get("title", ""))
+        version_pref = r.get("version_info", "") or title_version
         final_name = build_final_filename(
             r.get("artist", ""),
-            r.get("title", ""),
-            r.get("version_info", ""),
+            title_base or r.get("title", ""),
+            version_pref,
             r.get("key_camelot", ""),
             r.get("bpm", ""),
             extension_for(src),

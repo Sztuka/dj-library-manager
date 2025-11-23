@@ -41,6 +41,12 @@ def _clean_genre(g: str) -> str:
     return s
 
 def _is_clubish_version(title: str, version_info: str) -> bool:
+    if not version_info:
+        # fallback: inspect parentheses inside title if version isn't provided separately
+        import re as _re
+        m = _re.findall(r"\(([^)]+)\)", title or "")
+        if m:
+            version_info = ", ".join(m)
     return _has_any(title, REMIX_TOKENS) or _has_any(version_info, REMIX_TOKENS)
 
 def _parse_bpm(bpm: str) -> Optional[float]:
@@ -55,7 +61,7 @@ def decide_bucket(row: Dict[str,str]) -> Tuple[Optional[str], float, str]:
     """
     artist = row.get("artist_canonical") or row.get("artist") or ""
     title  = row.get("title_canonical")  or row.get("title")  or ""
-    version= row.get("version_info","")
+    version = row.get("version_info","") or row.get("version_suggest","") or ""
     genre  = _clean_genre(row.get("genre",""))
     era    = (row.get("era") or "").strip()
     bpmv   = _parse_bpm(row.get("bpm","")) or 0.0
@@ -63,7 +69,8 @@ def decide_bucket(row: Dict[str,str]) -> Tuple[Optional[str], float, str]:
 
     # 1) CLUB: gatunek/wersja klubowa/BPM
     is_club_genre = any(g in genre for g in CLUB_GENRES)
-    is_club_version = _is_clubish_version(title, version)
+    title_mixed = row.get("title") or title
+    is_club_version = _is_clubish_version(title_mixed, version)
     if is_club_genre or is_club_version or (bpmv >= 122 and any(x in genre for x in {"house","tech","trance","dnb"})):
         # mapowanie do konkretnego kubła
         if "tech house" in genre:       return ("CLUB/TECH HOUSE", 0.95, "genre=tech house")

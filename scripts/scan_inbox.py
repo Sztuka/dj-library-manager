@@ -6,6 +6,7 @@ import time
 from djlib.config import INBOX_DIR, CSV_PATH, AUDIO_EXTS, ensure_base_dirs
 from djlib.csvdb import load_records, save_records, FIELDNAMES
 from djlib.tags import read_tags
+from djlib.enrich import derive_local_metadata, suggest_metadata
 from djlib.classify import guess_bucket
 from djlib.fingerprint import file_sha256, audio_fingerprint
 
@@ -29,6 +30,10 @@ def main():
             continue
 
         tags = read_tags(p)
+        artist_local, title_local, version_local = derive_local_metadata(p, tags)
+        tags["artist"] = artist_local
+        tags["title"] = title_local
+        tags["version_info"] = version_local
         fp = audio_fingerprint(p)
         is_dup = "true" if (fp and fp in known_fps) else "false"
 
@@ -52,7 +57,6 @@ def main():
         except Exception:
             tags_for_suggest["duration"] = ""
 
-        from djlib.enrich import suggest_metadata
         suggested = suggest_metadata(p, tags_for_suggest)
 
         rec = {

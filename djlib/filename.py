@@ -4,22 +4,51 @@ from pathlib import Path
 
 _ILLEGAL = r'[\/\\\:\*\?"<>\|]'
 
+def _normalize_version_tokens(version_info: str) -> list[str]:
+    return [p.strip() for p in (version_info or "").replace(";", ",").split(",") if p.strip()]
+
+def merge_title_and_version(title: str, version_info: str) -> str:
+    base = (title or "").strip()
+    tokens = _normalize_version_tokens(version_info)
+    if not tokens:
+        return base
+    suffix = " ".join(f"({tok})" for tok in tokens)
+    return (f"{base} {suffix}").strip()
+
+def split_title_and_version(full_title: str) -> tuple[str, str]:
+    s = (full_title or "").strip()
+    if not s:
+        return "", ""
+    tokens: list[str] = []
+    while True:
+        # Match parentheses (), square brackets [], or curly braces {} at the end
+        m = re.search(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]\s*$", s)
+        if not m:
+            break
+        content = m.group(1).strip()
+        if not content:
+            break
+        tokens.append(content)
+        s = s[: m.start()].strip()
+    tokens.reverse()
+    return s.strip(), ", ".join(tokens)
+
 def build_final_filename(artist: str, title: str, version_info: str, key_camelot: str, bpm: str, ext: str) -> str:
+    base_title = (title or "Unknown Title").strip()
+    extracted_title, extracted_version = split_title_and_version(base_title)
+    if extracted_version and not version_info:
+        base_title = extracted_title or base_title
+        version_info = extracted_version
     vi_raw = (version_info or "").strip()
     if vi_raw:
-        # Render multiple version tokens as separate parentheses: (V1) (V2)
-        parts = [p.strip() for p in vi_raw.split(",") if p.strip()]
+        parts = _normalize_version_tokens(vi_raw)
         vi = " ".join(f"({p})" for p in parts) if parts else "(Original Mix)"
     else:
         vi = "(Original Mix)"
     k = (key_camelot or "").strip() or "??"
     b = (bpm or "").strip() or "??"
     a = (artist or "Unknown Artist").strip()
-    t = (title or "Unknown Title").strip()
-
-    # If vi already includes parentheses (multiple), do not wrap again
-    name = f"{a} - {t} {vi} [{k} {b}]{ext}"
-    # wyczyść nielegalne znaki w nazwie
+    name = f"{a} - {base_title or 'Unknown Title'} {vi} [{k} {b}]{ext}"
     return re.sub(_ILLEGAL, "-", name)
 
 def extension_for(path: Path) -> str:
@@ -57,6 +86,23 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         parts = re.findall(r"\(([^)]+)\)", tail)
         version_combined = ", ".join(p.strip() for p in parts if p.strip())
         return a.strip(), t.strip(), version_combined.strip()
+    
+    # 2b) próba dopasowania: Artist - Title - Version (bez nawiasów, 3 segmenty)
+    m_three = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*-\s*(.+?)\s*$", cleaned)
+    if m_three:
+        a, middle, last = m_three.groups()
+        a = a.strip()
+        middle = middle.strip()
+        last = last.strip()
+        
+        # Heuristic: if middle looks like track number (e.g., "04", "1", "12"), 
+        # treat last as title, ignore middle
+        if re.match(r"^\d{1,3}$", middle):
+            return a, last, ""
+        
+        # Otherwise: middle is title, last is version
+        return a, middle, last
+    
     # 3) próba dopasowania: Artist - Title
     m2 = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*$", cleaned)
     if m2:
