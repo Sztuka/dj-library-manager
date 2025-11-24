@@ -234,7 +234,8 @@ def fetch_cover_art(
     beatport_artwork_url: Optional[str] = None,
     lastfm_api_key: Optional[str] = None,
     soundcloud_client_id: Optional[str] = None,
-    skip_if_exists: bool = True
+    skip_if_exists: bool = True,
+    disable_beatport: bool = False
 ) -> Tuple[bool, str]:
     """Fetch and add cover art to MP3 file using multi-source fallback.
     
@@ -255,6 +256,7 @@ def fetch_cover_art(
         lastfm_api_key: Last.fm API key (optional)
         soundcloud_client_id: SoundCloud client ID (optional)
         skip_if_exists: If True, skip files that already have artwork
+        disable_beatport: If True, skip Beatport artwork fetching
     
     Returns:
         (success: bool, source: str) where source is 'mb', 'beatport', 'lastfm', 'soundcloud', 'exists', or 'failed'
@@ -272,7 +274,7 @@ def fetch_cover_art(
                 return (True, 'mb')
     
     # Try Beatport (best quality for EDM - 1400x1400)
-    if beatport_artwork_url:
+    if not disable_beatport and beatport_artwork_url:
         result = fetch_from_beatport(beatport_artwork_url)
         if result:
             image_data, mime_type = result

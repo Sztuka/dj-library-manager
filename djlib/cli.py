@@ -400,16 +400,47 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
 
     _flush_status()
 
-    # Beatport token health (informative)
+    # Beatport token health (informative with optional skip)
     try:
         from djlib.metadata.beatport import token_health
         bp_health = token_health()
         if bp_health.get("status") == "missing":
-            print(f"ℹ Beatport: {bp_health.get('message')} (można ustawić: python -m djlib.metadata.beatport --setup)")
+            print(f"\nℹ️  Beatport: {bp_health.get('message')}")
+            print(f"   Setup: python -m djlib.metadata.beatport --setup")
+            if not getattr(args, "skip_beatport", False):
+                _flush_status()
+                try:
+                    choice = input("Kontynuować bez Beatport? [Y/n]: ").strip().lower()
+                except Exception:
+                    choice = "y"
+                if choice in {"n", "no"}:
+                    print("Przerwano na prośbę użytkownika (Beatport missing).")
+                    status_doc["state"] = "done"
+                    status_doc["completed_at"] = _now_iso()
+                    _flush_status()
+                    return
+                else:
+                    print("→ Pomiń Beatport w tym przebiegu.")
+                    setattr(args, "skip_beatport", True)
         elif bp_health.get("status") == "ok":
             print(f"✅ Beatport: {bp_health.get('message')}")
         elif bp_health.get("status") in {"expired", "error"}:
-            print(f"⚠ Beatport: {bp_health.get('message')}")
+            print(f"\n⚠️  Beatport: {bp_health.get('message')}")
+            if not getattr(args, "skip_beatport", False):
+                _flush_status()
+                try:
+                    choice = input("Kontynuować bez Beatport? [Y/n]: ").strip().lower()
+                except Exception:
+                    choice = "y"
+                if choice in {"n", "no"}:
+                    print("Przerwano na prośbę użytkownika (Beatport error).")
+                    status_doc["state"] = "done"
+                    status_doc["completed_at"] = _now_iso()
+                    _flush_status()
+                    return
+                else:
+                    print("→ Pomiń Beatport w tym przebiegu.")
+                    setattr(args, "skip_beatport", True)
     except Exception:
         pass
     _flush_status()
@@ -528,6 +559,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 version=v,
                 duration_s=dur_s,
                 disable_soundcloud=bool(getattr(args, "skip_soundcloud", False)),
+                disable_beatport=bool(getattr(args, "skip_beatport", False)),
             )
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
                 # Ustaw 3 gatunki: main + subs
@@ -627,21 +659,22 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 
                 # Try to get Beatport artwork URL
                 beatport_artwork_url = None
-                try:
-                    from djlib.metadata.beatport import search_track as bp_search
-                    dur_s = None
-                    if r.get("duration_suggest"):
-                        try:
-                            dur_parts = r["duration_suggest"].split(":")
-                            if len(dur_parts) == 2:
-                                dur_s = int(dur_parts[0]) * 60 + int(dur_parts[1])
-                        except Exception:
-                            pass
-                    bp_result = bp_search(artist, title, dur_s)
-                    if bp_result:
-                        beatport_artwork_url = bp_result.get("artwork_url")
-                except Exception:
-                    pass
+                if not getattr(args, "skip_beatport", False):
+                    try:
+                        from djlib.metadata.beatport import search_track as bp_search
+                        dur_s = None
+                        if r.get("duration_suggest"):
+                            try:
+                                dur_parts = r["duration_suggest"].split(":")
+                                if len(dur_parts) == 2:
+                                    dur_s = int(dur_parts[0]) * 60 + int(dur_parts[1])
+                            except Exception:
+                                pass
+                        bp_result = bp_search(artist, title, dur_s)
+                        if bp_result:
+                            beatport_artwork_url = bp_result.get("artwork_url")
+                    except Exception:
+                        pass
                 
                 if artist and title:
                     success, source = fetch_cover_art(
@@ -654,7 +687,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         beatport_artwork_url=beatport_artwork_url,
                         lastfm_api_key=lastfm_key,
                         soundcloud_client_id=soundcloud_id,
-                        skip_if_exists=True
+                        skip_if_exists=True,
+                        disable_beatport=getattr(args, "skip_beatport", False)
                     )
                     
                     if source == 'exists':
