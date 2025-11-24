@@ -111,12 +111,12 @@ def cmd_configure(_: argparse.Namespace) -> None:
             from djlib.metadata.beatport import set_beatport_credentials, get_valid_token
             import getpass
             
-            email = input("  Beatport email: ").strip()
-            if email:
+            username = input("  Beatport username: ").strip()
+            if username:
                 password = getpass.getpass("  Beatport password: ")
                 if password:
                     try:
-                        set_beatport_credentials(email, password)
+                        set_beatport_credentials(username, password)
                         print("  ✅ Credentials saved - testing token refresh...")
                         token = get_valid_token()
                         if token:
@@ -126,7 +126,7 @@ def cmd_configure(_: argparse.Namespace) -> None:
                 else:
                     print("  ⏭  Pominięto (brak hasła)")
             else:
-                print("  ⏭  Pominięto (brak email)")
+                print("  ⏭  Pominięto (brak username)")
         else:
             print("  ⏭  Pominięto - możesz uruchomić później: python -m djlib.cli setup-beatport")
         
@@ -1423,9 +1423,9 @@ def cmd_setup_beatport(args: argparse.Namespace) -> None:
     print("(macOS Keychain / Windows Credential Manager / Linux Secret Service)")
     print()
     
-    email = input("Beatport email: ").strip()
-    if not email:
-        print("❌ Email cannot be empty")
+    username = input("Beatport username: ").strip()
+    if not username:
+        print("❌ Username cannot be empty")
         return
     
     password = getpass.getpass("Beatport password: ")
@@ -1434,7 +1434,7 @@ def cmd_setup_beatport(args: argparse.Namespace) -> None:
         return
     
     try:
-        set_beatport_credentials(email, password)
+        set_beatport_credentials(username, password)
         print("\n✅ Credentials saved successfully!")
         print("\nTesting token refresh (first time takes ~10 seconds)...")
         

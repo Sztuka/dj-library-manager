@@ -51,6 +51,7 @@ python -m djlib.cli analyze-audio --check-env
 ```
 
 **Metadata Sources** (optional, for enrichment):
+
 - **Beatport**: Run `python -m djlib.cli setup-beatport` for EDM genres + 1400x1400 artwork
 - **SoundCloud**: Works out-of-box (auto-refresh client_id)
 - **MusicBrainz/Last.fm**: No setup required

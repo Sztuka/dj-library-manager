@@ -121,10 +121,10 @@ def _refresh_token_with_playwright() -> str:
         )
     
     # Get credentials from keyring
-    email = keyring.get_password("djlib_beatport", "email")
+    username = keyring.get_password("djlib_beatport", "username")
     password = keyring.get_password("djlib_beatport", "password")
     
-    if not email or not password:
+    if not username or not password:
         raise Exception(
             "Beatport credentials not found in keyring. Run: python -m djlib.cli setup-beatport"
         )
@@ -154,8 +154,8 @@ def _refresh_token_with_playwright() -> str:
             page.goto("https://www.beatport.com/login", timeout=15000)
             page.wait_for_load_state("domcontentloaded")
             
-            # Fill login form
-            page.fill("input[type='email'], input[name='email']", email)
+            # Fill login form (Beatport uses username, not email)
+            page.fill("input[name='username'], input[type='text']", username)
             page.fill("input[type='password'], input[name='password']", password)
             
             # Submit form
@@ -325,8 +325,8 @@ def token_health() -> Dict[str, str]:
         # Check if credentials are set
         try:
             import keyring
-            email = keyring.get_password("djlib_beatport", "email")
-            if not email:
+            username = keyring.get_password("djlib_beatport", "username")
+            if not username:
                 return {
                     "status": "missing",
                     "message": "Beatport credentials not configured"
@@ -360,16 +360,16 @@ def token_health() -> Dict[str, str]:
     return {"status": "ok", "message": f"Token valid for {remaining // 60} minutes."}
 
 
-def set_beatport_credentials(email: str, password: str) -> None:
+def set_beatport_credentials(username: str, password: str) -> None:
     """Store Beatport credentials in system keyring.
     
     Args:
-        email: Beatport account email
+        username: Beatport account username
         password: Beatport account password
     """
     try:
         import keyring
-        keyring.set_password("djlib_beatport", "email", email)
+        keyring.set_password("djlib_beatport", "username", username)
         keyring.set_password("djlib_beatport", "password", password)
         print("✅ Beatport credentials saved to system keyring")
     except Exception as e:

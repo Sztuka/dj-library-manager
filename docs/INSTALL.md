@@ -16,6 +16,7 @@ Backend modes:
 ## Quick Start
 
 1. **Python venv + dependencies**
+
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
@@ -25,25 +26,31 @@ Backend modes:
    ```
 
 2. **Configure library paths + metadata sources**
+
    ```bash
    python -m djlib.cli configure
    ```
+
    **Smart detection:**
+
    - Checks for existing `config.local.yml` first
    - Detects library structure from marker files (`.djlib_root`, `.djlib_inbox`)
    - Auto-detects taxonomy from existing folder structure
    - **Prevents accidental overwrite** of existing setup
-   
+
    **Interactive prompts:**
+
    - If config exists: `Y/n/edit` to use, skip, or edit paths
    - If markers detected: `Y/n` to use detected structure
    - If nothing found: prompts for new paths
-   
+
    **Optional metadata sources:**
+
    - Beatport credentials (EDM genre/artwork enrichment)
    - SoundCloud works out-of-box (auto-refresh client_id)
 
 3. **Install Essentia** (optional, for BPM/Key/Energy detection)
+
    - See sections below for Homebrew/Conda/Docker
 
 4. **Start workflow**
@@ -181,18 +188,21 @@ python -m djlib.cli setup-beatport
 Or configure during initial setup via `python -m djlib.cli configure`.
 
 **How it works:**
+
 - Credentials stored in system keyring (macOS Keychain / Windows Credential Manager)
 - JWT tokens auto-refresh via headless browser (Playwright)
 - Token valid for 1 hour, cached in `~/.djlib/beatport_token.json`
 - Zero manual intervention after initial setup
 
 **Requirements:**
+
 - Valid Beatport account
 - Playwright + Chromium: `pip install playwright && playwright install chromium`
 
 ### SoundCloud
 
 Works out-of-box with auto-refresh client_id:
+
 - No setup required
 - Client ID auto-updates every 30 days
 - Cached in `~/.djlib/soundcloud_client_id.json`
