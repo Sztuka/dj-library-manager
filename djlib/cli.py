@@ -3,6 +3,10 @@ import argparse, csv, time, os, json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
+import warnings
+
+# Suppress Python 3.13 deprecation warnings from audioread (aifc/sunau modules)
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread")
 
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
