@@ -9,6 +9,22 @@
       "problemMatcher": []
     },
     {
+      "label": "STEP 1 — Configure: library paths & metadata sources",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli configure",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Setup Beatport credentials",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli setup-beatport",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "TOOLS — Install Essentia (Homebrew)",
       "type": "shell",
       "command": "/usr/bin/env bash -lc '${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/install_essentia.py'",
