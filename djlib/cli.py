@@ -417,13 +417,18 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     # SoundCloud client id health (informative, does not block)
     sc_health_msg = ""
     try:
-        from djlib.metadata.soundcloud import client_id_health
-        h = client_id_health()
+        from djlib.metadata.soundcloud import client_id_status
+        h = client_id_status()
         if h:
             status_doc["soundcloud"]["client_id_status"] = h.get("status", "unknown")
         sc_health_msg = f"soundcloud_client_id_status={h.get('status')}" if h else ""
         if h and h.get("status") == "ok":
-            print("✅ SoundCloud client_id OK")
+            print(f"✅ SoundCloud: {h.get('message')}")
+            if not getattr(args, "skip_soundcloud", False):
+                status_doc["soundcloud"]["decision"] = "active"
+        elif h and h.get("status") == "expired":
+            print(f"ℹ SoundCloud: {h.get('message')} - auto-refresh dostępny")
+            # Auto-refresh will happen automatically when needed
             if not getattr(args, "skip_soundcloud", False):
                 status_doc["soundcloud"]["decision"] = "active"
         elif h and h.get("status") in {"invalid", "error"}:
@@ -604,11 +609,12 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         if fetch_covers:
             try:
                 from djlib.metadata.coverart import fetch_cover_art
-                from djlib.config import get_lastfm_api_key, get_soundcloud_client_id
+                from djlib.config import get_lastfm_api_key
+                from djlib.metadata.soundcloud import get_valid_client_id
                 
                 # Get API keys
                 lastfm_key = get_lastfm_api_key()
-                soundcloud_id = get_soundcloud_client_id() if not getattr(args, "skip_soundcloud", False) else None
+                soundcloud_id = get_valid_client_id() if not getattr(args, "skip_soundcloud", False) else None
                 
                 # Extract metadata for cover fetching
                 artist = (r.get("artist_suggest") or r.get("artist") or "").strip()

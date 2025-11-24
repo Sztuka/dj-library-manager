@@ -1,7 +1,9 @@
 from __future__ import annotations
 from typing import Dict, List, Optional
-import requests, re, time
+import requests, re, time, json
 from functools import lru_cache
+from pathlib import Path
+from datetime import datetime, timedelta
 from djlib.config import get_soundcloud_client_id
 
 # Licznik prób zapytań do SoundCloud public search (użyteczne dla enrich_status.json)
@@ -9,6 +11,10 @@ _SC_REQUESTS = 0
 
 API_SEARCH = "https://api-v2.soundcloud.com/search/tracks"
 _DEF_TIMEOUT = 10
+
+# Client ID cache configuration
+_CLIENT_ID_CACHE_PATH = Path.home() / ".djlib" / "soundcloud_client_id.json"
+_CLIENT_ID_CACHE_DAYS = 30  # SoundCloud client_id typically valid for ~30 days
 
 _REMIX_KEYWORDS = (
     "remix", "bootleg", "rework", "refix", "flip", "vip", "mashup", "re-edit", "re edit"
@@ -81,7 +87,7 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     Noise: generic buzz (new, trending, viral, remix(es) duplicates, year tags).
     Returns unique, normalized tokens sorted (for stable CSV diffs) or None.
     """
-    cid = get_soundcloud_client_id()
+    cid = get_valid_client_id()  # Use auto-refresh version
     if not cid:
         return None
     queries = _candidate_queries(artist, title, version)
@@ -216,3 +222,170 @@ def soundcloud_request_count() -> int:
     """Zwraca liczbę prób zapytań wykonanych do public search w tym przebiegu procesu.
     Używane do logowania w enrich_status.json (attempted_requests)."""
     return _SC_REQUESTS
+
+
+def _load_cached_client_id() -> Optional[str]:
+    """Load client_id from cache if valid (not expired)."""
+    if not _CLIENT_ID_CACHE_PATH.exists():
+        return None
+    
+    try:
+        with open(_CLIENT_ID_CACHE_PATH, 'r') as f:
+            data = json.load(f)
+        
+        client_id = data.get('client_id')
+        cached_at = data.get('cached_at')
+        
+        if not client_id or not cached_at:
+            return None
+        
+        # Check if cache expired (30 days)
+        cached_time = datetime.fromisoformat(cached_at)
+        if datetime.now() - cached_time > timedelta(days=_CLIENT_ID_CACHE_DAYS):
+            return None
+        
+        return client_id
+    except Exception:
+        return None
+
+
+def _save_cached_client_id(client_id: str) -> None:
+    """Save client_id to cache with timestamp."""
+    _CLIENT_ID_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    
+    data = {
+        'client_id': client_id,
+        'cached_at': datetime.now().isoformat()
+    }
+    
+    with open(_CLIENT_ID_CACHE_PATH, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+def _is_client_id_valid(client_id: str) -> bool:
+    """Test if client_id works with SoundCloud API."""
+    try:
+        r = requests.get(
+            API_SEARCH,
+            params={"q": "test", "client_id": client_id, "limit": 1},
+            timeout=5,
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _refresh_client_id_playwright() -> Optional[str]:
+    """Extract fresh client_id from SoundCloud using Playwright.
+    
+    Strategy:
+    1. Open soundcloud.com in headless browser
+    2. Intercept network requests to api-v2.soundcloud.com
+    3. Extract client_id from query parameters
+    4. Return fresh client_id
+    
+    Returns client_id or None if extraction fails.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        
+        client_id = None
+        
+        def handle_request(route, request):
+            nonlocal client_id
+            # Check if this is an API request with client_id
+            if 'api-v2.soundcloud.com' in request.url and 'client_id=' in request.url:
+                # Extract client_id from URL
+                import re
+                match = re.search(r'client_id=([a-zA-Z0-9]+)', request.url)
+                if match:
+                    client_id = match.group(1)
+            route.continue_()
+        
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            
+            # Intercept all requests
+            page.route('**/*', handle_request)
+            
+            # Visit SoundCloud homepage - this will trigger API calls
+            page.goto('https://soundcloud.com/discover', wait_until='networkidle', timeout=30000)
+            
+            # Wait a bit for API calls to complete
+            page.wait_for_timeout(2000)
+            
+            browser.close()
+        
+        return client_id if client_id else None
+    
+    except Exception as e:
+        print(f"⚠ SoundCloud auto-refresh failed: {e}")
+        return None
+
+
+def get_valid_client_id() -> Optional[str]:
+    """Get valid SoundCloud client_id with automatic refresh.
+    
+    Priority:
+    1. Check environment/config (DJLIB_SOUNDCLOUD_CLIENT_ID)
+    2. Load from cache if not expired
+    3. Validate cached client_id
+    4. Auto-refresh if expired/invalid
+    5. Save new client_id to cache
+    
+    Returns valid client_id or None if all methods fail.
+    """
+    # First, try environment/config
+    env_client_id = get_soundcloud_client_id()
+    if env_client_id and _is_client_id_valid(env_client_id):
+        return env_client_id
+    
+    # Try cached client_id
+    cached = _load_cached_client_id()
+    if cached and _is_client_id_valid(cached):
+        return cached
+    
+    # Cache expired or invalid - auto-refresh
+    print("ℹ SoundCloud client_id wygasł lub nieprawidłowy, odświeżanie...")
+    fresh_id = _refresh_client_id_playwright()
+    
+    if fresh_id and _is_client_id_valid(fresh_id):
+        _save_cached_client_id(fresh_id)
+        print(f"✅ SoundCloud client_id odświeżony i zapisany w cache (~{_CLIENT_ID_CACHE_DAYS} dni)")
+        return fresh_id
+    
+    print("⚠ Nie udało się odświeżyć SoundCloud client_id")
+    return None
+
+
+def client_id_status() -> Dict[str, str]:
+    """Check SoundCloud client_id status for health monitoring.
+    
+    Returns:
+        dict with 'status' (ok/expired/missing/error) and 'message'
+    """
+    env_id = get_soundcloud_client_id()
+    cached = _load_cached_client_id()
+    
+    if env_id:
+        if _is_client_id_valid(env_id):
+            return {"status": "ok", "message": "Client ID z konfiguracji działa"}
+        else:
+            return {"status": "expired", "message": "Client ID z konfiguracji wygasł - użyj auto-refresh"}
+    
+    if cached:
+        if _is_client_id_valid(cached):
+            cached_time = datetime.fromisoformat(
+                json.loads(_CLIENT_ID_CACHE_PATH.read_text()).get('cached_at', '')
+            )
+            days_old = (datetime.now() - cached_time).days
+            return {
+                "status": "ok", 
+                "message": f"Client ID z cache działa ({days_old}/{_CLIENT_ID_CACHE_DAYS} dni)"
+            }
+        else:
+            return {"status": "expired", "message": "Client ID z cache wygasł - auto-refresh dostępny"}
+    
+    return {"status": "missing", "message": "Brak client_id - ustaw DJLIB_SOUNDCLOUD_CLIENT_ID lub użyj auto-refresh"}
+
