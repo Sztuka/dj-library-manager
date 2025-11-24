@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, Any
+import unicodedata  # For Unicode normalization (macOS NFD vs NFC)
 
 from mutagen._file import File as MutagenFile
 
@@ -134,9 +135,11 @@ def was_analyzed_from_db(path: Path, db_path: Optional[Path] = None) -> Optional
         return None
     
     try:
-        # Normalize path for comparison
+        # Normalize path for comparison (macOS uses NFD, Rekordbox stores NFC)
         abs_path = str(path.resolve())
+        abs_path_nfc = unicodedata.normalize('NFC', abs_path)
         filename = path.name
+        filename_nfc = unicodedata.normalize('NFC', filename)
         
         # Query tracks from database
         query = db.get_content()
@@ -148,29 +151,35 @@ def was_analyzed_from_db(path: Path, db_path: Optional[Path] = None) -> Optional
         for track in query.all():
             # Try exact path match first
             folder_path = getattr(track, 'FolderPath', None)
-            if folder_path and abs_path == str(folder_path):
-                # Check if analyzed: Analysed flag and BPM/Key present
-                analysed_flag = getattr(track, 'Analysed', 0)
-                bpm_raw = getattr(track, 'BPM', None)  # BPM * 100 in DB
-                key_id = getattr(track, 'KeyID', None)
+            if folder_path:
+                folder_path_nfc = unicodedata.normalize('NFC', str(folder_path))
                 
-                has_analysis = analysed_flag > 0
-                has_bpm = bpm_raw is not None and bpm_raw > 0
-                has_key = key_id is not None and str(key_id) != '0'
-                
-                return has_analysis and has_bpm and has_key
+                if abs_path_nfc == folder_path_nfc:
+                    # Check if analyzed: Analysed flag and BPM/Key present
+                    analysed_flag = getattr(track, 'Analysed', 0)
+                    bpm_raw = getattr(track, 'BPM', None)  # BPM * 100 in DB
+                    key_id = getattr(track, 'KeyID', None)
+                    
+                    has_analysis = analysed_flag > 0
+                    has_bpm = bpm_raw is not None and bpm_raw > 0
+                    has_key = key_id is not None and str(key_id) != '0'
+                    
+                    return has_analysis and has_bpm and has_key
             
             # Fallback: match by filename only (less precise)
-            if folder_path and filename in str(folder_path):
-                analysed_flag = getattr(track, 'Analysed', 0)
-                bpm_raw = getattr(track, 'BPM', None)
-                key_id = getattr(track, 'KeyID', None)
+            if folder_path:
+                folder_path_nfc = unicodedata.normalize('NFC', str(folder_path))
                 
-                has_analysis = analysed_flag > 0
-                has_bpm = bpm_raw is not None and bpm_raw > 0
-                has_key = key_id is not None and str(key_id) != '0'
-                
-                return has_analysis and has_bpm and has_key
+                if filename_nfc in folder_path_nfc:
+                    analysed_flag = getattr(track, 'Analysed', 0)
+                    bpm_raw = getattr(track, 'BPM', None)
+                    key_id = getattr(track, 'KeyID', None)
+                    
+                    has_analysis = analysed_flag > 0
+                    has_bpm = bpm_raw is not None and bpm_raw > 0
+                    has_key = key_id is not None and str(key_id) != '0'
+                    
+                    return has_analysis and has_bpm and has_key
         
         return None
         

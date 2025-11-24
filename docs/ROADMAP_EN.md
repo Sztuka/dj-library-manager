@@ -67,11 +67,11 @@ scripts/
    - Write to ID3 tags (--write-tags flag)
 5. **Enrich Online** (`enrich-online`):
    - **Beatport** (NEW): EDM-focused metadata with JWT auto-refresh
-     * 100+ precise subgenres (progressive house, melodic techno, afro house)
-     * High-resolution artwork (1400x1400px)
-     * BPM/Key from Beatport's analysis
-     * Transparent token renewal via Playwright (~10s per hour)
-     * One-time credential setup in system keyring
+     - 100+ precise subgenres (progressive house, melodic techno, afro house)
+     - High-resolution artwork (1400x1400px)
+     - BPM/Key from Beatport's analysis
+     - Transparent token renewal via Playwright (~10s per hour)
+     - One-time credential setup in system keyring
    - MusicBrainz/AcoustID metadata lookup
    - Multi-source genre resolution with weights: **Beatport 10.0** (priority for EDM) > Last.fm 6.0 > MB 3.0 > SoundCloud 2.0
    - Per-source columns: `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (DONE)
