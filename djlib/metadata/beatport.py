@@ -129,9 +129,10 @@ def _refresh_token_with_playwright() -> str:
             "Beatport credentials not found in keyring. Run: python -m djlib.cli setup-beatport"
         )
     
-    print("🔄 Refreshing Beatport token (this takes ~10 seconds)...")
+    print("🔄 Refreshing Beatport token (this takes ~15 seconds)...")
     
     captured_token = None
+    api_calls_seen = 0
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -140,14 +141,21 @@ def _refresh_token_with_playwright() -> str:
         
         # Intercept API requests to capture Authorization header
         def handle_request(route, request):
-            auth_header = request.headers.get("authorization", "")
-            if auth_header.startswith("Bearer "):
-                nonlocal captured_token
-                if not captured_token:  # Capture first token
-                    captured_token = auth_header.replace("Bearer ", "")
+            nonlocal captured_token, api_calls_seen
+            
+            # Log API calls for debugging
+            if "api.beatport.com" in request.url:
+                api_calls_seen += 1
+                auth_header = request.headers.get("authorization", "")
+                
+                if auth_header.startswith("Bearer "):
+                    if not captured_token:  # Capture first token
+                        captured_token = auth_header.replace("Bearer ", "")
+                        print(f"✓ Token captured from API call #{api_calls_seen}")
+            
             route.continue_()
         
-        page.route("**/api.beatport.com/**", handle_request)
+        page.route("**/*", handle_request)
         
         try:
             # Go to login page
@@ -155,16 +163,43 @@ def _refresh_token_with_playwright() -> str:
             page.wait_for_load_state("domcontentloaded")
             
             # Fill login form (Beatport uses username, not email)
-            page.fill("input[name='username'], input[type='text']", username)
+            # Try multiple selectors for username field
+            username_filled = False
+            for selector in ["input[name='username']", "input[type='text']", "#username"]:
+                try:
+                    if page.query_selector(selector):
+                        page.fill(selector, username)
+                        username_filled = True
+                        break
+                except Exception:
+                    continue
+            
+            if not username_filled:
+                raise Exception("Could not find username input field")
+            
             page.fill("input[type='password'], input[name='password']", password)
             
-            # Submit form
-            page.click("button[type='submit']")
-            page.wait_for_load_state("networkidle", timeout=10000)
+            # Submit form - try multiple methods
+            try:
+                # Method 1: Click submit button
+                page.click("button[type='submit'], button:has-text('Log in'), button:has-text('Sign in')")
+            except Exception:
+                try:
+                    # Method 2: Press Enter on password field
+                    page.press("input[type='password']", "Enter")
+                except Exception:
+                    raise Exception("Could not submit login form")
+            
+            # Wait for navigation after login
+            page.wait_for_load_state("networkidle", timeout=15000)
+            
+            # Check if login was successful (should redirect away from /login)
+            if "/login" in page.url:
+                raise Exception("Login failed - still on login page. Check credentials.")
             
             # Trigger an API call to capture token (search for anything)
             page.goto("https://www.beatport.com/search?q=test", timeout=10000)
-            page.wait_for_timeout(2000)  # Wait for API call
+            page.wait_for_timeout(3000)  # Wait for API call
             
         except Exception as e:
             browser.close()
