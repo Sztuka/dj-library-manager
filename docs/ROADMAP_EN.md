@@ -9,7 +9,7 @@ This document describes the roadmap for Rekordbox-first architecture with Essent
 - **Essentia as Cache/Alternative**: Local metrics (BPM/Key/Energy) cached for non-Rekordbox files or after moves
 - **Energy + Audio Features**: Local metrics (LUFS, Dynamic Complexity, Spectral Centroid/Rolloff, Onset Rate) → basis for "energy score"
 - **Bucketing**: Deterministic rules first (v0), then classic ML (v0.1), optionally hybrid with embeddings (v0.3)
-- **Online Sources (MB/Last.fm/SoundCloud\*)**: Remain auxiliary; main decisions (BPM/Key/Energy/Bucket) based on audio. (\*SoundCloud optional, with health check and skip option)
+- **Online Sources (Beatport/MB/Last.fm/SoundCloud\*)**: Beatport gold standard for EDM genres (weight 10.0), others remain auxiliary; main decisions (BPM/Key/Energy/Bucket) based on audio. (\*SoundCloud optional, with health check and skip option)
 - **Caching, Repeatability & Audit**: Deterministic analysis, cache by file hash + algorithm version
 
 ## 2) Module Architecture
@@ -24,11 +24,13 @@ djlib/
     features.py         # Normalization, sampling, 0.5×/2× corrections, energy score
     cache.py            # SQLite/JSON cache + algorithm versioning
   tags.py               # Tag reading (bpm, key, …)
-  metadata/             # MB/LFM/SoundCloud (optional)
-    genre_resolver.py   # Noise filters + multi-source weights (MB/LFM/SC)
+  metadata/             # MB/LFM/SoundCloud/Beatport (optional)
+    beatport.py         # Beatport client (JWT auto-refresh)
+    genre_resolver.py   # Noise filters + multi-source weights (Beatport/MB/LFM/SC)
     mb_client.py        # MusicBrainz client
     lastfm.py           # Last.fm client
-    soundcloud.py       # SoundCloud client (optional)
+    soundcloud.py       # SoundCloud client (client_id auto-refresh)
+    coverart.py         # Album artwork fetching (4-source fallback)
   bucketing/
     base.py             # Interfaces
     rules.py            # v0 deterministic bucketing rules
@@ -64,11 +66,17 @@ scripts/
    - Caching: (file_hash, algo_version) → result
    - Write to ID3 tags (--write-tags flag)
 5. **Enrich Online** (`enrich-online`):
+   - **Beatport** (NEW): EDM-focused metadata with JWT auto-refresh
+     * 100+ precise subgenres (progressive house, melodic techno, afro house)
+     * High-resolution artwork (1400x1400px)
+     * BPM/Key from Beatport's analysis
+     * Transparent token renewal via Playwright (~10s per hour)
+     * One-time credential setup in system keyring
    - MusicBrainz/AcoustID metadata lookup
-   - Multi-source genre resolution (MB/Last.fm/SoundCloud)
-   - Per-source columns: `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (DONE)
+   - Multi-source genre resolution with weights: **Beatport 10.0** (priority for EDM) > Last.fm 6.0 > MB 3.0 > SoundCloud 2.0
+   - Per-source columns: `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (DONE)
    - Popularity metrics: `pop_playcount`, `pop_listeners`
-   - Album artwork fetching (`--fetch-covers`): 3-source fallback (Cover Art Archive → Last.fm → SoundCloud)
+   - Album artwork fetching (`--fetch-covers`): 4-source fallback (Cover Art Archive 500px → **Beatport 1400x1400** → Last.fm 300px → SoundCloud 500px)
 6. **Manual Review** (Excel `unsorted.xlsx`):
    - User validates metadata proposals
    - Selects bucket from taxonomy dropdown

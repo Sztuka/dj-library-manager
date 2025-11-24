@@ -8,7 +8,7 @@ Smart workflow manager for DJs that:
 
 - ✅ **Scans UNSORTED folder** → validates Rekordbox analysis → generates `unsorted.xlsx` staging area
 - ✅ **Extracts audio features** with Essentia (BPM, key, energy, spectral features) → SQLite cache for ML training
-- ✅ **Multi-source metadata enrichment** (MusicBrainz, Last.fm, SoundCloud) → genre suggestions & popularity metrics
+- ✅ **Multi-source metadata enrichment** (Beatport, MusicBrainz, Last.fm, SoundCloud) → genre suggestions & popularity metrics
 - ✅ **Manual curation workflow** via Excel → edit metadata, assign buckets, mark `done = TRUE`
 - ✅ **Cleans spam metadata** → removes piracy tags (musicdjs.club, chomikuj.pl) while preserving DJ software data (Traktor/Serato cues)
 - ✅ **Safe file operations** → moves approved tracks to library folders with undo support
@@ -144,9 +144,10 @@ data/training_dataset_full.csv (ML training)
 | `djlib/rekordbox_status.py`       | Rekordbox integration  | DB queries, tag validation, strict mode  |
 | `djlib/audio/essentia_backend.py` | Audio analysis         | BPM/Key/Energy + 50+ features → SQLite   |
 | `djlib/tag_cleaner.py`            | ID3 tag cleaning       | Removes spam, preserves DJ software data |
-| `djlib/metadata/coverart.py`      | Album artwork fetching | 3-source fallback, rate limiting, APIC   |
+| `djlib/metadata/coverart.py`      | Album artwork fetching | 4-source fallback, rate limiting, APIC   |
+| `djlib/metadata/beatport.py`      | Beatport integration   | JWT auto-refresh, EDM genres, 1400px art |
 | `djlib/ml/export_dataset.py`      | ML dataset builder     | Combines Rekordbox tags + Essentia cache |
-| `djlib/enrich.py`                 | Metadata enrichment    | MusicBrainz, Last.fm, SoundCloud APIs    |
+| `djlib/enrich.py`                 | Metadata enrichment    | Beatport, MusicBrainz, Last.fm, SC APIs  |
 | `djlib/cli.py`                    | Command-line interface | All workflows + VS Code tasks            |
 
 ---
@@ -238,43 +239,54 @@ python -m djlib.cli analyze-audio --check-env
 
 **Sources** (with quality weights):
 
+- **Beatport** (weight 10.0) - **gold standard for EDM**, 100+ precise subgenres (progressive house, melodic techno, afro house)
 - **Last.fm** (weight 6.0) - genre tags, popularity
 - **MusicBrainz** (weight 3.0) - canonical genres
 - **SoundCloud** (weight 2.0, optional) - user tags
 
 **New columns in `unsorted.xlsx`:**
 
-- `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (raw lists)
-- `genre_suggest` (weighted fusion)
+- `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (raw lists)
+- `genre_suggest` (weighted fusion with Beatport priority)
 - `pop_playcount`, `pop_listeners` (popularity metrics)
+
+**Auto-refresh authentication** (no manual token extraction):
+
+- **Beatport**: JWT token auto-refreshes via Playwright (~10s per hour), credentials in system keyring
+- **SoundCloud**: client_id auto-refreshes via Playwright (~2s per 30 days), cached locally
 
 **Commands:**
 
 ```bash
-# Enrich all tracks
+# Enrich all tracks (Beatport, MusicBrainz, Last.fm, SoundCloud)
 python -m djlib.cli enrich-online
+
+# Setup Beatport credentials (one-time, stored in system keyring)
+python -m djlib.metadata.beatport --setup
 
 # Force refresh + skip SoundCloud
 python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 
-# Fetch album artwork (3-source fallback)
+# Fetch album artwork (4-source fallback with Beatport 1400x1400)
 python -m djlib.cli enrich-online --fetch-covers
 ```
 
 ### 5. Album Artwork Fetching (`djlib/metadata/coverart.py`)
 
-**3-source fallback chain:**
+**4-source fallback chain** (by quality):
 
-1. **MusicBrainz Cover Art Archive** (500px front cover, highest quality)
-2. **Last.fm album.getInfo** (300x300 extralarge, medium quality)
-3. **SoundCloud track artwork** (up to 500x500, for niche/unreleased tracks)
+1. **MusicBrainz Cover Art Archive** (500px front cover, best for general music)
+2. **Beatport dynamic URI** (1400x1400, **gold standard for EDM** - highest resolution)
+3. **Last.fm album.getInfo** (300x300 extralarge, medium quality)
+4. **SoundCloud track artwork** (up to 500x500, for niche/unreleased tracks)
 
 **Features:**
 
 - Only adds artwork if APIC frame is missing (never overwrites)
-- Respects rate limits (MusicBrainz: 1 req/s, Last.fm: 5 req/s, SoundCloud: 2 req/s)
+- Respects rate limits (MB/Beatport: 1 req/s, Last.fm: 5 req/s, SoundCloud: 2 req/s)
 - Automatic format detection (JPEG/PNG)
 - Integration with workflow 3 enrichment
+- Beatport provides best quality for electronic music (1400x1400 vs 500px)
 
 **Statistics in output:**
 
@@ -344,9 +356,11 @@ dj-library-manager/
 │   ├── ml/
 │   │   └── export_dataset.py    # Training data builder
 │   ├── metadata/
+│   │   ├── beatport.py      # Beatport API (JWT auto-refresh)
+│   │   ├── coverart.py      # Album artwork fetching
 │   │   ├── lastfm.py        # Last.fm API
 │   │   ├── mb_client.py     # MusicBrainz API
-│   │   └── soundcloud.py    # SoundCloud API
+│   │   └── soundcloud.py    # SoundCloud API (client_id auto-refresh)
 │   └── ...
 ├── docs/
 │   ├── REKORDBOX_INTEGRATION.md  # DB integration guide

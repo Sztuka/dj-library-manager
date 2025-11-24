@@ -34,7 +34,7 @@ DJ Library Manager is a Rekordbox-first DJ library organization system. The syst
 - **Local Audio Analysis**: BPM/Key/Energy extraction with Essentia (Rekordbox alternative/cache)
 - **Tag Writing**: Write metrics to ID3 tags (Camelot notation, TBPM/TKEY compatibility)
 - **Tag Cleaning**: Remove spam metadata (musicdjs.club, chomikuj.pl) while preserving DJ software data (Traktor/Serato cues, ratings, artwork)
-- **Genre Resolution**: Multi-source genre detection (MusicBrainz/Last.fm/SoundCloud) with weighted aggregation + per-source CSV columns
+- **Genre Resolution**: Multi-source genre detection (Beatport/Last.fm/MusicBrainz/SoundCloud) with weighted aggregation + per-source CSV columns
 - **Automatic Classification**: AI guessing + taxonomy mapping to buckets
 - **Taxonomy Management**: Category (bucket) structure validation
 - **Rules-Based Decisions**: Auto-decide based on metadata heuristics
@@ -470,7 +470,7 @@ Artist - Title (Mix) [6A 120] (3).mp3
    - **AcoustID lookup**: If fingerprint available → MusicBrainz recording
    - **MusicBrainz search**: Direct artist/title search
    - **SoundCloud probe** (optional, remix-aware): Fetch genre + tag_list, use `version` for query building
-   - **Genre resolution**: Aggregate MB/Last.fm/SoundCloud with weighted voting
+   - **Genre resolution**: Aggregate Beatport/MB/Last.fm/SoundCloud with weighted voting (Beatport 10.0 priority for EDM)
    - **Popularity hints**: Last.fm playcount/listeners
    - **Bucket suggestion**: Map genres to buckets via `taxonomy_map.yml`
 2. Update `suggest_*` fields if better than existing
@@ -609,10 +609,11 @@ Artist - Title (Mix) [6A 120] (3).mp3
 
 ### Genre Resolution
 
-- **Multi-Source Aggregation**: Combines data from 3 sources (MB/Last.fm/SoundCloud) with weights: Last.fm 6.0, MB 3.0, SoundCloud 2.0
+- **Multi-Source Aggregation**: Combines data from 4 sources with weights: **Beatport 10.0** (gold standard for EDM, 100+ subgenres), Last.fm 6.0, MB 3.0, SoundCloud 2.0
 - **Output Format**: "Main Genre, Sub1, Sub2" (max 3)
 - **Confidence Threshold**: Base threshold for adding tag: >= 0.03; override existing: >= 0.08 (tunable with more sources)
 - **Taxonomy Mapping**: Tags → buckets via `taxonomy_map.yml`
+- **Auto-Refresh**: Beatport JWT (~1h, Playwright), SoundCloud client_id (~30d, Playwright) - transparent token renewal
 
 ### Name Conflict Resolution
 
