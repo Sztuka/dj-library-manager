@@ -73,6 +73,7 @@ scripts/
    - Selects bucket from taxonomy dropdown
    - Marks `done = TRUE` for approved tracks
 7. **Apply Decisions** (`apply`):
+   - Clean spam tags (musicdjs.club, chomikuj.pl, p2pdl.com) while preserving DJ software data
    - Move only `done = TRUE` tracks to LIBRARY
    - Generate final filenames with Camelot notation
    - Update paths, clear staging

@@ -22,6 +22,7 @@ from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 from djlib.buckets import is_valid_target
 from djlib.placement import decide_bucket
 from djlib.ml.export_dataset import export_training_dataset
+from djlib.tag_cleaner import clean_tags
 from djlib.taxonomy import load_taxonomy, allowed_targets
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, is_done
 try:
@@ -772,6 +773,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
     processed_ids: set[str] = set()
     tags_written = 0
     tags_errors = 0
+    tags_cleaned = 0
+    tags_clean_errors = 0
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -848,8 +851,13 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "pop_listeners": r.get("pop_listeners") or "",
         }
         library_rows.append(record)
-        # Po udanym przeniesieniu spróbuj zapisać zaakceptowane metadane do tagów audio
+        # Po udanym przeniesieniu wyczyść spam tagi i zapisz zaakceptowane metadane
         try:
+            # Najpierw wyczyść spam tagi (musicdjs.club, chomikuj.pl, etc.)
+            result = clean_tags(dest_real, dry_run=False)
+            if result and result.get("removed_tags"):
+                tags_cleaned += 1
+            # Teraz zapisz właściwe metadane
             updates = {}
             artist = (record["artist"] or "").strip()
             title_out = merge_title_and_version(record.get("title", ""), record.get("version_info", ""))
@@ -874,8 +882,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 write_tags(dest_real, updates)
                 tags_written += 1
         except Exception as e:
-            print(f"[WARN] Tag write failed for {dest_real}: {e}")
+            print(f"[WARN] Tag write/clean failed for {dest_real}: {e}")
             tags_errors += 1
+            if "clean_tags" in str(e):
+                tags_clean_errors += 1
 
     if args.dry_run:
         print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (oznaczone done=TRUE).")
@@ -892,6 +902,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
     _save_unsorted(remaining)
     save_records(CSV_PATH, library_rows)
     print(f"Przeniesiono {len(processed_ids)} pozycji do biblioteki.")
+    print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")
     print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
 
 def scan_command() -> None:

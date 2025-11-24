@@ -10,6 +10,7 @@ Smart workflow manager for DJs that:
 - ✅ **Extracts audio features** with Essentia (BPM, key, energy, spectral features) → SQLite cache for ML training
 - ✅ **Multi-source metadata enrichment** (MusicBrainz, Last.fm, SoundCloud) → genre suggestions & popularity metrics
 - ✅ **Manual curation workflow** via Excel → edit metadata, assign buckets, mark `done = TRUE`
+- ✅ **Cleans spam metadata** → removes piracy tags (musicdjs.club, chomikuj.pl) while preserving DJ software data (Traktor/Serato cues)
 - ✅ **Safe file operations** → moves approved tracks to library folders with undo support
 - ✅ **ML dataset export** → combines Rekordbox tags + Essentia features for training genre/bucket models
 
@@ -84,6 +85,8 @@ python -m djlib.cli analyze-audio
 ```bash
 python -m djlib.cli apply
 # Or task: "WORKFLOW 4 — Export approved tracks"
+# Cleans spam tags (musicdjs.club, chomikuj.pl, etc.)
+# Preserves DJ software data (PRIV/Traktor cues, GEOB/Serato markers, POPM/ratings, APIC/artwork)
 # Moves done=TRUE files → library folders
 # Updates library.csv with metadata
 ```
@@ -140,6 +143,7 @@ data/training_dataset_full.csv (ML training)
 | --------------------------------- | ---------------------- | ---------------------------------------- |
 | `djlib/rekordbox_status.py`       | Rekordbox integration  | DB queries, tag validation, strict mode  |
 | `djlib/audio/essentia_backend.py` | Audio analysis         | BPM/Key/Energy + 50+ features → SQLite   |
+| `djlib/tag_cleaner.py`            | ID3 tag cleaning       | Removes spam, preserves DJ software data |
 | `djlib/ml/export_dataset.py`      | ML dataset builder     | Combines Rekordbox tags + Essentia cache |
 | `djlib/enrich.py`                 | Metadata enrichment    | MusicBrainz, Last.fm, SoundCloud APIs    |
 | `djlib/cli.py`                    | Command-line interface | All workflows + VS Code tasks            |
@@ -199,7 +203,37 @@ python -m djlib.cli analyze-audio --recompute --path "track.mp3"
 python -m djlib.cli analyze-audio --check-env
 ```
 
-### 3. Multi-Source Metadata Enrichment
+### 3. Audio Tag Cleaning (`djlib/tag_cleaner.py`)
+
+**Automatic spam removal** during WORKFLOW 4 (export):
+
+**Removes piracy metadata:**
+
+- Publisher tags from file sharing sites (TPUB: musicdjs.club, chomikuj.pl)
+- Comment spam (COMM: www.p2pdl.com, www.mp3baza.pl, ulub.pl)
+- Useless tags (MCDI, TPOS, SYLT, USLT, WCOM, WOAF, etc.)
+
+**Preserves critical DJ software data:**
+
+- **PRIV** (Traktor: cue points, loops, beatgrids)
+- **GEOB** (Serato: markers, analysis, autotags, beatgrid offsets)
+- **POPM** (Popularimeter: ratings/stars in Traktor/Rekordbox/Windows Media Player)
+- **APIC** (Album artwork for visual identification)
+
+**Smart detection:**
+
+- Tag values scanned for spam keywords
+- COMM/TPUB only removed if contain spam URLs
+- TXXX (custom tags) preserved if DJ software related
+
+**Statistics in output:**
+
+```
+🧹 Czyszczenie spam tagów: cleaned=6, errors=0
+📀 Zapis tagów audio: ok=28, errors=0
+```
+
+### 4. Multi-Source Metadata Enrichment
 
 **Sources** (with quality weights):
 
