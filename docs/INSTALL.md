@@ -28,9 +28,19 @@ Backend modes:
    ```bash
    python -m djlib.cli configure
    ```
-   This will:
-   - Ask for `library_root` and `inbox_dir` paths
-   - **Optionally** configure Beatport credentials (for EDM genre/artwork enrichment)
+   **Smart detection:**
+   - Checks for existing `config.local.yml` first
+   - Detects library structure from marker files (`.djlib_root`, `.djlib_inbox`)
+   - Auto-detects taxonomy from existing folder structure
+   - **Prevents accidental overwrite** of existing setup
+   
+   **Interactive prompts:**
+   - If config exists: `Y/n/edit` to use, skip, or edit paths
+   - If markers detected: `Y/n` to use detected structure
+   - If nothing found: prompts for new paths
+   
+   **Optional metadata sources:**
+   - Beatport credentials (EDM genre/artwork enrichment)
    - SoundCloud works out-of-box (auto-refresh client_id)
 
 3. **Install Essentia** (optional, for BPM/Key/Energy detection)
