@@ -219,7 +219,8 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
     try:
         token = get_valid_token()
     except Exception as e:
-        print(f"⚠ Beatport token refresh failed: {e}")
+        print(f"\n❌ BEATPORT ERROR: {e}")
+        print("   Setup required: python -m djlib.metadata.beatport --setup\n")
         return None
     
     # Rate limiting

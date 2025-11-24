@@ -1,6 +1,6 @@
 from __future__ import annotations
 import argparse, csv, time, os, json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -366,7 +366,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     def _now_iso() -> str:
-        return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat() + "Z"
 
     # Struktura statusu (rozszerzona zgodnie z ARCHITECTURE.md)
     status_doc = {

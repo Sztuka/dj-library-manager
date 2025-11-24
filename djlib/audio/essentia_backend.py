@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 import json
@@ -546,7 +546,7 @@ def analyze(
             "tuning_diatonic_strength": metrics.get("tuning_diatonic_strength"),
             "energy": energy,
             "energy_var": metrics.get("energy_var"),
-            "analyzed_at": datetime.utcnow().isoformat(),
+            "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "source": src,
             "extras": extras,
         }

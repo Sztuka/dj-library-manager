@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -99,7 +99,7 @@ def upsert_analysis(audio_id: str, payload: Dict[str, Any]) -> None:
         cur = conn.cursor()
         # ensure analyzed_at
         payload = dict(payload)
-        payload.setdefault("analyzed_at", datetime.utcnow().isoformat())
+        payload.setdefault("analyzed_at", datetime.now(timezone.utc).isoformat())
 
         extras_obj = payload.get("extras")
         extras_dict: Dict[str, Any] = {}

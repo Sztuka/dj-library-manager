@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 
 from djlib.taxonomy import target_to_path, ensure_taxonomy_folders
 
@@ -28,4 +28,4 @@ def move_with_rename(src: Path, dest_dir: Path, final_name: str) -> Path:
     return dest
 
 def utc_now_str() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
