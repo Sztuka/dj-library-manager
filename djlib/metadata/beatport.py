@@ -329,7 +329,7 @@ def token_health() -> Dict[str, str]:
             if not email:
                 return {
                     "status": "missing",
-                    "message": "Beatport credentials not configured. Run: python -m djlib.cli setup-beatport"
+                    "message": "Beatport credentials not configured"
                 }
         except Exception:
             pass

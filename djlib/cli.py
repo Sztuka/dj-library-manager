@@ -406,7 +406,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         bp_health = token_health()
         if bp_health.get("status") == "missing":
             print(f"\nℹ️  Beatport: {bp_health.get('message')}")
-            print(f"   Setup: python -m djlib.metadata.beatport --setup")
+            print(f"   Setup: python -m djlib.cli setup-beatport")
             if not getattr(args, "skip_beatport", False):
                 _flush_status()
                 try:
@@ -1338,6 +1338,43 @@ def cmd_qa_acceptance(args: argparse.Namespace) -> None:
             print(f"  - {b}: {c}")
 
 
+def cmd_setup_beatport(args: argparse.Namespace) -> None:
+    """Configure Beatport credentials for API access."""
+    from djlib.metadata.beatport import set_beatport_credentials
+    import getpass
+    
+    print("🎵 Beatport Credentials Setup")
+    print("=" * 50)
+    print("\nYour credentials will be securely stored in system keyring")
+    print("(macOS Keychain / Windows Credential Manager / Linux Secret Service)")
+    print()
+    
+    email = input("Beatport email: ").strip()
+    if not email:
+        print("❌ Email cannot be empty")
+        return
+    
+    password = getpass.getpass("Beatport password: ")
+    if not password:
+        print("❌ Password cannot be empty")
+        return
+    
+    try:
+        set_beatport_credentials(email, password)
+        print("\n✅ Credentials saved successfully!")
+        print("\nTesting token refresh (first time takes ~10 seconds)...")
+        
+        from djlib.metadata.beatport import get_valid_token
+        token = get_valid_token()
+        
+        if token:
+            print("✅ Token obtained successfully - Beatport is ready to use!")
+        else:
+            print("⚠️  Credentials saved but token refresh failed - check your login details")
+    except Exception as e:
+        print(f"\n❌ Setup failed: {e}")
+
+
 
 # ============ PARSER ============
 
@@ -1346,6 +1383,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = p.add_subparsers(dest="cmd", required=True)
 
     sp.add_parser("configure").set_defaults(func=cmd_configure)
+    
+    # Setup Beatport credentials
+    sp.add_parser("setup-beatport", help="Configure Beatport credentials for API access").set_defaults(func=cmd_setup_beatport)
+    
     scan_parser = sp.add_parser("scan", help="Scan UNSORTED folder for new tracks")
     scan_parser.add_argument(
         "--strict",
