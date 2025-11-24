@@ -339,15 +339,21 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
+    
+    Opcjonalnie pobiera okładki albumów (--fetch-covers) z MusicBrainz/Last.fm/SoundCloud.
     """
     rows = _load_unsorted()
     force_genres = bool(getattr(args, "force_genres", False))
+    fetch_covers = bool(getattr(args, "fetch_covers", False))
     todo = [r for r in rows if not is_done(r.get("done"))]
     total = len(todo)
     processed = 0
     changed = 0
     mb_set = 0
     lfm_set = 0
+    covers_added = 0
+    covers_skipped = 0
+    covers_failed = 0
     # Check API credentials presence for diagnostics
     try:
         from djlib.config import get_lastfm_api_key
@@ -576,6 +582,50 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
 
         if any_change:
             changed += 1
+        
+        # Fetch cover art if --fetch-covers flag is set
+        if fetch_covers:
+            try:
+                from djlib.metadata.coverart import fetch_cover_art
+                from djlib.config import get_lastfm_api_key, get_soundcloud_client_id
+                
+                # Get API keys
+                lastfm_key = get_lastfm_api_key()
+                soundcloud_id = get_soundcloud_client_id() if not getattr(args, "skip_soundcloud", False) else None
+                
+                # Extract metadata for cover fetching
+                artist = (r.get("artist_suggest") or r.get("artist") or "").strip()
+                title = (r.get("title_suggest") or r.get("title") or "").strip()
+                album = (r.get("album_suggest") or r.get("album") or "").strip()
+                version = (r.get("version_suggest") or r.get("version_info") or "").strip()
+                
+                # Try to get MusicBrainz release_group_id from online enrichment
+                release_group_id = online.get("release_group_id") if online else None
+                
+                if artist and title:
+                    success, source = fetch_cover_art(
+                        filepath=str(p),
+                        artist=artist,
+                        album=album,
+                        title=title,
+                        version=version,
+                        release_group_id=release_group_id,
+                        lastfm_api_key=lastfm_key,
+                        soundcloud_client_id=soundcloud_id,
+                        skip_if_exists=True
+                    )
+                    
+                    if source == 'exists':
+                        covers_skipped += 1
+                    elif success:
+                        covers_added += 1
+                        print(f"   🎨 {p.name}: okładka dodana ({source})")
+                    else:
+                        covers_failed += 1
+            except Exception as e:
+                covers_failed += 1
+                print(f"   ⚠ Cover art error for {p.name}: {e}")
+        
         # Auto-fill artist/title if still empty and we now have suggest values (quality-of-life)
         if not (r.get("artist") or "").strip() and (r.get("artist_suggest") or "").strip():
             r["artist"] = r["artist_suggest"]
@@ -617,6 +667,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     # Short diagnostics
     if total:
         print(f"   → genres set — MB:{mb_set}, LFM:{lfm_set}")
+    if fetch_covers:
+        print(f"🎨 Okładki: added={covers_added}, skipped={covers_skipped}, failed={covers_failed}")
     if not _lfm_key_present:
         print("   ⚠ Brak LASTFM_API_KEY (DJLIB_LASTFM_API_KEY) — kolumna genres_lastfm może pozostać pusta.")
     if sc_health_msg:
@@ -1246,6 +1298,7 @@ def build_parser() -> argparse.ArgumentParser:
     ep = sp.add_parser("enrich-online")
     ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm nawet jeśli już wypełnione")
     ep.add_argument("--skip-soundcloud", action="store_true", help="Pomiń źródło SoundCloud nawet jeśli client_id jest ustawiony")
+    ep.add_argument("--fetch-covers", action="store_true", help="Pobierz okładki albumów (MusicBrainz → Last.fm → SoundCloud)")
     ep.set_defaults(func=cmd_enrich_online)
 
     # analyze-audio

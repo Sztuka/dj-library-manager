@@ -68,6 +68,7 @@ scripts/
    - Multi-source genre resolution (MB/Last.fm/SoundCloud)
    - Per-source columns: `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (DONE)
    - Popularity metrics: `pop_playcount`, `pop_listeners`
+   - Album artwork fetching (`--fetch-covers`): 3-source fallback (Cover Art Archive → Last.fm → SoundCloud)
 6. **Manual Review** (Excel `unsorted.xlsx`):
    - User validates metadata proposals
    - Selects bucket from taxonomy dropdown

@@ -30,6 +30,7 @@ DJ Library Manager is a Rekordbox-first DJ library organization system. The syst
 - **Strict Mode**: Enforce Rekordbox analysis in UNSORTED folder for quality control
 - **UNSORTED Inbox Scanning**: Extract tags, validate Rekordbox analysis, generate proposals
 - **Online Enrichment**: Metadata from MusicBrainz, AcoustID, Last.fm, SoundCloud (optional)
+- **Album Artwork Fetching**: 3-source fallback (MusicBrainz Cover Art Archive → Last.fm → SoundCloud) with rate limiting
 - **Local Audio Analysis**: BPM/Key/Energy extraction with Essentia (Rekordbox alternative/cache)
 - **Tag Writing**: Write metrics to ID3 tags (Camelot notation, TBPM/TKEY compatibility)
 - **Tag Cleaning**: Remove spam metadata (musicdjs.club, chomikuj.pl) while preserving DJ software data (Traktor/Serato cues, ratings, artwork)
@@ -75,7 +76,8 @@ dj-library-manager/
 │   │   ├── genre_resolver.py   # Main genre resolver (source weights)
 │   │   ├── mb_client.py        # MusicBrainz client
 │   │   ├── lastfm.py           # Last.fm client
-│   │   └── soundcloud.py       # SoundCloud client + health check
+│   │   ├── soundcloud.py       # SoundCloud client + health check
+│   │   └── coverart.py         # Album artwork fetching (3-source fallback)
 │   ├── bucketing/      # Auto-bucketing modules
 │   │   ├── base.py     # Base interfaces
 │   │   ├── rules.py    # Deterministic rules (v0)

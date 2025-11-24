@@ -144,6 +144,7 @@ data/training_dataset_full.csv (ML training)
 | `djlib/rekordbox_status.py`       | Rekordbox integration  | DB queries, tag validation, strict mode  |
 | `djlib/audio/essentia_backend.py` | Audio analysis         | BPM/Key/Energy + 50+ features → SQLite   |
 | `djlib/tag_cleaner.py`            | ID3 tag cleaning       | Removes spam, preserves DJ software data |
+| `djlib/metadata/coverart.py`      | Album artwork fetching | 3-source fallback, rate limiting, APIC   |
 | `djlib/ml/export_dataset.py`      | ML dataset builder     | Combines Rekordbox tags + Essentia cache |
 | `djlib/enrich.py`                 | Metadata enrichment    | MusicBrainz, Last.fm, SoundCloud APIs    |
 | `djlib/cli.py`                    | Command-line interface | All workflows + VS Code tasks            |
@@ -255,6 +256,30 @@ python -m djlib.cli enrich-online
 
 # Force refresh + skip SoundCloud
 python -m djlib.cli enrich-online --force-genres --skip-soundcloud
+
+# Fetch album artwork (3-source fallback)
+python -m djlib.cli enrich-online --fetch-covers
+```
+
+### 5. Album Artwork Fetching (`djlib/metadata/coverart.py`)
+
+**3-source fallback chain:**
+
+1. **MusicBrainz Cover Art Archive** (500px front cover, highest quality)
+2. **Last.fm album.getInfo** (300x300 extralarge, medium quality)
+3. **SoundCloud track artwork** (up to 500x500, for niche/unreleased tracks)
+
+**Features:**
+
+- Only adds artwork if APIC frame is missing (never overwrites)
+- Respects rate limits (MusicBrainz: 1 req/s, Last.fm: 5 req/s, SoundCloud: 2 req/s)
+- Automatic format detection (JPEG/PNG)
+- Integration with workflow 3 enrichment
+
+**Statistics in output:**
+
+```
+🎨 Okładki: added=15, skipped=8, failed=2
 ```
 
 ### 4. ML Training Dataset

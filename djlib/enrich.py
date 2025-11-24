@@ -408,6 +408,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
             "year_suggest": year,
             "duration_suggest": duration,
             "meta_source": "musicbrainz",
+            "release_group_id": match.release_group_id or "",  # For cover art fetching
         }
     except Exception:
         return None
