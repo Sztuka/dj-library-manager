@@ -42,13 +42,18 @@ def build_final_filename(artist: str, title: str, version_info: str, key_camelot
     vi_raw = (version_info or "").strip()
     if vi_raw:
         parts = _normalize_version_tokens(vi_raw)
-        vi = " ".join(f"({p})" for p in parts) if parts else "(Original Mix)"
+        vi = " ".join(f"({p})" for p in parts) if parts else ""
     else:
-        vi = "(Original Mix)"
+        vi = ""
     k = (key_camelot or "").strip() or "??"
     b = (bpm or "").strip() or "??"
     a = (artist or "Unknown Artist").strip()
-    name = f"{a} - {base_title or 'Unknown Title'} {vi} [{k} {b}]{ext}"
+    # Build name with optional version info (only if not empty)
+    title_part = f"{base_title or 'Unknown Title'}"
+    if vi:
+        name = f"{a} - {title_part} {vi} [{k} {b}]{ext}"
+    else:
+        name = f"{a} - {title_part} [{k} {b}]{ext}"
     return re.sub(_ILLEGAL, "-", name)
 
 def extension_for(path: Path) -> str:
