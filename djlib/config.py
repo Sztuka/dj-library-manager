@@ -248,11 +248,84 @@ def _load_or_setup() -> Tuple[AppConfig, Path]:
     return cfg, dest
 
 def reconfigure() -> Tuple[AppConfig, Path]:
-    """Wymuś ponowną konfigurację (używane przez scripts/configure.py)."""
+    """Wymuś ponowną konfigurację (używane przez cmd_configure)."""
+    
+    # 1. Najpierw sprawdź czy istnieje config.local.yml
+    existing_config_file = _first_existing(_CANDIDATES)
+    if existing_config_file:
+        print("✓ Znaleziono istniejący plik konfiguracyjny:")
+        print(f"  {existing_config_file}")
+        existing_cfg = _from_dict(_read_yaml(existing_config_file))
+        print(f" • library_root: {existing_cfg.library_root}")
+        print(f" • inbox_dir:    {existing_cfg.inbox_dir}")
+        print()
+        
+        try:
+            choice = input("Czy chcesz użyć tej konfiguracji? [Y/n/edit]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "y"
+        
+        if choice in ("", "y", "yes"):
+            print("✓ Używam istniejącej konfiguracji")
+            return existing_cfg, existing_config_file
+        elif choice in ("e", "edit"):
+            print("\n→ Edycja konfiguracji...")
+            cfg = _interactive_setup()
+            dest = _choose_config_path()
+            _write_yaml(dest, _to_dict(cfg))
+            _create_marker_files(cfg)
+            return cfg, dest
+        # else: będzie poniżej próba detekcji
+    
+    # 2. Jeśli nie ma config.local.yml lub użytkownik nie chce go użyć,
+    #    spróbuj wykryć strukturę z plików znaczników
+    detected = _detect_from_markers()
+    if detected:
+        print("✓ Wykryto istniejącą strukturę biblioteki:")
+        print(f" • library_root: {detected.library_root}")
+        print(f" • inbox_dir:    {detected.inbox_dir}")
+        print()
+        
+        try:
+            choice = input("Czy chcesz użyć tej struktury? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "y"
+        
+        if choice in ("", "y", "yes"):
+            print("✓ Używam wykrytej struktury")
+            dest = _choose_config_path()
+            _write_yaml(dest, _to_dict(detected))
+            _create_marker_files(detected)
+            
+            # Automatyczna detekcja taksonomii
+            try:
+                from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
+                detected_tax = detect_taxonomy_from_fs(detected.library_root)
+                if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
+                    save_taxonomy(detected_tax)
+                    print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
+            except Exception as e:
+                print(f"⚠ Nie udało się wykryć taksonomii: {e}")
+            
+            return detected, dest
+    
+    # 3. Brak wykrytej struktury – nowa konfiguracja
+    print("\n→ Tworzenie nowej konfiguracji...")
     cfg = _interactive_setup()
     dest = _choose_config_path()
     _write_yaml(dest, _to_dict(cfg))
-    _create_marker_files(cfg)  # Utwórz pliki znaczników
+    _create_marker_files(cfg)
+    
+    # Próba detekcji taksonomii (jeśli struktura już istnieje)
+    try:
+        from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
+        detected_tax = detect_taxonomy_from_fs(cfg.library_root)
+        if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
+            save_taxonomy(detected_tax)
+            print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
+    except Exception as e:
+        print(f"⚠ Nie udało się wykryć taksonomii: {e}")
+    
     return cfg, dest
 
 # ---------------------------

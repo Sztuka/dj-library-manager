@@ -66,11 +66,22 @@ def _save_unsorted(rows: List[Dict[str, str]]) -> None:
 # ============ KOMENDY ============
 
 def cmd_configure(_: argparse.Namespace) -> None:
+    print("\n" + "=" * 60)
+    print("DJ LIBRARY MANAGER — KONFIGURACJA")
+    print("=" * 60)
+    print()
+    
     cfg, path = reconfigure()
     ensure_base_dirs()
-    print(f"\n✅ Zapisano konfigurację do: {path}")
-    print(f"   library_root: {cfg.library_root}")
-    print(f"   inbox_dir:    {cfg.inbox_dir}\n")
+    
+    print()
+    print("=" * 60)
+    print("✅ KONFIGURACJA ZAPISANA")
+    print("=" * 60)
+    print(f"Plik konfiguracyjny: {path}")
+    print(f"Library root:        {cfg.library_root}")
+    print(f"Inbox (UNSORTED):    {cfg.inbox_dir}")
+    print()
     
     # Optional: Configure metadata sources
     print("=" * 60)
