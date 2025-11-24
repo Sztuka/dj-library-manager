@@ -71,6 +71,69 @@ def cmd_configure(_: argparse.Namespace) -> None:
     print(f"\n✅ Zapisano konfigurację do: {path}")
     print(f"   library_root: {cfg.library_root}")
     print(f"   inbox_dir:    {cfg.inbox_dir}\n")
+    
+    # Optional: Configure metadata sources
+    print("=" * 60)
+    print("OPCJONALNIE: Konfiguracja źródeł metadanych online")
+    print("=" * 60)
+    print("\nDla najlepszych wyników enrichment możesz skonfigurować:")
+    print("  • Beatport (EDM genres, artwork 1400x1400, BPM/Key)")
+    print("  • SoundCloud (tagi społecznościowe, artwork)")
+    print()
+    
+    try:
+        choice = input("Czy chcesz skonfigurować teraz? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        choice = "n"
+    
+    if choice in {"y", "yes"}:
+        # Beatport setup
+        print("\n" + "─" * 60)
+        print("1️⃣  BEATPORT SETUP")
+        print("─" * 60)
+        try:
+            beatport_choice = input("Skonfigurować Beatport? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            beatport_choice = "n"
+        
+        if beatport_choice in {"y", "yes"}:
+            from djlib.metadata.beatport import set_beatport_credentials, get_valid_token
+            import getpass
+            
+            email = input("  Beatport email: ").strip()
+            if email:
+                password = getpass.getpass("  Beatport password: ")
+                if password:
+                    try:
+                        set_beatport_credentials(email, password)
+                        print("  ✅ Credentials saved - testing token refresh...")
+                        token = get_valid_token()
+                        if token:
+                            print("  ✅ Beatport ready!")
+                    except Exception as e:
+                        print(f"  ⚠️  Setup failed: {e}")
+                else:
+                    print("  ⏭  Pominięto (brak hasła)")
+            else:
+                print("  ⏭  Pominięto (brak email)")
+        else:
+            print("  ⏭  Pominięto - możesz uruchomić później: python -m djlib.cli setup-beatport")
+        
+        # SoundCloud setup (future)
+        print("\n" + "─" * 60)
+        print("2️⃣  SOUNDCLOUD SETUP")
+        print("─" * 60)
+        print("  ℹ️  SoundCloud używa auto-refresh client_id (nie wymaga konfiguracji)")
+        print("  ✅ Gotowy do użycia!")
+        
+        print("\n" + "=" * 60)
+        print("Konfiguracja zakończona!")
+        print("=" * 60)
+    else:
+        print("⏭  Pominięto - możesz uruchomić później:")
+        print("   • python -m djlib.cli setup-beatport")
+        print()
+
 
 def cmd_scan(args: argparse.Namespace) -> None:
     ensure_base_dirs()

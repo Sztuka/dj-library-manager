@@ -13,6 +13,37 @@ Backend modes:
 - CLI fallback (works with Homebrew binary): uses `essentia_streaming_extractor_music`/`streaming_extractor_music` to extract features and parse JSON
 - Docker fallback (cross‑platform): runs the Linux CLI extractor in a container, no local install required
 
+## Quick Start
+
+1. **Python venv + dependencies**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -U pip
+   pip install -r requirements.txt
+   pip install -e .
+   ```
+
+2. **Configure library paths + metadata sources**
+   ```bash
+   python -m djlib.cli configure
+   ```
+   This will:
+   - Ask for `library_root` and `inbox_dir` paths
+   - **Optionally** configure Beatport credentials (for EDM genre/artwork enrichment)
+   - SoundCloud works out-of-box (auto-refresh client_id)
+
+3. **Install Essentia** (optional, for BPM/Key/Energy detection)
+   - See sections below for Homebrew/Conda/Docker
+
+4. **Start workflow**
+   ```bash
+   python -m djlib.cli scan --strict
+   python -m djlib.cli enrich-online
+   ```
+
+---
+
 ## 1) Python venv (base app)
 
 Create a virtualenv and install Python requirements:
@@ -124,5 +155,39 @@ This may work on some platforms where wheels are available, but Homebrew/Conda a
   - Use the existing tasks: "TOOLS — Install fpcalc (Homebrew)" or vendor script
 
 - Conflicting Python envs
-  - Confirm which interpreter you’re using in VS Code (bottom‑left status bar)
+  - Confirm which interpreter you're using in VS Code (bottom‑left status bar)
   - `which python`, `which pip`, `python -c "import sys; print(sys.executable)"`
+
+## Metadata Sources (Optional)
+
+### Beatport
+
+For best EDM genre classification and high-quality artwork (1400x1400):
+
+```bash
+python -m djlib.cli setup-beatport
+```
+
+Or configure during initial setup via `python -m djlib.cli configure`.
+
+**How it works:**
+- Credentials stored in system keyring (macOS Keychain / Windows Credential Manager)
+- JWT tokens auto-refresh via headless browser (Playwright)
+- Token valid for 1 hour, cached in `~/.djlib/beatport_token.json`
+- Zero manual intervention after initial setup
+
+**Requirements:**
+- Valid Beatport account
+- Playwright + Chromium: `pip install playwright && playwright install chromium`
+
+### SoundCloud
+
+Works out-of-box with auto-refresh client_id:
+- No setup required
+- Client ID auto-updates every 30 days
+- Cached in `~/.djlib/soundcloud_client_id.json`
+
+### MusicBrainz & Last.fm
+
+- **MusicBrainz**: No auth required (respects rate limits)
+- **Last.fm**: Optional API key in `config.yml` (see `config.local.yml` template)

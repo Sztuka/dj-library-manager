@@ -38,12 +38,22 @@ source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
 
-# 3. (Optional) Install Essentia for audio analysis
+# 3. Configure library paths + metadata sources
+python -m djlib.cli configure
+# Sets library_root, inbox_dir
+# Optionally: configure Beatport (EDM genres/artwork)
+
+# 4. (Optional) Install Essentia for audio analysis
 python scripts/install_essentia.py
 
-# 4. Verify setup
+# 5. Verify setup
 python -m djlib.cli analyze-audio --check-env
 ```
+
+**Metadata Sources** (optional, for enrichment):
+- **Beatport**: Run `python -m djlib.cli setup-beatport` for EDM genres + 1400x1400 artwork
+- **SoundCloud**: Works out-of-box (auto-refresh client_id)
+- **MusicBrainz/Last.fm**: No setup required
 
 ### 5-Step Workflow
 
