@@ -93,14 +93,24 @@ def export_training_dataset(
             stats["missing_labels"] += 1
             continue
 
-        record = _flatten_analysis(analysis)
+        # Essentia features (from cache)
+        record: Dict[str, Any] = {}
+        ess_features = _flatten_analysis(analysis)
+        for ess_key, ess_val in ess_features.items():
+            record[f"ess_{ess_key}"] = ess_val
+        
+        # Labels
         record["genre_label"] = genre_label
         record["bucket_label"] = bucket_label
         record["file_path"] = (row.get("final_path") or row.get("file_path") or "").strip()
         record["track_id"] = row.get("track_id")
+        
+        # Rekordbox tags (from unsorted.xlsx, which are sourced from TBPM/TKEY)
+        record["tag_bpm"] = row.get("bpm")
+        record["tag_key_camelot"] = row.get("key_camelot")
+        
+        # Library metadata (other fields)
         for meta_key in (
-            "bpm",
-            "key_camelot",
             "energy_hint",
             "must_play",
             "occasion_tags",

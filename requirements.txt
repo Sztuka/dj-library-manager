@@ -1,4 +1,5 @@
 mutagen           # czytanie/parsowanie tagów audio
+pyrekordbox>=0.2.1  # czytanie Rekordbox DB (master.db, rekordbox.xml)
 beets             # silnik biblioteki muzycznej, fingerprinty, dupe logic
 chromaprint       # fingerprint audio backend (beets/chroma używa tego)
 pyacoustid        # czasem potrzebne do AcoustID lookup przy fingerprintach

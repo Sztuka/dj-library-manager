@@ -11,12 +11,13 @@ from djlib.config import (
 )
 from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
+from djlib.rekordbox_status import was_analyzed
 from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
 from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 from djlib.metadata.genre_resolver import resolve as resolve_genres
 from djlib.classify import guess_bucket
 from djlib.fingerprint import file_sha256, fingerprint_info
-from djlib.filename import build_final_filename, extension_for
+from djlib.filename import build_final_filename, extension_for, split_title_and_version, merge_title_and_version
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 from djlib.buckets import is_valid_target
 from djlib.placement import decide_bucket
@@ -70,8 +71,9 @@ def cmd_configure(_: argparse.Namespace) -> None:
     print(f"   library_root: {cfg.library_root}")
     print(f"   inbox_dir:    {cfg.inbox_dir}\n")
 
-def cmd_scan(_: argparse.Namespace) -> None:
+def cmd_scan(args: argparse.Namespace) -> None:
     ensure_base_dirs()
+    strict = getattr(args, "strict", False)
     library_rows = load_records(CSV_PATH)
     staging_rows = _load_unsorted()
     known_hashes = {r.get("file_hash", "") for r in library_rows if r.get("file_hash")}
@@ -91,6 +93,34 @@ def cmd_scan(_: argparse.Namespace) -> None:
 
     all_files = [p for p in INBOX_DIR.glob("**/*") if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
     total = len(all_files)
+    
+    # Check if all files have been analyzed in Rekordbox
+    # strict=True: ONLY accept files in Rekordbox DB (not just TBPM/TKEY tags)
+    # strict=False: Accept DB OR tags (allows Traktor/Serato-analyzed files)
+    not_analyzed_paths: List[Path] = []
+    for p in all_files:
+        if not was_analyzed(p, strict=strict):
+            not_analyzed_paths.append(p)
+    
+    if not_analyzed_paths:
+        if strict:
+            print("\n❌ ERROR: Some files are not in Rekordbox database (--strict mode).")
+            print("   These files may have BPM/Key tags from Traktor/Serato,")
+            print("   but weren't confirmed to be analyzed in Rekordbox specifically.")
+            print("\n   Solutions:")
+            print("   1. Import to Rekordbox and run Analyze, then re-run scan")
+            print("   2. Or run scan WITHOUT --strict to accept tags from any source")
+        else:
+            print("\n❌ ERROR: Some files have no BPM/Key analysis.")
+            print("   Files need either:")
+            print("   - Rekordbox DB entry with analysis (preferred)")
+            print("   - OR TBPM/TKEY tags from any DJ software (Traktor/Serato/etc)")
+        print("\n   Files needing attention:")
+        for p in not_analyzed_paths:
+            print(f"     - {p.relative_to(INBOX_DIR)}")
+        print()
+        return  # Abort without generating unsorted.xlsx
+    
     processed = 0
     added = 0
     errors = 0
@@ -911,83 +941,24 @@ def cmd_dupes(_: argparse.Namespace) -> None:
     print(f"Zapisano raport duplikatów: {out}")
 
 def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
-    """Zsynchronizuj metryki (BPM/Key/Energy) z cache SQLite do głównego CSV.
-    Domyślnie uzupełnia tylko puste pola; użyj --force aby nadpisać istniejące.
-    Opcjonalnie zapisuje metadane do plików audio jeśli --write-tags.
-    """
-    if get_analysis is None:
-        print("Audio cache backend niedostępny.")
-        return
-    rows = _load_unsorted()
-    if not rows:
-        print("Brak rekordów do aktualizacji.")
-        return
-    force = bool(getattr(args, "force", False))
-    write_tags_flag = bool(getattr(args, "write_tags", False))
-    updated = 0
-    tags_written = 0
-    for r in rows:
-        audio_id = (r.get("file_hash") or "").strip()
-        if not audio_id:
-            # spróbuj policzyć hash jeśli plik istnieje
-            try:
-                p = Path(r.get("file_path") or "")
-                if p.exists():
-                    from djlib.audio.cache import compute_audio_id as _cmp
-                    audio_id = _cmp(p)
-                else:
-                    continue
-            except Exception:
-                continue
-        a = get_analysis(audio_id)
-        if not a:
-            continue
-        # przygotuj wartości
-        bpm = a.get("bpm")
-        key = a.get("key_camelot")
-        energy = a.get("energy")
-        # uzupełniaj tylko puste chyba że --force
-        def _should_set(cur: str) -> bool:
-            return force or (not (cur or "").strip())
-        changed = False
-        if bpm is not None and _should_set(r.get("bpm", "")):
-            try:
-                r["bpm"] = f"{float(bpm):.2f}".rstrip("0").rstrip(".")
-            except Exception:
-                r["bpm"] = str(bpm)
-            changed = True
-        if key and _should_set(r.get("key_camelot", "")):
-            r["key_camelot"] = str(key)
-            changed = True
-        if energy is not None and _should_set(r.get("energy_hint", "")):
-            # energy jako 0..1 → wpisz procentowo (0..100) lub float; wybierz prosty procent
-            try:
-                r["energy_hint"] = f"{round(float(energy)*100)}"
-            except Exception:
-                r["energy_hint"] = str(energy)
-            changed = True
-        if changed:
-            updated += 1
-        
-        # Zapisz metadane do pliku jeśli --write-tags
-        if write_tags_flag and (bpm or key):
-            try:
-                p = Path(r.get("file_path") or "")
-                if p.exists():
-                    from djlib.tags import write_tags
-                    tag_updates = {}
-                    if bpm is not None:
-                        tag_updates["bpm"] = str(bpm)
-                    if key:
-                        tag_updates["key_camelot"] = str(key)
-                    write_tags(p, tag_updates)
-                    tags_written += 1
-            except Exception as e:
-                print(f"[WARN] Nie udało się zapisać tagów do {p}: {e}")
+    """DEPRECATED: Essentia analysis is now cache-only and does not write to tags or unsorted.xlsx.
     
-    if updated:
-        _save_unsorted(rows)
-    print(f"🔄 Sync audio metrics: updated={updated}, tags_written={tags_written}")
+    BPM/Key in unsorted.xlsx come from Rekordbox tags only.
+    Please analyze files in Rekordbox before running scan workflow.
+    
+    This command has been disabled to maintain data integrity.
+    """
+    print("❌ DEPRECATED: sync-audio-metrics command is no longer available.")
+    print()
+    print("   Essentia analysis is cache-only (for ML training features).")
+    print("   BPM/Key in unsorted.xlsx must come from Rekordbox tags.")
+    print()
+    print("   Please:")
+    print("   1. Analyze your files in Rekordbox (sets TBPM/TKEY tags)")
+    print("   2. Run: python -m djlib.cli scan")
+    print("   3. Optionally run: python -m djlib.cli analyze-audio (for ML features)")
+    print()
+    return
 
 def cmd_genres_resolve(args: argparse.Namespace) -> None:
     artist = (getattr(args, "artist", None) or "").strip()
@@ -1137,49 +1108,8 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
     _write_status("done", "")
     print(f"🎧 Analyze-audio: files={total}, analyzed={updated}")
     
-    # Update unsorted.xlsx with BPM/Key from cache
-    if get_analysis is not None:
-        try:
-            from djlib.audio.cache import compute_audio_id
-            rows = _load_unsorted()
-            changed = 0
-            for r in rows:
-                if is_done(r.get("done")):
-                    continue
-                fpath = r.get("file_path", "")
-                if not fpath:
-                    continue
-                p = Path(fpath)
-                if not p.exists():
-                    continue
-                
-                # Get analysis from cache using audio_id (file hash)
-                audio_id = compute_audio_id(p)
-                analysis = get_analysis(audio_id)
-                if not analysis:
-                    continue
-                
-                # Always update BPM from analysis (overwrite existing)
-                if analysis.get("bpm"):
-                    new_bpm = str(int(round(analysis["bpm"])))
-                    old_bpm = r.get("bpm", "")
-                    if new_bpm != old_bpm:
-                        r["bpm"] = new_bpm
-                        changed += 1
-                
-                # Always update Key from analysis (overwrite existing)
-                if analysis.get("key_camelot"):
-                    new_key = analysis["key_camelot"]
-                    old_key = r.get("key_camelot", "")
-                    if new_key != old_key:
-                        r["key_camelot"] = new_key
-                        changed += 1
-            
-            if changed > 0:
-                _save_unsorted(rows)
-                print(f"✅ Updated {changed} BPM/Key values in unsorted.xlsx")
-        except Exception as e:
-            print(f"⚠️ Failed to update unsorted.xlsx: {e}")
+    # NOTE: Essentia analysis is cache-only. BPM/Key in unsorted.xlsx come from Rekordbox tags only.
+    # If you need to sync, use Rekordbox analysis, not Essentia.
 
 def cmd_ml_predict(_: argparse.Namespace) -> None:
     print(LEGACY_ML_MSG)
@@ -1277,7 +1207,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp = p.add_subparsers(dest="cmd", required=True)
 
     sp.add_parser("configure").set_defaults(func=cmd_configure)
-    sp.add_parser("scan").set_defaults(func=cmd_scan)
+    scan_parser = sp.add_parser("scan", help="Scan UNSORTED folder for new tracks")
+    scan_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Require Rekordbox DB confirmation (reject tag-only files from Traktor/Serato)"
+    )
+    scan_parser.set_defaults(func=cmd_scan)
 
     ap = sp.add_parser("auto-decide")
     ap.add_argument("--rules", default=str(REPO_ROOT / "rules.yml"))

@@ -1,148 +1,486 @@
-# DJ Library Manager (MVP)
+# DJ Library Manager
 
-Quick start (local BPM/Key without Traktor):
+**Automated DJ library organization system with Rekordbox integration, audio analysis, and ML-powered categorization.**
 
-See `docs/INSTALL.md` for installing Essentia (optional but recommended)
+## 🎯 What This Does
 
-1. **Setup deps** – task _STEP 0 — Setup: create venv & install deps_ (or run the equivalent commands manually).
-2. **Verify audio toolchain** – task _TOOLS — Check audio env_ (runs `python -m djlib.cli analyze-audio --check-env`).
-3. **Scan INBOX → `unsorted.xlsx`** – task _WORKFLOW 1 — Scan UNSORTED_ (`python -m djlib.cli scan`).
-4. **Analyze BPM/Key/Energy** – task _WORKFLOW 2 — Analyze audio (Essentia)_ (`python -m djlib.cli analyze-audio`).
-   - Optional: `python -m djlib.cli sync-audio-metrics --write-tags` updates both the cache and the ID3 tags.
-5. **Edit `unsorted.xlsx`** – fill `artist`/`title`/`version_info`/`genre`, pick `target_subfolder`, set `done = TRUE` only for tracks ready to export.
-6. **Export approved tracks** – task _WORKFLOW 3 — Export approved tracks_ (`python -m djlib.cli apply`).
-7. **(Optional) Build ML dataset** – task _WORKFLOW 4 — ML dataset export_ (`python -m djlib.cli ml-export-training-dataset`).
-8. Generate a preview any time with `python scripts/report_preview.py` (adds detected bpm/key/energy columns).
+Smart workflow manager for DJs that:
 
-**Local audio analysis with tag writing** (alternative to Traktor):
+- ✅ **Scans UNSORTED folder** → validates Rekordbox analysis → generates `unsorted.xlsx` staging area
+- ✅ **Extracts audio features** with Essentia (BPM, key, energy, spectral features) → SQLite cache for ML training
+- ✅ **Multi-source metadata enrichment** (MusicBrainz, Last.fm, SoundCloud) → genre suggestions & popularity metrics
+- ✅ **Manual curation workflow** via Excel → edit metadata, assign buckets, mark `done = TRUE`
+- ✅ **Safe file operations** → moves approved tracks to library folders with undo support
+- ✅ **ML dataset export** → combines Rekordbox tags + Essentia features for training genre/bucket models
 
-- `python -m djlib.cli sync-audio-metrics --write-tags` analyzes BPM/Key/Energy locally and writes them to file tags.
-- Results land both in the Essentia cache and in ID3 tags, so any DJ software can read them immediately.
+**Key innovation:** Treats Rekordbox as source of truth for BPM/Key while using Essentia for rich ML features (spectral, MFCC, chroma). No tag conflicts, one workflow.
 
-## Aktualny end‑to‑end workflow (rozszerzony)
+## 🚀 Quick Start
 
-Źródła gatunków online: MusicBrainz, Last.fm, (opcjonalnie) SoundCloud.
+### Prerequisites
 
-Nowe kolumny CSV: `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud`, `pop_playcount`, `pop_listeners`.
+- macOS (tested) or Linux
+- Python 3.11+ (3.13 recommended)
+- **Rekordbox 6** installed (for DB integration)
+- **Essentia** (optional, for audio analysis) - see `docs/INSTALL.md`
 
-Flagi dla wzbogacania:
-
-- `--force-genres` – nadpisuje istniejące kolumny `genres_*` oraz `genre_suggest` jeśli pojawiły się nowe / lepsze dane.
-- `--skip-soundcloud` – pomija zapytania do SoundCloud (przydatne jeśli chwilowo brak ważnego `client_id`).
-
-SoundCloud:
-
-- Wymaga `SOUNDCLOUD_CLIENT_ID` w env albo w `config.local.yml`.
-- Health check na początku `enrich-online` wykrywa: `ok`, `invalid` (403), `missing`, `rate-limit`, `error`.
-- Jeśli `invalid` / `missing` i brak `--skip-soundcloud` → interaktywne pytanie czy kontynuować bez SoundCloud.
-
-Wielokrotne nawiasy w nazwie pliku (np. `Artist - Title (Karibu Remix) (Extended Edit).mp3`) są łączone w `version_suggest`: `Karibu Remix, Extended Edit`.
-
-Szybkie kroki:
-
-1. `python -m djlib.cli scan` – zapełnia `unsorted.xlsx`.
-2. `python -m djlib.cli analyze-audio` – Essentia cache (`LOGS/audio_analysis.sqlite`).
-3. Edytuj `unsorted.xlsx`, wyznacz docelowy bucket, ustaw `done = TRUE`.
-4. `python -m djlib.cli apply` – przenosi pliki i dopisuje do `library.csv`.
-5. (Opcjonalnie) `python -m djlib.cli ml-export-training-dataset` – buduje `data/training_dataset_full.csv`.
-
-## Multi-source genre enrichment
-
-Komenda: `python -m djlib.cli enrich-online`
-
-Źródła i wagi w resolverze: Last.fm (6.0), MusicBrainz (3.0), SoundCloud (2.0). Wynik agregowany trafia do `genre_suggest`, a surowe listy do odpowiednich kolumn `genres_*`.
-
-Przykład wymuszenia ponownego pobrania gatunków i pominięcia SoundCloud:
+### Installation
 
 ```bash
+# 1. Clone repo
+git clone https://github.com/Sztuka/dj-library-manager.git
+cd dj-library-manager
+
+# 2. Setup environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+
+# 3. (Optional) Install Essentia for audio analysis
+python scripts/install_essentia.py
+
+# 4. Verify setup
+python -m djlib.cli analyze-audio --check-env
+```
+
+### 5-Step Workflow
+
+**1. PREPARE FILES IN REKORDBOX**
+
+```bash
+# Import tracks to Rekordbox collection
+# Analyze tracks (Right-click → Analyze)
+# Enable: Preferences → Write metadata to files
+```
+
+**2. SCAN UNSORTED FOLDER** (with Rekordbox validation)
+
+```bash
+# Strict mode: ONLY accept Rekordbox-analyzed files
+python -m djlib.cli scan --strict
+
+# Or use VS Code task: "WORKFLOW 1 — Scan UNSORTED"
+# Creates unsorted.xlsx with metadata staging area
+```
+
+**3. ANALYZE AUDIO FEATURES** (optional, for ML training)
+
+```bash
+python -m djlib.cli analyze-audio
+# Or task: "WORKFLOW 2 — Analyze audio (Essentia)"
+# Extracts 50+ features → LOGS/audio_analysis.sqlite
+```
+
+**4. CURATE IN EXCEL**
+
+- Open `unsorted.xlsx`
+- Fill: `artist`, `title`, `genre`, `target_subfolder`
+- Mark ready tracks: `done = TRUE`
+- Save and close
+
+**5. EXPORT APPROVED TRACKS**
+
+```bash
+python -m djlib.cli apply
+# Or task: "WORKFLOW 4 — Export approved tracks"
+# Moves done=TRUE files → library folders
+# Updates library.csv with metadata
+```
+
+### Optional: ML Dataset Export
+
+```bash
+python -m djlib.cli ml-export-training-dataset
+# Task: "WORKFLOW 5 — ML dataset export"
+# Creates data/training_dataset_full.csv with:
+# - tag_bpm/tag_key_camelot (from Rekordbox)
+# - ess_bpm/ess_key_camelot/ess_energy (from Essentia)
+# - 50+ spectral/MFCC/chroma features for training
+```
+
+---
+
+## 🏗️ Architecture Overview
+
+### Rekordbox-First Design
+
+**Problem:** BPM/Key detection conflicts between DJ software (Rekordbox, Traktor, Essentia)
+
+**Solution:** Two-tier system:
+
+1. **Rekordbox = Source of Truth** for BPM/Key in library workflow
+   - `scan --strict` enforces Rekordbox DB confirmation
+   - Tags (TBPM/TKEY) must be present before processing
+2. **Essentia = ML Feature Cache** for training only
+   - Stores algorithmic BPM/Key + rich audio features
+   - Never writes to tags (cache-only)
+   - ML models can compare professional (Rekordbox) vs algorithmic (Essentia)
+
+### Data Flow
+
+```
+UNSORTED/
+  ↓ scan --strict (check Rekordbox DB)
+unsorted.xlsx (staging area)
+  ↓ manual curation (Excel)
+  ↓ apply (move done=TRUE files)
+LIBRARY/
+  CLUB/
+  OPEN FORMAT/
+  REVIEW QUEUE/
+library.csv (master database)
+  ↓ ml-export-training-dataset
+data/training_dataset_full.csv (ML training)
+```
+
+### Key Modules
+
+| Module                            | Purpose                | Key Features                             |
+| --------------------------------- | ---------------------- | ---------------------------------------- |
+| `djlib/rekordbox_status.py`       | Rekordbox integration  | DB queries, tag validation, strict mode  |
+| `djlib/audio/essentia_backend.py` | Audio analysis         | BPM/Key/Energy + 50+ features → SQLite   |
+| `djlib/ml/export_dataset.py`      | ML dataset builder     | Combines Rekordbox tags + Essentia cache |
+| `djlib/enrich.py`                 | Metadata enrichment    | MusicBrainz, Last.fm, SoundCloud APIs    |
+| `djlib/cli.py`                    | Command-line interface | All workflows + VS Code tasks            |
+
+---
+
+## 📊 Key Features
+
+### 1. Rekordbox Integration (`djlib/rekordbox_status.py`)
+
+**Two detection methods:**
+
+- `was_analyzed_from_db()` - Queries Rekordbox database (authoritative)
+- `was_analyzed_from_tags()` - Reads TBPM/TKEY from ID3 tags (fallback)
+
+**Strict Mode** (recommended for UNSORTED):
+
+```bash
+# Enforce Rekordbox DB confirmation
+python -m djlib.cli scan --strict
+# Rejects files with only Traktor/Serato tags
+```
+
+**Normal Mode** (flexible, for moved files):
+
+```bash
+# Accept DB OR tags from any DJ software
+python -m djlib.cli scan
+# Works after file moves (DB paths become stale)
+```
+
+See `docs/REKORDBOX_INTEGRATION.md` for scenarios and troubleshooting.
+
+### 2. Audio Analysis (Essentia)
+
+**Cache-only approach** (no tag writes):
+
+- BPM detection with histogram peak selection (100-120 "sweet spot" priority)
+- Key detection in Camelot notation (1A-12B)
+- Energy, danceability, mood, voice/instrumental detection
+- Spectral features (centroid, rolloff, flux, complexity)
+- MFCC coefficients (timbre analysis)
+- Chroma features (harmonic content)
+
+**Storage:** `LOGS/audio_analysis.sqlite` (JSON blobs per track)
+
+**Commands:**
+
+```bash
+# Analyze all unsorted tracks
+python -m djlib.cli analyze-audio
+
+# Force recompute specific file
+python -m djlib.cli analyze-audio --recompute --path "track.mp3"
+
+# Check environment
+python -m djlib.cli analyze-audio --check-env
+```
+
+### 3. Multi-Source Metadata Enrichment
+
+**Sources** (with quality weights):
+
+- **Last.fm** (weight 6.0) - genre tags, popularity
+- **MusicBrainz** (weight 3.0) - canonical genres
+- **SoundCloud** (weight 2.0, optional) - user tags
+
+**New columns in `unsorted.xlsx`:**
+
+- `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (raw lists)
+- `genre_suggest` (weighted fusion)
+- `pop_playcount`, `pop_listeners` (popularity metrics)
+
+**Commands:**
+
+```bash
+# Enrich all tracks
+python -m djlib.cli enrich-online
+
+# Force refresh + skip SoundCloud
 python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 ```
 
-## Workflow (unsorted.xlsx → library.csv)
+### 4. ML Training Dataset
 
-1. **Scan UNSORTED**  
-   Uruchom `python -m djlib.cli scan` (VS Code task: _WORKFLOW 1 — Scan UNSORTED_).  
-   Komenda przeszukuje folder INBOX, liczy fingerprinty, zbiera podpowiedzi z Last.fm/MusicBrainz/SoundCloud i zapisuje wszystko do `unsorted.xlsx` (w `LIB_ROOT`).  
-   Arkusz zawiera:
+**Feature combination:**
 
-   - kolumny techniczne (track_id, file_path, file_hash, fingerprint, added_date, is_duplicate) – domyślnie ukryte,
-   - oryginalne tagi z pliku (`tag_*`), listy gatunków z usług online, pola popularności,
-   - sugestie AI/reguł (`ai_guess_bucket`, `ai_guess_comment`),
-   - pola do edycji ręcznej: `artist`, `title`, `version_info`, `genre`, `target_subfolder`, `must_play`, `occasion_tags`, `notes`,
-   - podstawowe metryki audio (`bpm`, `key_camelot`, `energy_hint`),
-   - **kolumnę `done` na końcu arkusza** – dropdown TRUE/FALSE pełniący rolę checkboxa.
-     Dropdown dla `target_subfolder` korzysta z aktualnej taksonomii, więc unikamy literówek.
-
-2. **Analyze audio (Essentia)**  
-   `python -m djlib.cli analyze-audio` (VS Code: _WORKFLOW 2 — Analyze audio (Essentia)_) liczy cechy i zapisuje je do cache (`LOGS/audio_analysis.sqlite`). Możesz opcjonalnie uruchomić `sync-audio-metrics`, aby przepisać BPM/Key/Energy do arkusza.
-
-3. **Manual edits w `unsorted.xlsx`**  
-   Otwórz arkusz w Excelu/Numbers/LibreOffice i uzupełnij `artist`, `title`, `version_info`, `genre`, `target_subfolder`, `must_play`, `occasion_tags`, `notes`. Gdy utwór jest gotowy, ustaw `done = TRUE`. Wszystko, co ma `FALSE`, pozostaje w stagingu.
-
-4. **Export approved tracks do `library.csv`**  
-   `python -m djlib.cli apply` (VS Code: _WORKFLOW 3 — Export approved tracks_) bierze tylko wiersze z `done = TRUE`, przenosi pliki do docelowych folderów, zapisuje finalne tagi i dopisuje rekordy do `library.csv`. Wiersze z wyeksportowanych utworów znikają z arkusza.
-
-5. **ML dataset export**  
-   `python -m djlib.cli ml-export-training-dataset` (VS Code: _WORKFLOW 4 — ML dataset export_) łączy cechy Essentii z `library.csv` i zapisuje `data/training_dataset_full.csv`.
-   - `genre` → `genre_label`.
-   - `target_subfolder` → `bucket_label`.
-   - Dodajemy dodatkowe kolumny `library_*` (np. `library_bpm`, `library_pop_playcount`) jako cechy pomocnicze.
-   - Więcej szczegółów: `docs/ML_PIPELINE.md`.
-
-## Afro house / remix heuristics (planowane)
-
-Plan: dodatkowe heurystyki dla afro house jeśli `version_suggest` zawiera wzorce typu `Karibu Remix`. (Jeszcze nie wdrożone.)
-
-## Konfiguracja
-
-Przy pierwszym uruchomieniu aplikacja zapyta o ścieżki:
-
-- **Library root**: folder główny biblioteki (domyślnie `~/Music Library`), gdzie będą tworzone podfoldery `READY TO PLAY/`, `REVIEW QUEUE/`, `LOGS/`, `library.csv`
-- **Inbox dir**: folder z nowymi plikami do przeskanowania (domyślnie `~/Unsorted`)
-
-Ścieżki są zapisywane w:
-
-- Pliku konfiguracyjnym: `config.local.yml` (w repo) lub `~/.djlib_manager/config.yml`
-- Ukrytych plikach znaczników dla automatycznego wykrywania:
-  - `.djlib_root` w folderze library root (zawiera YAML z `library_root` i `inbox_dir`)
-  - `.djlib_inbox` w folderze inbox (zawiera te same dane)
-
-Aby zmienić konfigurację, uruchom ponownie aplikację - wykryje istniejące pliki znaczników i zapyta o potwierdzenie lub zmianę.
-
-Zainstaluj zależności: `pip install -r requirements.txt`
-
-(Opcjonalnie) fingerprint audio wymaga `pyacoustid` i narzędzia `fpcalc` (Chromaprint). Bez tego fingerprint będzie pusty, ale skan działa.
-
-## Lokalna analiza audio
-
-System wspiera lokalną ekstrakcję BPM/Key/Energy bez potrzeby Traktora:
-
-- **Wymagania**: Essentia Python bindings (instalacja przez `scripts/install_essentia.py`)
-- **Polecenie**: `python -m djlib.cli sync-audio-metrics --write-tags`
-- **Rezultat**:
-  - Metryki zapisane w cache SQLite (`LOGS/audio_analysis.sqlite`)
-  - BPM/Key/Energy zapisane w tagach ID3 plików (Camelot notation dla kluczy)
-  - Kompatybilne z DJ oprogramowaniem (Serato, rekordbox, itp.)
-
-**Format kluczy**: Camelot notation (1A-12A, 1B-12B), zapisane jako ID3 TKEY tag.
-
-**Przykład użycia**:
-
-```bash
-# Analiza i zapis do cache
-python -m djlib.cli sync-audio-metrics
-
-# Analiza + zapis do tagów plików
-python -m djlib.cli sync-audio-metrics --write-tags
-
-# Force re-analysis wszystkich plików
-python -m djlib.cli sync-audio-metrics --force --write-tags
+```csv
+track_id,file_path,
+tag_bpm,tag_key_camelot,          # From Rekordbox (source of truth)
+ess_bpm,ess_key_camelot,ess_energy, # From Essentia (algorithmic)
+ess_spectral_centroid,ess_spectral_rolloff,...  # 50+ features
+genre_label,bucket_label          # Training labels
 ```
 
-## Struktura CSV
+**Use cases:**
 
-Kolumny: patrz `djlib/csvdb.py::FIELDNAMES`.
+- Train genre classifier (compare Rekordbox vs Essentia BPM)
+- Bucket prediction (auto-assign CLUB/OPEN FORMAT/etc)
+- Energy-based recommendations
+- Detect analysis discrepancies (manual correction needed)
 
-## Uwaga
+**Command:**
 
-To jest MVP. Fingerprint działa tylko jeśli masz `fpcalc`. Brak `fpcalc` → duplikaty wykrywane po `file_hash`.
+```bash
+python -m djlib.cli ml-export-training-dataset \
+  --out data/training_full.csv \
+  --require-both-labels  # Skip tracks without genre+bucket
+```
+
+See `docs/ML_PIPELINE.md` for training examples.
+
+---
+
+## 🎛️ VS Code Tasks
+
+Use built-in tasks for common workflows:
+
+| Task                      | Command                   | Description                            |
+| ------------------------- | ------------------------- | -------------------------------------- |
+| **STEP 0**                | Setup venv & deps         | One-time installation                  |
+| **TOOLS**                 | Check audio env           | Verify Essentia installation           |
+| **WORKFLOW 1**            | Scan UNSORTED             | `scan --strict` (Rekordbox validation) |
+| **WORKFLOW 1 (flexible)** | Scan UNSORTED (no strict) | `scan` (accept any tags)               |
+| **WORKFLOW 2**            | Analyze audio (Essentia)  | Extract features → cache               |
+| **WORKFLOW 3**            | Enrich online             | Fetch metadata from APIs               |
+| **WORKFLOW 4**            | Export approved tracks    | Move `done=TRUE` → library             |
+| **WORKFLOW 5**            | ML dataset export         | Build training CSV                     |
+| **TESTS**                 | Run tests / coverage      | Validate changes                       |
+
+---
+
+## 📁 Project Structure
+
+```
+dj-library-manager/
+├── djlib/                    # Core Python package
+│   ├── cli.py               # Command-line interface
+│   ├── rekordbox_status.py  # Rekordbox DB integration
+│   ├── audio/
+│   │   ├── essentia_backend.py  # Audio analysis
+│   │   └── cache.py         # SQLite feature storage
+│   ├── ml/
+│   │   └── export_dataset.py    # Training data builder
+│   ├── metadata/
+│   │   ├── lastfm.py        # Last.fm API
+│   │   ├── mb_client.py     # MusicBrainz API
+│   │   └── soundcloud.py    # SoundCloud API
+│   └── ...
+├── docs/
+│   ├── REKORDBOX_INTEGRATION.md  # DB integration guide
+│   ├── ARCHITECTURE.md           # System design
+│   ├── ML_PIPELINE.md            # Training workflows
+│   └── INSTALL.md                # Setup instructions
+├── tests/                    # Unit & integration tests
+├── scripts/                  # Utility scripts
+├── .vscode/tasks.json       # VS Code task definitions
+├── requirements.txt         # Python dependencies
+├── config.yml               # Configuration template
+└── README.md                # This file
+```
+
+---
+
+## 🔧 Configuration
+
+### Initial Setup
+
+First run triggers interactive wizard:
+
+```bash
+python -m djlib.cli scan
+# Prompts for:
+# - Library root (default: ~/Music Library)
+# - Inbox dir (default: ~/Unsorted)
+```
+
+Saves to `config.local.yml`:
+
+```yaml
+library_root: /Volumes/Music/Library
+inbox_dir: /Volumes/Music/INBOX_UNSORTED
+csv_path: library.csv
+
+# Optional API keys
+lastfm_api_key: YOUR_KEY
+soundcloud_client_id: YOUR_KEY
+```
+
+**Marker files** for auto-detection:
+
+- `.djlib_root` in library folder
+- `.djlib_inbox` in inbox folder
+
+### Rekordbox Settings
+
+**Critical:** Enable tag writing in Rekordbox:
+
+```
+Preferences → Advanced → Browse
+☑ Write metadata to files
+Frequency: Every time
+```
+
+Without this, `scan --strict` will fail after file moves (DB has old paths).
+
+---
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+pytest -q
+
+# With coverage report
+pytest --cov=djlib --cov-report=term-missing
+
+# Or use VS Code tasks:
+# - "TESTS — run"
+# - "TESTS — coverage"
+```
+
+**Key test files:**
+
+- `tests/test_rekordbox_status.py` - DB integration scenarios
+- `tests/test_audio_basic.py` - Essentia feature extraction
+- `tests/test_enrich_artist_normalization.py` - Special artist handling (AC/DC, ABBA, etc)
+
+---
+
+## 📚 Documentation Index
+
+| Topic                     | File                            | Description                                           |
+| ------------------------- | ------------------------------- | ----------------------------------------------------- |
+| **Setup & Installation**  | `docs/INSTALL.md`               | Essentia installation, dependencies                   |
+| **Rekordbox Integration** | `docs/REKORDBOX_INTEGRATION.md` | DB queries, strict mode, scenarios                    |
+| **Architecture**          | `docs/ARCHITECTURE_EN.md`       | Modules, data flow, design decisions (English)        |
+| **Roadmap**               | `docs/ROADMAP_EN.md`            | Development plan: Rekordbox + Essentia + ML (English) |
+| **ML Pipeline**           | `docs/ML_PIPELINE.md`           | Training workflows, feature engineering               |
+
+---
+
+## 🤝 Contributing
+
+### For LLMs / Code Assistants
+
+**Key context files to read:**
+
+1. `djlib/rekordbox_status.py` - Understand Rekordbox-first design
+2. `djlib/audio/essentia_backend.py` - Audio analysis architecture
+3. `djlib/ml/export_dataset.py` - ML feature combination
+4. `docs/REKORDBOX_INTEGRATION.md` - Scenarios & edge cases
+
+**Common tasks:**
+
+- Adding new Essentia features → modify `essentia_backend.py` + `export_dataset.py`
+- Improving BPM detection → tune histogram peak selection weights
+- New metadata source → follow `djlib/metadata/lastfm.py` pattern
+- ML model integration → use `data/training_dataset_full.csv`
+
+### Architecture Principles
+
+1. **Rekordbox = Source of Truth** for BPM/Key in library (never overwrite tags)
+2. **Essentia = Cache Only** for ML training (no tag writes, no xlsx updates)
+3. **Graceful Degradation** (works without DB, without Essentia, without API keys)
+4. **Undo Support** for all file operations (logs in `LOGS/moves-*.csv`)
+5. **Type Safety** (Python 3.11+ type hints, validate with mypy)
+
+---
+
+## 🐛 Troubleshooting
+
+### "Files not detected as analyzed"
+
+```bash
+# Check tags
+python -c "from mutagen.id3 import ID3; print(ID3('track.mp3').get('TBPM'), ID3('track.mp3').get('TKEY'))"
+
+# Check DB status
+python -c "from djlib.rekordbox_status import debug_print_db_status; debug_print_db_status()"
+
+# Solution: Ensure Rekordbox "Write metadata" is enabled, re-analyze
+```
+
+### "Strict mode rejects my files"
+
+```bash
+# Option 1: Use normal mode (accepts tags from any source)
+python -m djlib.cli scan
+
+# Option 2: Import to Rekordbox, analyze, then re-run
+python -m djlib.cli scan --strict
+```
+
+### "After moving files, detection fails"
+
+**Expected behavior** - DB tracks by path, which changes after moves.
+
+**Solution:** Use normal mode (tags travel with files):
+
+```bash
+python -m djlib.cli scan  # no --strict
+```
+
+### "Essentia analysis missing"
+
+```bash
+# Check environment
+python -m djlib.cli analyze-audio --check-env
+
+# Force recompute
+python -m djlib.cli analyze-audio --recompute
+```
+
+See `docs/REKORDBOX_INTEGRATION.md` for detailed scenarios.
+
+---
+
+## 📝 License
+
+MIT License - see LICENSE file
+
+---
+
+## 🎵 Credits
+
+**Audio Analysis:**
+
+- [Essentia](https://essentia.upf.edu/) - Music analysis library
+- [Chromaprint](https://acoustid.org/chromaprint) - Audio fingerprinting
+
+**Metadata Sources:**
+
+- [MusicBrainz](https://musicbrainz.org/) - Music metadata database
+- [Last.fm](https://www.last.fm/) - Genre tags & popularity
+- [SoundCloud](https://soundcloud.com/) - User-generated tags
+
+**Rekordbox Integration:**
+
+- [pyrekordbox](https://github.com/dylanljones/pyrekordbox) - Rekordbox DB reader
+
+---
+
+**Built for DJs who want:** Smart organization → Clean library → More time mixing 🎧

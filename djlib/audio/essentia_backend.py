@@ -148,8 +148,94 @@ def analyze(
                             return float(np.mean(val))
                     return float(val)
                 
-                # Extract BPM
-                bpm = get_scalar('rhythm.bpm')
+                # Extract BPM with intelligent peak selection
+                bpm_raw = get_scalar('rhythm.bpm')
+                
+                # Get BPM histogram peaks for better accuracy on ambiguous tracks
+                bpm_alternatives = []
+                bpm = bpm_raw  # Default to raw BPM
+                bpm_conf = None
+                
+                try:
+                    first_peak_bpm = get_scalar('rhythm.bpm_histogram_first_peak_bpm')
+                    first_peak_weight = get_scalar('rhythm.bpm_histogram_first_peak_weight')
+                    second_peak_bpm = get_scalar('rhythm.bpm_histogram_second_peak_bpm')
+                    second_peak_weight = get_scalar('rhythm.bpm_histogram_second_peak_weight')
+                    
+                    # Collect peaks with weights
+                    peaks = []
+                    if first_peak_bpm and first_peak_weight:
+                        peaks.append((first_peak_bpm, first_peak_weight))
+                    if second_peak_bpm and second_peak_weight:
+                        peaks.append((second_peak_bpm, second_peak_weight))
+                    
+                    # Store alternatives for ML training
+                    bpm_alternatives = [{'bpm': bpm, 'weight': weight} for bpm, weight in peaks if bpm > 0]
+                    
+                    # Smart BPM selection strategy:
+                    # 1. Check if peaks significantly disagree with raw BPM (>10 BPM difference)
+                    # 2. If high confidence (>0.35) and peaks agree with raw → trust raw BPM
+                    # 3. If peaks disagree significantly → use intelligent peak selection
+                    # 4. Prefer peaks in 100-120 range (DJ sweet spot)
+                    
+                    if peaks and first_peak_weight:
+                        # Check if any peak in sweet spot (100-120) disagrees with raw BPM
+                        peaks_in_sweet_spot = [p for p, w in peaks if 100 <= p <= 120 and w > 0.05]
+                        raw_in_sweet_spot = 100 <= bpm_raw <= 120
+                        
+                        # Check for significant disagreement between raw and best alternative peak
+                        best_alt_peak = max(peaks, key=lambda x: x[1])[0] if peaks else bpm_raw
+                        raw_vs_peak_diff = abs(bpm_raw - best_alt_peak)
+                        
+                        if first_peak_weight > 0.35 and 60 <= bpm_raw <= 180 and raw_vs_peak_diff < 10:
+                            # High confidence and peaks agree - trust raw BPM (more precise)
+                            bpm = bpm_raw
+                            bpm_conf = first_peak_weight
+                        elif peaks_in_sweet_spot and not raw_in_sweet_spot and raw_vs_peak_diff > 10:
+                            # Raw BPM outside sweet spot but we have good sweet spot peak
+                            # This handles cases like Kolorowy Wiatr (raw 123, peak 108)
+                            valid_peaks = [(bpm_p, w) for bpm_p, w in peaks if w > 0.05]
+                            sweet_spot = [(bpm_p, w) for bpm_p, w in valid_peaks if 100 <= bpm_p <= 120]
+                            
+                            if sweet_spot:
+                                chosen = max(sweet_spot, key=lambda x: x[1])
+                                bpm, bpm_conf = chosen
+                            else:
+                                bpm = bpm_raw
+                                bpm_conf = first_peak_weight
+                        else:
+                            # Use intelligent peak selection for ambiguous cases
+                            valid_peaks = [(bpm_p, w) for bpm_p, w in peaks if w > 0.05]
+                            
+                            if valid_peaks:
+                                sweet_spot = [(bpm_p, w) for bpm_p, w in valid_peaks if 100 <= bpm_p <= 120]
+                                slower_dance = [(bpm_p, w) for bpm_p, w in valid_peaks if 80 <= bpm_p < 100]
+                                faster_dance = [(bpm_p, w) for bpm_p, w in valid_peaks if 120 < bpm_p <= 140]
+                                rest = [(bpm_p, w) for bpm_p, w in valid_peaks if bpm_p < 80 or bpm_p > 140]
+                                
+                                if sweet_spot:
+                                    if 100 <= bpm_raw <= 120:
+                                        bpm = bpm_raw
+                                        bpm_conf = max(sweet_spot, key=lambda x: x[1])[1]
+                                    else:
+                                        chosen = max(sweet_spot, key=lambda x: x[1])
+                                        bpm, bpm_conf = chosen
+                                elif slower_dance:
+                                    chosen = max(slower_dance, key=lambda x: x[1])
+                                    bpm, bpm_conf = chosen
+                                elif faster_dance:
+                                    chosen = max(faster_dance, key=lambda x: x[1])
+                                    bpm, bpm_conf = chosen
+                                elif rest and rest[0][1] > 0.3:
+                                    bpm, bpm_conf = rest[0]
+                                else:
+                                    bpm = bpm_raw
+                                    bpm_conf = valid_peaks[0][1] if valid_peaks else None
+                        
+                except Exception as e:
+                    # Fallback to raw BPM if peak extraction fails
+                    bpm = bpm_raw
+                    print(f"BPM peak extraction failed: {e}")
                 
                 # Extract Key - strings are arrays of chars or single string
                 key_key_val = results['tonal.key_edma.key']
@@ -434,6 +520,13 @@ def analyze(
         if energy is None:
             energy = energy_score_from_metrics({k: v for k, v in metrics.items() if isinstance(v, (int, float))})
 
+        # Prepare extras with BPM alternatives for ML training
+        extras = {
+            "notes": "with genre features",
+            "bpm_raw": bpm_raw if 'bpm_raw' in locals() else None,
+            "bpm_alternatives": bpm_alternatives if bpm_alternatives else None,
+        }
+
         payload = {
             "algo_version": ALGO_VERSION,
             "config_hash": ch,
@@ -455,7 +548,7 @@ def analyze(
             "energy_var": metrics.get("energy_var"),
             "analyzed_at": datetime.utcnow().isoformat(),
             "source": src,
-            "extras": {"notes": "with genre features"},
+            "extras": extras,
         }
         
         # Add MFCC coefficients
