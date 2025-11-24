@@ -220,70 +220,74 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
     return artist.strip(), title.strip(), version.strip()
 
 
-def suggest_metadata(path: Path, tags: Dict[str, str]) -> Dict[str, str]:
+def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = True) -> Dict[str, str]:
     """
     Zwraca proponowane metadane do akceptacji. Priorytety:
-    1) online lookup (AcoustID + MusicBrainz) – domyślnie włączone
+    1) online lookup (AcoustID + MusicBrainz) – opcjonalne (enable_online=True)
     2) fallback: parsowanie z nazwy pliku
     3) ostatecznie: to co w tagach (tylko gdy brak czegokolwiek sensownego)
 
     Z pliku zachowujemy BPM i Key (poza zakresem tej funkcji).
+    
+    Args:
+        enable_online: If False, skip AcoustID/MusicBrainz/genre resolver (faster for scan)
     """
     # Use derive_local_metadata to get normalized artist, title, version
     artist, title, version = derive_local_metadata(path, tags)
 
-    # Najpierw spróbuj lookup online z fingerprintem (AcoustID)
-    fp = tags.get("fingerprint", "")
-    dur_sec = 0
-    try:
-        dur_txt = tags.get("duration", "")
-        if ":" in dur_txt:
-            m, s = dur_txt.split(":", 1)
-            dur_sec = int(m) * 60 + int(s)
-    except Exception:
-        pass
-    
-    if fp and dur_sec:
-        online = lookup_acoustid(fp, dur_sec)
+    if enable_online:
+        # Najpierw spróbuj lookup online z fingerprintem (AcoustID)
+        fp = tags.get("fingerprint", "")
+        dur_sec = 0
+        try:
+            dur_txt = tags.get("duration", "")
+            if ":" in dur_txt:
+                m, s = dur_txt.split(":", 1)
+                dur_sec = int(m) * 60 + int(s)
+        except Exception:
+            pass
+        
+        if fp and dur_sec:
+            online = lookup_acoustid(fp, dur_sec)
+            if online:
+                # Preserve filename-derived version if online lacks it
+                if version and not (online.get("version_suggest") or "").strip():
+                    online = {**online, "version_suggest": version}
+                return online
+        
+        # Następnie spróbuj MusicBrainz search
+        online = lookup_musicbrainz(artist, title)
         if online:
-            # Preserve filename-derived version if online lacks it
             if version and not (online.get("version_suggest") or "").strip():
                 online = {**online, "version_suggest": version}
             return online
-    
-    # Następnie spróbuj MusicBrainz search
-    online = lookup_musicbrainz(artist, title)
-    if online:
-        if version and not (online.get("version_suggest") or "").strip():
-            online = {**online, "version_suggest": version}
-        return online
-    
-    # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud (resolver)
-    try:
-        from djlib.metadata.genre_resolver import resolve as resolve_genres
-        dur_s = dur_sec if dur_sec else None
-        genre_res = resolve_genres(
-            artist, title, version=version, duration_s=dur_s,
-            disable_soundcloud=False,
-            disable_beatport=False
-        )
-        if genre_res and genre_res.confidence >= 0.03:
-            genres = [genre_res.main] + genre_res.subs[:2]
-            genre_str = ", ".join(genres)
-            sources = [src for src, _, _ in genre_res.breakdown]
-            meta_source = f"genres({','.join(sources)})" if sources else "genres"
-            return {
-                "artist_suggest": artist,
-                "title_suggest": title,
-                "version_suggest": version,
-                "genre_suggest": genre_str,
-                "album_suggest": "",
-                "year_suggest": "",
-                "duration_suggest": "",
-                "meta_source": meta_source,
-            }
-    except Exception:
-        pass
+        
+        # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud/Beatport (resolver)
+        try:
+            from djlib.metadata.genre_resolver import resolve as resolve_genres
+            dur_s = dur_sec if dur_sec else None
+            genre_res = resolve_genres(
+                artist, title, version=version, duration_s=dur_s,
+                disable_soundcloud=False,
+                disable_beatport=False
+            )
+            if genre_res and genre_res.confidence >= 0.03:
+                genres = [genre_res.main] + genre_res.subs[:2]
+                genre_str = ", ".join(genres)
+                sources = [src for src, _, _ in genre_res.breakdown]
+                meta_source = f"genres({','.join(sources)})" if sources else "genres"
+                return {
+                    "artist_suggest": artist,
+                    "title_suggest": title,
+                    "version_suggest": version,
+                    "genre_suggest": genre_str,
+                    "album_suggest": "",
+                    "year_suggest": "",
+                    "duration_suggest": "",
+                    "meta_source": meta_source,
+                }
+        except Exception:
+            pass
     
     # Jeśli nie udało się online, użyj parsowania z nazwy pliku
     # Ale najpierw spróbuj gatunku z tagów MP3

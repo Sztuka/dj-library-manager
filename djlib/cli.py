@@ -253,7 +253,8 @@ def cmd_scan(args: argparse.Namespace) -> None:
             tags["artist"], tags["title"], tags["bpm"], tags["genre"], tags["comment"]
         )
 
-        sugg = suggest_metadata(p, tags)
+        # Scan uses only local metadata (fast) - online enrichment is separate workflow
+        sugg = suggest_metadata(p, tags, enable_online=False)
         if (sugg.get("duration_suggest") or "").strip() == "" and dur:
             mm = dur // 60
             ss = dur % 60
