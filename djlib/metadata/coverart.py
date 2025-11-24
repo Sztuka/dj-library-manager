@@ -1,9 +1,10 @@
 """Album artwork fetching with multi-source fallback.
 
-Priority chain:
-1. MusicBrainz Cover Art Archive (highest quality, 500px front cover)
-2. Last.fm album.getInfo (medium quality, 300x300)
-3. SoundCloud track artwork (for niche/unreleased tracks, up to 500x500)
+Priority chain (by quality):
+1. MusicBrainz Cover Art Archive (500px front cover, best for general music)
+2. Beatport dynamic URI (1400x1400, gold standard for EDM)
+3. Last.fm album.getInfo (300x300, broad coverage)
+4. SoundCloud track artwork (500x500, for niche/unreleased tracks)
 
 Only adds artwork if APIC frame is missing - never overwrites existing covers.
 """
@@ -19,9 +20,11 @@ from mutagen.id3._frames import APIC
 _LAST_CAA_REQUEST = 0.0
 _LAST_LASTFM_REQUEST = 0.0
 _LAST_SOUNDCLOUD_REQUEST = 0.0
+_LAST_BEATPORT_REQUEST = 0.0
 CAA_MIN_INTERVAL = 1.0  # MusicBrainz: 1 req/s
 LASTFM_MIN_INTERVAL = 0.2  # Last.fm: 5 req/s
 SOUNDCLOUD_MIN_INTERVAL = 0.5  # SoundCloud: 2 req/s
+BEATPORT_MIN_INTERVAL = 1.0  # Beatport: 1 req/s
 
 def has_artwork(filepath: str) -> bool:
     """Check if MP3 file already has APIC frame (album artwork)."""
@@ -134,6 +137,38 @@ def fetch_from_lastfm(artist: str, album: str, api_key: str) -> Optional[Tuple[b
     except Exception:
         return None
 
+def fetch_from_beatport(artwork_url: str) -> Optional[Tuple[bytes, str]]:
+    """Fetch cover art from Beatport dynamic URI.
+    
+    Args:
+        artwork_url: Beatport dynamic URI (e.g., "https://geo-media.beatsource.com/.../{w}x{h}/...")
+    
+    Returns:
+        (image_data, mime_type) or None if failed
+    """
+    # Rate limiting
+    global _LAST_BEATPORT_REQUEST
+    elapsed = time.time() - _LAST_BEATPORT_REQUEST
+    BEATPORT_MIN_INTERVAL = 1.0  # 1 second between requests
+    if elapsed < BEATPORT_MIN_INTERVAL:
+        time.sleep(BEATPORT_MIN_INTERVAL - elapsed)
+    
+    try:
+        # Replace {w}x{h} placeholder with 1400x1400 (best quality)
+        if '{w}x{h}' in artwork_url:
+            artwork_url = artwork_url.replace('{w}x{h}', '1400x1400')
+        
+        _LAST_BEATPORT_REQUEST = time.time()
+        response = requests.get(artwork_url, timeout=10)
+        
+        if response.status_code == 200:
+            mime_type = response.headers.get('Content-Type', 'image/jpeg')
+            return (response.content, mime_type)
+        
+        return None
+    except Exception:
+        return None
+
 def fetch_from_soundcloud(artist: str, title: str, version: str, client_id: str) -> Optional[Tuple[bytes, str]]:
     """Fetch cover art from SoundCloud track search.
     
@@ -196,11 +231,18 @@ def fetch_cover_art(
     title: str,
     version: str = "",
     release_group_id: Optional[str] = None,
+    beatport_artwork_url: Optional[str] = None,
     lastfm_api_key: Optional[str] = None,
     soundcloud_client_id: Optional[str] = None,
     skip_if_exists: bool = True
 ) -> Tuple[bool, str]:
     """Fetch and add cover art to MP3 file using multi-source fallback.
+    
+    Priority chain (by quality):
+    1. MusicBrainz Cover Art Archive (500px)
+    2. Beatport dynamic URI (1400x1400 - highest quality)
+    3. Last.fm album.getInfo (300x300)
+    4. SoundCloud track artwork (500x500)
     
     Args:
         filepath: Path to MP3 file
@@ -209,24 +251,33 @@ def fetch_cover_art(
         title: Track title (for SoundCloud)
         version: Track version/remix info (for SoundCloud)
         release_group_id: MusicBrainz release group ID (optional)
+        beatport_artwork_url: Beatport dynamic URI (optional, best quality for EDM)
         lastfm_api_key: Last.fm API key (optional)
         soundcloud_client_id: SoundCloud client ID (optional)
         skip_if_exists: If True, skip files that already have artwork
     
     Returns:
-        (success: bool, source: str) where source is 'mb', 'lastfm', 'soundcloud', 'exists', or 'failed'
+        (success: bool, source: str) where source is 'mb', 'beatport', 'lastfm', 'soundcloud', 'exists', or 'failed'
     """
     # Check if artwork already exists
     if skip_if_exists and has_artwork(filepath):
         return (True, 'exists')
     
-    # Try MusicBrainz Cover Art Archive
+    # Try MusicBrainz Cover Art Archive (first for general music)
     if release_group_id:
         result = fetch_from_musicbrainz(release_group_id)
         if result:
             image_data, mime_type = result
             if add_artwork(filepath, image_data, mime_type):
                 return (True, 'mb')
+    
+    # Try Beatport (best quality for EDM - 1400x1400)
+    if beatport_artwork_url:
+        result = fetch_from_beatport(beatport_artwork_url)
+        if result:
+            image_data, mime_type = result
+            if add_artwork(filepath, image_data, mime_type):
+                return (True, 'beatport')
     
     # Try Last.fm
     if lastfm_api_key and album:

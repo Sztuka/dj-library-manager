@@ -400,6 +400,20 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
 
     _flush_status()
 
+    # Beatport token health (informative)
+    try:
+        from djlib.metadata.beatport import token_health
+        bp_health = token_health()
+        if bp_health.get("status") == "missing":
+            print(f"ℹ Beatport: {bp_health.get('message')} (można ustawić: python -m djlib.metadata.beatport --setup)")
+        elif bp_health.get("status") == "ok":
+            print(f"✅ Beatport: {bp_health.get('message')}")
+        elif bp_health.get("status") in {"expired", "error"}:
+            print(f"⚠ Beatport: {bp_health.get('message')}")
+    except Exception:
+        pass
+    _flush_status()
+
     # SoundCloud client id health (informative, does not block)
     sc_health_msg = ""
     try:
@@ -528,6 +542,9 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                     src_map = {src: local for (src, _, local) in genre_res.breakdown}
                     def _top_k(d, k=5):
                         return ", ".join([kv[0] for kv in sorted(d.items(), key=lambda kv: kv[1], reverse=True)[:k]])
+                    if src_map.get("beatport") and (force_genres or not (r.get("genres_beatport") or "")):
+                        r["genres_beatport"] = _top_k(src_map["beatport"])  # type: ignore[index]
+                        any_change = True
                     if src_map.get("musicbrainz") and (force_genres or not (r.get("genres_musicbrainz") or "")):
                         r["genres_musicbrainz"] = _top_k(src_map["musicbrainz"])  # type: ignore[index]
                         any_change = True
@@ -602,6 +619,24 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 # Try to get MusicBrainz release_group_id from online enrichment
                 release_group_id = online.get("release_group_id") if online else None
                 
+                # Try to get Beatport artwork URL
+                beatport_artwork_url = None
+                try:
+                    from djlib.metadata.beatport import search_track as bp_search
+                    dur_s = None
+                    if r.get("duration_suggest"):
+                        try:
+                            dur_parts = r["duration_suggest"].split(":")
+                            if len(dur_parts) == 2:
+                                dur_s = int(dur_parts[0]) * 60 + int(dur_parts[1])
+                        except Exception:
+                            pass
+                    bp_result = bp_search(artist, title, dur_s)
+                    if bp_result:
+                        beatport_artwork_url = bp_result.get("artwork_url")
+                except Exception:
+                    pass
+                
                 if artist and title:
                     success, source = fetch_cover_art(
                         filepath=str(p),
@@ -610,6 +645,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         title=title,
                         version=version,
                         release_group_id=release_group_id,
+                        beatport_artwork_url=beatport_artwork_url,
                         lastfm_api_key=lastfm_key,
                         soundcloud_client_id=soundcloud_id,
                         skip_if_exists=True

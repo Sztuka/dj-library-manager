@@ -45,6 +45,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("genres_musicbrainz", width=24, locked=True),
     ColumnSpec("genres_lastfm", width=24, locked=True),
     ColumnSpec("genres_soundcloud", width=24, locked=True),
+    ColumnSpec("genres_beatport", width=24, locked=True),
     ColumnSpec("pop_playcount", width=14, locked=True),
     ColumnSpec("pop_listeners", width=14, locked=True),
     ColumnSpec("meta_source", hidden=True, width=20, locked=True),

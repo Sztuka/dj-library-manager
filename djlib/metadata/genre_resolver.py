@@ -101,10 +101,10 @@ class GenreResolution:
 
 
 def resolve(artist: str, title: str, version: str = "", *, duration_s: int | None = None, disable_soundcloud: bool = False) -> GenreResolution | None:
-    """Resolve genres using MB -> Last.fm (+ optional SoundCloud) with scoring.
+    """Resolve genres using Beatport -> Last.fm -> MB (+ optional SoundCloud) with scoring.
 
     Version info (remix names) helps SoundCloud queries disambiguate edits.
-    Weights (relative): MB=3, LFM=6, SC=2. Returns main + up to 2 subs.
+    Weights (relative): Beatport=10, LFM=6, MB=3, SC=2. Returns main + up to 2 subs.
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
@@ -113,6 +113,30 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
 
     scores: Dict[str, float] = {}
     parts: List[Tuple[str, float, Dict[str, float]]] = []
+
+    # Beatport (gold standard for EDM - highest weight)
+    bp_w = 10.0
+    try:
+        from djlib.metadata.beatport import search_track as bp_search
+        bp_result = bp_search(artist, title, duration_s)
+        if bp_result and bp_result.get("genre"):
+            local: Dict[str, float] = {}
+            # Beatport returns precise genres like "Techno (Peak Time / Driving)"
+            bp_genres = [g.strip() for g in bp_result["genre"].split(",")]
+            for t in bp_genres:
+                c = canonical(t)
+                if _is_noise(c):
+                    continue
+                f = _downweight_factor(c)
+                w = bp_w * f
+                if w <= 0:
+                    continue
+                scores[c] = scores.get(c, 0.0) + w
+                local[c] = local.get(c, 0.0) + w
+            if local:
+                parts.append(("beatport", bp_w, local))
+    except Exception:
+        pass  # Beatport unavailable - continue with other sources
 
     # MusicBrainz
     mb_w = 3.0
