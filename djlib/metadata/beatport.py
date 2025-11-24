@@ -162,14 +162,33 @@ def _refresh_token_with_playwright() -> str:
             page.goto("https://www.beatport.com/login", timeout=15000)
             page.wait_for_load_state("domcontentloaded")
             
+            # Handle cookie consent if present
+            try:
+                page.click("button:has-text('I Accept'), button:has-text('Accept'), button:has-text('Essential Only')", timeout=3000)
+                page.wait_for_timeout(500)
+            except Exception:
+                pass  # No cookie banner or already dismissed
+            
+            # Click "Login" button to open the login modal/form
+            try:
+                page.click("button:has-text('Login'), a:has-text('Login')", timeout=5000)
+                page.wait_for_timeout(2000)  # Wait for modal to appear
+            except Exception:
+                pass  # Maybe already on login form
+            
+            # Now wait for login form fields to appear
+            page.wait_for_selector("input[type='text'], input[type='email'], input[name='username']", timeout=5000)
+            
             # Fill login form (Beatport uses username, not email)
             # Try multiple selectors for username field
             username_filled = False
-            for selector in ["input[name='username']", "input[type='text']", "#username"]:
+            for selector in ["input[name='username']", "input[type='email']", "input[type='text']:not([name='search-field']):not([name='vendor-search-handler'])"]:
                 try:
-                    if page.query_selector(selector):
+                    elem = page.query_selector(selector)
+                    if elem and elem.is_visible():
                         page.fill(selector, username)
                         username_filled = True
+                        print(f"✓ Filled username using: {selector}")
                         break
                 except Exception:
                     continue
@@ -177,18 +196,21 @@ def _refresh_token_with_playwright() -> str:
             if not username_filled:
                 raise Exception("Could not find username input field")
             
-            page.fill("input[type='password'], input[name='password']", password)
+            page.fill("input[type='password']", password)
+            print("✓ Filled password")
             
             # Submit form - try multiple methods
             try:
                 # Method 1: Click submit button
-                page.click("button[type='submit'], button:has-text('Log in'), button:has-text('Sign in')")
+                page.click("button[type='submit'], button:has-text('Log in'), button:has-text('Sign in'), button:has-text('Submit')", timeout=3000)
             except Exception:
                 try:
                     # Method 2: Press Enter on password field
                     page.press("input[type='password']", "Enter")
                 except Exception:
                     raise Exception("Could not submit login form")
+            
+            print("✓ Submitted login form")
             
             # Wait for navigation after login
             page.wait_for_load_state("networkidle", timeout=15000)
