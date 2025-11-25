@@ -46,7 +46,15 @@ def build_final_filename(artist: str, title: str, version_info: str, key_camelot
     else:
         vi = ""
     k = (key_camelot or "").strip() or "??"
-    b = (bpm or "").strip() or "??"
+    # Round BPM to integer for filename (keep precision in tags)
+    bpm_str = (bpm or "").strip()
+    if bpm_str and bpm_str != "??":
+        try:
+            b = str(round(float(bpm_str)))
+        except (ValueError, TypeError):
+            b = bpm_str
+    else:
+        b = "??"
     a = (artist or "Unknown Artist").strip()
     # Build name with optional version info (only if not empty)
     title_part = f"{base_title or 'Unknown Title'}"

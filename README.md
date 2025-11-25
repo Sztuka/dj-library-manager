@@ -167,6 +167,12 @@ data/training_dataset_full.csv (ML training)
 
 ### 1. Rekordbox Integration (`djlib/rekordbox_status.py`)
 
+**Direct metadata extraction from Rekordbox database:**
+
+- `extract_metadata_from_db()` - Extracts BPM (2 decimals) + Key (Camelot notation)
+- Handles files where Rekordbox didn't write tags (especially FLAC)
+- Unicode path normalization for macOS compatibility
+
 **Two detection methods:**
 
 - `was_analyzed_from_db()` - Queries Rekordbox database (authoritative)
@@ -179,6 +185,10 @@ data/training_dataset_full.csv (ML training)
 python -m djlib.cli scan --strict
 # Rejects files with only Traktor/Serato tags
 ```
+
+**Key conversion:**
+- Rekordbox musical notation (B, Cm, F#m) → Camelot (1B, 5A, 2A)
+- BPM precision: 2 decimals in tags (112.57), rounded in filenames (113)
 
 **Normal Mode** (flexible, for moved files):
 
@@ -250,20 +260,23 @@ python -m djlib.cli analyze-audio --check-env
 
 **Sources** (with quality weights):
 
-- **Beatport** (weight 10.0) - **gold standard for EDM**, 100+ precise subgenres (progressive house, melodic techno, afro house)
-- **Last.fm** (weight 6.0) - genre tags, popularity
-- **MusicBrainz** (weight 3.0) - canonical genres
+- **Beatport** (weight 10.0) - **gold standard for EDM**, 100+ precise subgenres (progressive house, melodic techno, afro house), release dates
+- **Last.fm** (weight 6.0) - genre tags, popularity, release years
+- **MusicBrainz** (weight 3.0) - canonical genres, release dates
 - **SoundCloud** (weight 2.0, optional) - user tags
 
 **New columns in `unsorted.xlsx`:**
 
 - `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (raw lists)
 - `genre_suggest` (weighted fusion with Beatport priority)
+- `year_suggest` (priority: MusicBrainz > Beatport > Last.fm)
 - `pop_playcount`, `pop_listeners` (popularity metrics)
 
 **Auto-refresh authentication** (no manual token extraction):
 
-- **Beatport**: JWT token auto-refreshes via Playwright (~10s per hour), credentials in system keyring
+- **Beatport**: JWT token auto-refreshes via Playwright (~15s), credentials in system keyring
+  - Automatic retry on token expiry during long workflows
+  - Retry logic for slow login processing (5 attempts, 3s intervals)
 - **SoundCloud**: client_id auto-refreshes via Playwright (~2s per 30 days), cached locally
 
 **Commands:**
@@ -273,13 +286,16 @@ python -m djlib.cli analyze-audio --check-env
 python -m djlib.cli enrich-online
 
 # Setup Beatport credentials (one-time, stored in system keyring)
-python -m djlib.metadata.beatport --setup
+python -m djlib.cli setup-beatport
 
 # Force refresh + skip SoundCloud
 python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 
 # Fetch album artwork (4-source fallback with Beatport 1400x1400)
 python -m djlib.cli enrich-online --fetch-covers
+
+# Debug Beatport issues (opens visible browser)
+BEATPORT_DEBUG=1 python -m djlib.cli enrich-online
 ```
 
 ### 5. Album Artwork Fetching (`djlib/metadata/coverart.py`)
@@ -557,6 +573,7 @@ MIT License - see LICENSE file
 
 **Metadata Sources:**
 
+- [Beatport](https://www.beatport.com/) - EDM genres, release dates, high-res artwork (requires login)
 - [MusicBrainz](https://musicbrainz.org/) - Music metadata database
 - [Last.fm](https://www.last.fm/) - Genre tags & popularity
 - [SoundCloud](https://soundcloud.com/) - User-generated tags

@@ -24,7 +24,7 @@ class ColumnSpec:
 UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     # Read-only metadata (locked)
     ColumnSpec("track_id", hidden=True, width=22, locked=True),
-    ColumnSpec("file_path", width=50, locked=True),  # Visible for reference
+    ColumnSpec("file_path", width=115, locked=True),  # Visible for reference
     ColumnSpec("file_hash", hidden=True, width=30, locked=True),
     ColumnSpec("fingerprint", hidden=True, width=26, locked=True),
     ColumnSpec("added_date", hidden=True, width=18, locked=True),
@@ -39,7 +39,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("version_suggest", hidden=True, width=20, locked=True),
     ColumnSpec("genre_suggest", hidden=True, width=24, locked=True),
     ColumnSpec("album_suggest", hidden=True, width=22, locked=True),
-    ColumnSpec("year_suggest", hidden=True, width=12, locked=True),
+    ColumnSpec("year_suggest", hidden=False, width=12, locked=True),
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
     # Genre hints (visible for decision making, but locked)
     ColumnSpec("genres_musicbrainz", width=24, locked=True),
@@ -52,9 +52,9 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("ai_guess_bucket", hidden=True, width=28, locked=True),
     ColumnSpec("ai_guess_comment", hidden=True, width=30, locked=True),
     # Editable fields (user must review/accept)
-    ColumnSpec("artist", width=26),
-    ColumnSpec("title", width=32),
-    ColumnSpec("version_info", width=24),
+    ColumnSpec("artist", width=30),
+    ColumnSpec("title", width=45),
+    ColumnSpec("version_info", width=42),
     ColumnSpec("genre", width=20),
     ColumnSpec("target_subfolder", width=34),
     ColumnSpec("must_play", width=14),
@@ -63,7 +63,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("bpm", width=10),
     ColumnSpec("key_camelot", width=12),
     # Preview of final filename (locked)
-    ColumnSpec("final_filename", width=60, locked=True),
+    ColumnSpec("final_filename", width=100, locked=True),
     # Status column (editable dropdown)
     ColumnSpec("done", width=10),
 ]
@@ -156,7 +156,50 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
     for row_idx, data in enumerate(normalized_rows, start=2):
         row_fill = row_fill_even if row_idx % 2 == 0 else row_fill_odd
         for col_idx, spec in enumerate(UNSORTED_COLUMNS, start=1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=data.get(spec.name, ""))
+            # Get cell value
+            cell_value = data.get(spec.name, "")
+            
+            # Special handling for BPM - convert to float for European Excel (comma as decimal separator)
+            if spec.name == "bpm" and cell_value:
+                try:
+                    # Convert string like "112.57" to float 112.57
+                    # Excel will automatically format it with comma in European locale
+                    cell_value = float(cell_value)
+                except (ValueError, TypeError):
+                    pass  # Keep as string if conversion fails
+            
+            # Special handling for final_filename - use Excel formula
+            if spec.name == "final_filename":
+                # Find column indices for formula
+                artist_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "artist")
+                title_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "title")
+                version_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "version_info")
+                key_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "key_camelot")
+                bpm_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "bpm")
+                
+                # Convert to Excel column letters
+                artist_letter = get_column_letter(artist_col)
+                title_letter = get_column_letter(title_col)
+                version_letter = get_column_letter(version_col)
+                key_letter = get_column_letter(key_col)
+                bpm_letter = get_column_letter(bpm_col)
+                
+                # Get file extension from original path
+                file_path_val = data.get("file_path", "")
+                ext = file_path_val.split(".")[-1] if "." in file_path_val else "mp3"
+                
+                # Build Excel formula for filename
+                # Format: Artist - Title (Version) [Key BPM].ext
+                # Version part is added only if not empty
+                formula = (
+                    f'={artist_letter}{row_idx}&" - "&{title_letter}{row_idx}'
+                    f'&IF({version_letter}{row_idx}<>""," ("&{version_letter}{row_idx}&")","")'
+                    f'&" ["&{key_letter}{row_idx}&" "&ROUND({bpm_letter}{row_idx},0)&"].{ext}"'
+                )
+                cell = ws.cell(row=row_idx, column=col_idx, value=formula)
+            else:
+                cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
+            
             cell.fill = row_fill
             
             # Check if BPM/Key differs from original tags
@@ -164,8 +207,16 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
             if spec.name == "bpm":
                 orig_bpm = (data.get("tag_bpm_original", "") or "").strip()
                 curr_bpm = (data.get("bpm", "") or "").strip()
-                if orig_bpm and curr_bpm and orig_bpm != curr_bpm:
-                    use_red = True
+                # Compare rounded BPM values to avoid false positives from precision differences
+                if orig_bpm and curr_bpm:
+                    try:
+                        orig_rounded = round(float(orig_bpm))
+                        curr_rounded = round(float(curr_bpm))
+                        if orig_rounded != curr_rounded:
+                            use_red = True
+                    except (ValueError, TypeError):
+                        if orig_bpm != curr_bpm:
+                            use_red = True
             elif spec.name == "key_camelot":
                 orig_key = (data.get("tag_key_original", "") or "").strip()
                 curr_key = (data.get("key_camelot", "") or "").strip()
@@ -189,6 +240,12 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
         if spec.width is not None:
             col_dim.width = spec.width
         col_dim.hidden = spec.hidden
+        
+        # Set number format for BPM column (2 decimal places)
+        if spec.name == "bpm":
+            for row in range(2, len(normalized_rows) + 2):
+                cell = ws.cell(row=row, column=idx)
+                cell.number_format = '0.00'
 
     ws.freeze_panes = "A2"
     last_col_letter = get_column_letter(len(UNSORTED_COLUMNS))

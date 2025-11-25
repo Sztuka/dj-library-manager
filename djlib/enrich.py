@@ -263,14 +263,38 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
             return online
         
         # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud/Beatport (resolver)
+        # oraz wyciągnij rok z Beatport lub Last.fm
+        year_from_online = ""
         try:
             from djlib.metadata.genre_resolver import resolve as resolve_genres
+            from djlib.metadata import lastfm, beatport
+            
             dur_s = dur_sec if dur_sec else None
             genre_res = resolve_genres(
                 artist, title, version=version, duration_s=dur_s,
                 disable_soundcloud=False,
                 disable_beatport=False
             )
+            
+            # Try to get year from Beatport first (priority for electronic music)
+            try:
+                beatport_data = beatport.search_track(artist, title, duration_s=dur_s)
+                release_date = beatport_data.get("release_date") if beatport_data else None
+                if release_date and release_date.strip():  # Check not empty string
+                    # Release date format: "2024-01-15" or similar
+                    year_from_online = release_date.split("-")[0]
+            except Exception:
+                pass
+            
+            # Fallback: try Last.fm for year
+            if not year_from_online:
+                try:
+                    lastfm_info = lastfm.track_info(artist, title)
+                    if lastfm_info.get("year"):
+                        year_from_online = lastfm_info["year"]
+                except Exception:
+                    pass
+            
             if genre_res and genre_res.confidence >= 0.03:
                 genres = [genre_res.main] + genre_res.subs[:2]
                 genre_str = ", ".join(genres)
@@ -282,7 +306,7 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                     "version_suggest": version,
                     "genre_suggest": genre_str,
                     "album_suggest": "",
-                    "year_suggest": "",
+                    "year_suggest": year_from_online,
                     "duration_suggest": "",
                     "meta_source": meta_source,
                 }
@@ -522,56 +546,20 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
 
 
 def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | None:
-    """Spróbuj wzbogacić metadane online (AcoustID + MusicBrainz).
+    """Spróbuj wzbogacić metadane online (AcoustID + MusicBrainz + Beatport + Last.fm).
     Nie rusza BPM/Key. Zwraca uzupełnienia sugerowanych pól albo None.
     """
-    artist = (row.get("artist_suggest") or "").strip()
-    title = (row.get("title_suggest") or "").strip()
-    if not artist and not title:
-        a, t, v = parse_from_filename(path)
-        artist, title = a, t
-    # 1) Zawsze spróbuj AcoustID jeśli mamy fingerprint i duration
-    fp = (row.get("fingerprint") or "").strip()
-    dur_txt = (row.get("duration_suggest") or "").strip()
-    dur_sec = 0
-    try:
-        if ":" in dur_txt:
-            m, s = dur_txt.split(":", 1)
-            dur_sec = int(m) * 60 + int(s)
-    except Exception:
-        dur_sec = 0
-    if fp and dur_sec:
-        out = lookup_acoustid(fp, dur_sec)
-        if out:
-            # Heurystyka walidująca fingerprint match: porównaj z tym co wynika z nazwy pliku
-            from djlib.filename import parse_from_filename as _pf
-            fn_a, fn_t, _ = _pf(path)
-            base_tokens = set([w for w in (fn_a + " " + fn_t).lower().split() if len(w) > 2])
-            result_tokens = set([w for w in (out.get("artist_suggest","") + " " + out.get("title_suggest","")) .lower().split() if len(w) > 2])
-            shared = base_tokens & result_tokens
-            title_low = (out.get("title_suggest") or "").lower()
-            artist_low = (out.get("artist_suggest") or "").lower()
-            generic_title = title_low.startswith("track ") or title_low in {"track", "untitled"}
-            numeric_artist = artist_low.isdigit() or artist_low in {"01","02","03"}
-            mismatch = (len(shared) < 2) or generic_title or numeric_artist
-            if mismatch:
-                # odrzucamy wynik – przechodzimy do MusicBrainz search
-                out = None
-            else:
-                # potencjalna korekcja gatunku dla klasyki rocka jeśli rozjazd
-                genre_cur = (out.get("genre_suggest") or "").lower()
-                if ("zeppelin" in fn_a.lower() or "zeppelin" in fn_t.lower()) and any(g in genre_cur for g in ["gospel","christian","worship"]):
-                    out["genre_suggest"] = "rock, hard rock"
-                return out
-    # 2) Zawsze spróbuj MusicBrainz search — spróbuj kilku wariantów
-    # a) jak jest
-    out = lookup_musicbrainz(artist, title)
-    if out:
-        # Rock fallback jak wyżej dla Led Zeppelin jeśli gatunek ewidentnie błędny
-        genre_cur = (out.get("genre_suggest") or "").lower()
-        if ("zeppelin" in (artist.lower() + " " + title.lower())) and any(g in genre_cur for g in ["gospel","christian","worship"]):
-            out["genre_suggest"] = "rock, hard rock"
-        return out
+    # Use full suggest_metadata with enable_online=True
+    # This includes AcoustID, MusicBrainz, and fallback to Beatport/Last.fm for year
+    tags = {
+        "fingerprint": row.get("fingerprint", ""),
+        "duration": row.get("duration_suggest", ""),
+        "artist": row.get("artist", ""),
+        "title": row.get("title", ""),
+        "genre": row.get("genre", ""),
+    }
+    
+    return suggest_metadata(path, tags, enable_online=True)
     # b) z uproszczonym tytułem
     t2 = _clean_title(title)
     if t2 and t2 != title:

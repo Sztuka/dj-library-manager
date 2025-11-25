@@ -134,8 +134,12 @@ def _refresh_token_with_playwright() -> str:
     captured_token = None
     api_calls_seen = 0
     
+    # Debug mode: set headless=False to see what's happening
+    import os
+    debug_mode = os.environ.get("BEATPORT_DEBUG", "").lower() in ("1", "true", "yes")
+    
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=not debug_mode)
         context = browser.new_context()
         page = context.new_page()
         
@@ -158,8 +162,8 @@ def _refresh_token_with_playwright() -> str:
         page.route("**/*", handle_request)
         
         try:
-            # Go to login page
-            page.goto("https://www.beatport.com/login", timeout=15000)
+            # Go to login page (Beatport uses separate account subdomain)
+            page.goto("https://account.beatport.com/", timeout=15000)
             page.wait_for_load_state("domcontentloaded")
             
             # Handle cookie consent if present
@@ -212,12 +216,42 @@ def _refresh_token_with_playwright() -> str:
             
             print("✓ Submitted login form")
             
-            # Wait for navigation after login
-            page.wait_for_load_state("networkidle", timeout=15000)
+            # Wait for navigation after login with retries
+            # Beatport login can be slow and may need multiple checks
+            login_successful = False
+            for attempt in range(5):  # Try up to 5 times
+                page.wait_for_timeout(3000)  # Wait 3 seconds between checks
+                
+                current_url = page.url
+                if debug_mode:
+                    print(f"🔍 Debug: Current URL = {current_url}")
+                
+                # Check if we're redirected away from account.beatport.com (to main site)
+                if "account.beatport.com" not in current_url or "/login" not in current_url:
+                    login_successful = True
+                    print(f"✓ Login successful (attempt {attempt + 1})")
+                    break
+                
+                # Check for error messages
+                if debug_mode:
+                    try:
+                        error_text = page.text_content("body")
+                        if error_text and ("incorrect" in error_text.lower() or "invalid" in error_text.lower()):
+                            print("🔍 Debug: Found error text on page")
+                    except Exception:
+                        pass
+                
+                # Still on login page - wait a bit more
+                if attempt < 4:  # Don't print on last attempt
+                    print(f"⏳ Still on login page, waiting... (attempt {attempt + 1}/5)")
             
-            # Check if login was successful (should redirect away from /login)
-            if "/login" in page.url:
-                raise Exception("Login failed - still on login page. Check credentials.")
+            if not login_successful:
+                # Take screenshot for debugging if in debug mode
+                if debug_mode:
+                    screenshot_path = "/tmp/beatport_login_failed.png"
+                    page.screenshot(path=screenshot_path)
+                    print(f"🔍 Debug: Screenshot saved to {screenshot_path}")
+                raise Exception("Login failed - still on login page after 5 attempts. Check credentials.")
             
             # Trigger an API call to capture token (search for anything)
             page.goto("https://www.beatport.com/search?q=test", timeout=10000)
@@ -297,10 +331,28 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
         )
         
         if response.status_code == 401:
-            # Token expired during request - invalidate cache
+            # Token expired during request - refresh and retry once
             if TOKEN_CACHE.exists():
                 TOKEN_CACHE.unlink()
-            return None
+            
+            try:
+                print("🔄 Beatport token expired, refreshing...")
+                token = _refresh_token_with_playwright()
+                _save_cached_token(token)
+                
+                # Retry request with new token
+                response = requests.get(
+                    f"{API_BASE}/catalog/search/",
+                    params={"q": query, "type": "tracks"},
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10
+                )
+                
+                if response.status_code != 200:
+                    return None
+            except Exception as e:
+                print(f"❌ Beatport refresh failed: {e}")
+                return None
         
         if response.status_code != 200:
             return None
@@ -330,7 +382,15 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
             genre = f"{genre}, {sub_genre.get('name', '')}"
         
         release = best_match.get("release", {})
-        release_date = release.get("new_release_date", "")
+        # Check both track-level and release-level date fields
+        # Date is typically at track level, not release level
+        release_date = (
+            best_match.get("new_release_date") or  # Primary field
+            best_match.get("publish_date") or  # Alternative
+            best_match.get("date", {}).get("published") or  # Nested structure
+            release.get("new_release_date") or  # Fallback: release level
+            ""
+        )
         
         # Artwork URL (1400x1400)
         artwork_url = ""

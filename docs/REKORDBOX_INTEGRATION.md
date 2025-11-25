@@ -2,7 +2,64 @@
 
 ## Overview
 
-The `djlib.rekordbox_status` module provides detection of whether audio files have been analyzed in Rekordbox (BPM & Key detection). This is critical for the workflow to ensure all files have proper tempo and harmony metadata before processing.
+The `djlib.rekordbox_status` module provides:
+1. **Detection** - Whether files have been analyzed in Rekordbox (BPM & Key)
+2. **Metadata Extraction** - Direct extraction of BPM/Key from Rekordbox database
+
+This ensures all files have proper tempo and harmony metadata with authoritative values from Rekordbox.
+
+## NEW: Direct Metadata Extraction
+
+### Why Extract from Database?
+
+Rekordbox doesn't always write BPM/Key to file tags (especially for FLAC files):
+
+- **MP3**: Sometimes writes TBPM/TKEY tags, but not consistently
+- **FLAC**: Rarely writes tags, only stores in database
+- **Database is authoritative**: Most up-to-date values after manual corrections
+
+### `extract_metadata_from_db(path: Path) -> Dict[str, str]`
+
+Extracts BPM and Key directly from Rekordbox database.
+
+**Returns:**
+
+```python
+{
+    'bpm': '112.57',          # 2 decimal precision (Rekordbox displays format)
+    'key_camelot': '1B'       # Camelot notation (converted from musical notation)
+}
+```
+
+**Features:**
+
+- **BPM Precision**: 2 decimal places (e.g., 112.57) as shown in Rekordbox
+- **Key Conversion**: Automatic conversion from Rekordbox musical notation (B, Cm) to Camelot (1B, 5A)
+- **Unicode Normalization**: Handles macOS path normalization (NFC) for reliable matching
+
+**Integration:**
+
+Used in `scan` command after reading file tags:
+
+```python
+from djlib.rekordbox_status import extract_metadata_from_db
+
+# Read tags first
+tags = read_tags(path)
+
+# Then extract from Rekordbox DB (overrides file tags)
+db_meta = extract_metadata_from_db(path)
+if db_meta:
+    tags.update(db_meta)  # DB values are more authoritative
+```
+
+**Example Output:**
+
+```
+Bruce Springsteen - Dancing In The Dark
+  File tags:  bpm=???, key=???
+  DB values:  bpm=112.57, key=1B  ← Extracted from Rekordbox
+```
 
 ## Detection Strategy
 

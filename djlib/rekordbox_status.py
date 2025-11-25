@@ -44,6 +44,9 @@ except ImportError:
     Rekordbox6Database = None  # type: ignore
     PYREKORDBOX_AVAILABLE = False
 
+# Import key conversion utility
+from djlib.tags import _to_camelot
+
 
 # Default Rekordbox DB paths on macOS
 DEFAULT_REKORDBOX_DB_PATHS = [
@@ -112,6 +115,69 @@ def was_analyzed_from_tags(path: Path) -> bool:
     except Exception:
         # If we can't read the file, assume not analyzed
         return False
+
+
+def extract_metadata_from_db(path: Path) -> dict[str, str]:
+    """
+    Extract BPM and Key from Rekordbox database for analyzed tracks.
+    
+    This is the AUTHORITATIVE source for analyzed tracks - Rekordbox may not
+    write TBPM/TKEY tags to files (especially FLAC), but data is always in DB.
+    
+    Args:
+        path: Path to audio file
+        
+    Returns:
+        Dict with 'bpm' and 'key_camelot' keys (empty if not found/analyzed)
+    """
+    db = _get_rekordbox_db()
+    if db is None:
+        return {}
+    
+    try:
+        # Normalize path for comparison (macOS uses NFD, Rekordbox stores NFC)
+        abs_path_nfc = unicodedata.normalize('NFC', str(path.resolve()))
+        
+        # Query tracks from database
+        content = db.get_content()
+        if content is None:
+            return {}
+        
+        # Find track by file path
+        for track in content.all():
+            folder_path = getattr(track, 'FolderPath', None)
+            if folder_path:
+                folder_path_nfc = unicodedata.normalize('NFC', str(folder_path))
+                
+                if abs_path_nfc == folder_path_nfc:
+                    result = {}
+                    
+                    # Extract BPM (stored as BPM * 100 in DB, keep 2 decimal places like Rekordbox UI)
+                    bpm_raw = getattr(track, 'BPM', None)
+                    if bpm_raw and bpm_raw > 0:
+                        result['bpm'] = f"{bpm_raw / 100:.2f}"
+                    
+                    # Extract Key (need to query Keys table for ScaleName)
+                    key_id = getattr(track, 'KeyID', None)
+                    if key_id and str(key_id) != '0':
+                        try:
+                            keys_table = db.get_key()
+                            for key_entry in keys_table.all():
+                                if key_entry.ID == key_id:
+                                    scale_name = getattr(key_entry, 'ScaleName', None)
+                                    if scale_name:
+                                        # Convert musical notation to Camelot (e.g., "B" -> "1B", "Cm" -> "5A")
+                                        result['key_camelot'] = _to_camelot(str(scale_name))
+                                    break
+                        except Exception:
+                            pass  # Keys table lookup failed, skip key
+                    
+                    return result
+        
+        return {}
+        
+    except Exception:
+        return {}
 
 
 def was_analyzed_from_db(path: Path, db_path: Optional[Path] = None) -> Optional[bool]:

@@ -15,7 +15,7 @@ from djlib.config import (
 )
 from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
-from djlib.rekordbox_status import was_analyzed
+from djlib.rekordbox_status import was_analyzed, extract_metadata_from_db
 from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
 from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 from djlib.metadata.genre_resolver import resolve as resolve_genres
@@ -234,6 +234,14 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
         tags = read_tags(p)
         tags_original = dict(tags)
+        
+        # Extract metadata from Rekordbox DB if available (authoritative source)
+        # Rekordbox may not write TBPM/TKEY to files (especially FLAC), but data is always in DB
+        db_meta = extract_metadata_from_db(p)
+        if db_meta:
+            # Override file tags with DB data (DB is more authoritative)
+            tags.update(db_meta)
+        
         artist_local, title_local, version_local = derive_local_metadata(p, tags)
         tags["artist"] = artist_local
         tags["title"] = title_local
@@ -479,49 +487,39 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
 
     _flush_status()
 
-    # Beatport token health (informative with optional skip)
+    # Beatport token validation with auto-refresh
+    beatport_available = True
     try:
-        from djlib.metadata.beatport import token_health
-        bp_health = token_health()
-        if bp_health.get("status") == "missing":
-            print(f"\nℹ️  Beatport: {bp_health.get('message')}")
+        from djlib.metadata.beatport import get_valid_token
+        # Attempt to get valid token (triggers auto-refresh if expired)
+        token = get_valid_token()
+        print("✅ Beatport: Token ready")
+    except Exception as e:
+        beatport_available = False
+        error_msg = str(e)
+        print(f"\n⚠️  Beatport: {error_msg}")
+        
+        # Provide helpful guidance based on error type
+        if "credentials" in error_msg.lower() or "missing" in error_msg.lower():
             print(f"   Setup: python -m djlib.cli setup-beatport")
-            if not getattr(args, "skip_beatport", False):
+        
+        # Only prompt if user hasn't already set skip flag
+        if not getattr(args, "skip_beatport", False):
+            _flush_status()
+            try:
+                choice = input("Kontynuować bez Beatport? [Y/n]: ").strip().lower()
+            except Exception:
+                choice = "y"
+            
+            if choice in {"n", "no"}:
+                print("Przerwano na prośbę użytkownika.")
+                status_doc["state"] = "done"
+                status_doc["completed_at"] = _now_iso()
                 _flush_status()
-                try:
-                    choice = input("Kontynuować bez Beatport? [Y/n]: ").strip().lower()
-                except Exception:
-                    choice = "y"
-                if choice in {"n", "no"}:
-                    print("Przerwano na prośbę użytkownika (Beatport missing).")
-                    status_doc["state"] = "done"
-                    status_doc["completed_at"] = _now_iso()
-                    _flush_status()
-                    return
-                else:
-                    print("→ Pomiń Beatport w tym przebiegu.")
-                    setattr(args, "skip_beatport", True)
-        elif bp_health.get("status") == "ok":
-            print(f"✅ Beatport: {bp_health.get('message')}")
-        elif bp_health.get("status") in {"expired", "error"}:
-            print(f"\n⚠️  Beatport: {bp_health.get('message')}")
-            if not getattr(args, "skip_beatport", False):
-                _flush_status()
-                try:
-                    choice = input("Kontynuować bez Beatport? [Y/n]: ").strip().lower()
-                except Exception:
-                    choice = "y"
-                if choice in {"n", "no"}:
-                    print("Przerwano na prośbę użytkownika (Beatport error).")
-                    status_doc["state"] = "done"
-                    status_doc["completed_at"] = _now_iso()
-                    _flush_status()
-                    return
-                else:
-                    print("→ Pomiń Beatport w tym przebiegu.")
-                    setattr(args, "skip_beatport", True)
-    except Exception:
-        pass
+                return
+            else:
+                print("→ Pomiń Beatport w tym przebiegu.")
+                setattr(args, "skip_beatport", True)
     _flush_status()
 
     # SoundCloud client id health (informative, does not block)

@@ -71,7 +71,7 @@ def top_tags(artist: str, title: str, *, min_count: int = 10, max_tags: int = 20
 
 
 def track_info(artist: str, title: str) -> dict:
-    """Return basic track info from Last.fm: playcount, listeners, duration.
+    """Return basic track info from Last.fm: playcount, listeners, duration, year.
 
     Returns empty dict if API key missing or not found.
     """
@@ -99,4 +99,18 @@ def track_info(artist: str, title: str) -> dict:
         out["duration_ms"] = dur_ms
     except Exception:
         pass
+    
+    # Extract year from album release date if available
+    try:
+        album = tr.get("album") or {}
+        release_date = album.get("releasedate") or ""
+        if release_date:
+            # Format: "1 Jan 2010, 00:00" or similar
+            parts = release_date.split(",")[0].strip()  # Get date part before comma
+            year_str = parts.split()[-1]  # Get last part (year)
+            if year_str.isdigit() and len(year_str) == 4:
+                out["year"] = year_str
+    except Exception:
+        pass
+    
     return out
