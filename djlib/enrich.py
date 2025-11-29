@@ -263,8 +263,12 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
             return online
         
         # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud/Beatport (resolver)
-        # oraz wyciągnij rok z Beatport lub Last.fm
+        # oraz wyciągnij rok i album z Last.fm/Beatport lub tagów pliku
+        # Priority: Last.fm/Beatport > tagi pliku (online ma więcej kontekstu o wydaniach)
+        year_from_tags = tags.get("year", "").strip()
+        album_from_tags = tags.get("album", "").strip()
         year_from_online = ""
+        album_from_online = ""
         try:
             from djlib.metadata.genre_resolver import resolve as resolve_genres
             from djlib.metadata import lastfm, beatport
@@ -276,22 +280,29 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                 disable_beatport=False
             )
             
-            # Try to get year from Beatport first (priority for electronic music)
+            # Try Last.fm first for year and album (better metadata quality)
             try:
-                beatport_data = beatport.search_track(artist, title, duration_s=dur_s)
-                release_date = beatport_data.get("release_date") if beatport_data else None
-                if release_date and release_date.strip():  # Check not empty string
-                    # Release date format: "2024-01-15" or similar
-                    year_from_online = release_date.split("-")[0]
+                lastfm_info = lastfm.track_info(artist, title)
+                if lastfm_info.get("year"):
+                    year_from_online = lastfm_info["year"]
+                if lastfm_info.get("album"):
+                    album_from_online = lastfm_info["album"]
             except Exception:
                 pass
             
-            # Fallback: try Last.fm for year
-            if not year_from_online:
+            # Fallback to Beatport if Last.fm didn't provide
+            if not year_from_online or not album_from_online:
                 try:
-                    lastfm_info = lastfm.track_info(artist, title)
-                    if lastfm_info.get("year"):
-                        year_from_online = lastfm_info["year"]
+                    beatport_data = beatport.search_track(artist, title, duration_s=dur_s)
+                    if beatport_data:
+                        if not year_from_online:
+                            release_date = beatport_data.get("release_date")
+                            if release_date and release_date.strip():
+                                year_from_online = release_date.split("-")[0]
+                        if not album_from_online:
+                            album_name = beatport_data.get("album")
+                            if album_name and album_name.strip():
+                                album_from_online = album_name
                 except Exception:
                     pass
             
@@ -300,13 +311,16 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                 genre_str = ", ".join(genres)
                 sources = [src for src, _, _ in genre_res.breakdown]
                 meta_source = f"genres({','.join(sources)})" if sources else "genres"
+                # Prioritize online over tags (online has more context about releases)
+                final_year = year_from_online if year_from_online else year_from_tags
+                final_album = album_from_online if album_from_online else album_from_tags
                 return {
                     "artist_suggest": artist,
                     "title_suggest": title,
                     "version_suggest": version,
                     "genre_suggest": genre_str,
-                    "album_suggest": "",
-                    "year_suggest": year_from_online,
+                    "album_suggest": final_album,
+                    "year_suggest": final_year,
                     "duration_suggest": "",
                     "meta_source": meta_source,
                 }
@@ -346,7 +360,7 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
         elif any(word in full_text for word in ["folk", "country"]):
             genre_fallback = "folk"
         elif any(word in full_text for word in ["electronic", "edm", "dance"]):
-            genre_fallback = "electronic"
+            genre_fallback = "house"  # Generic electronic -> house
     
     return {
         "artist_suggest": artist,
@@ -422,8 +436,15 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
                 ent = (rg or {}).get("release-group", {})
                 album = ent.get("title", "") or album
                 frd = ent.get("first-release-date", "")
-                if frd:
-                    year = (frd or "").split("-")[0]
+                if frd and frd.strip():
+                    year = frd.split("-")[0]
+                # Fallback: try to get date from first release if first-release-date not available
+                if not year:
+                    releases = ent.get("release-list", [])
+                    if releases:
+                        first_release_date = releases[0].get("date", "")
+                        if first_release_date and first_release_date.strip():
+                            year = first_release_date.split("-")[0]
             except Exception:
                 pass
 

@@ -59,7 +59,7 @@ def _get_recording_by_id(rid: str) -> dict:
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_release_group_by_id(rgid: str) -> dict:
     _throttle_mb()
-    return musicbrainzngs.get_release_group_by_id(rgid, includes=["tags"])  # type: ignore[arg-type]
+    return musicbrainzngs.get_release_group_by_id(rgid, includes=["tags", "releases"])  # type: ignore[arg-type]
 
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_artist_by_id(aid: str) -> dict:

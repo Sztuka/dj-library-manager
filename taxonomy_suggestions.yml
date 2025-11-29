@@ -1,3 +1,11 @@
+# ==========================================
+# DEPRECATED - Legacy bucket suggestions
+# ==========================================
+# The new logistics model uses LIBRARY/Artist/Album structure.
+# For canonical genres, see genres.yml instead.
+# This file is kept for backward compatibility only.
+# ==========================================
+
 # Editable suggestions for taxonomy building. Values are labels without section prefixes.
 club:
   - AFRO HOUSE

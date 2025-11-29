@@ -2,9 +2,9 @@ import yaml
 from pathlib import Path
 
 import djlib.config as config
-import djlib.taxonomy as taxonomy
 
 def test_config_and_folders(tmp_path, monkeypatch):
+    """Test new logistics-only folder structure (LIBRARY/REJECT/ARCHIVE)."""
     # Tymczasowe ścieżki
     lib = tmp_path / "LIB"
     inbox = tmp_path / "INBOX"
@@ -38,35 +38,15 @@ def test_config_and_folders(tmp_path, monkeypatch):
     assert Path(cfg["LIB_ROOT"]) == lib
     assert Path(cfg["INBOX_UNSORTED"]) == inbox
 
-    # Bazowe foldery
+    # Bazowe foldery (nowa struktura logistyczna)
     config.ensure_base_dirs()
-    assert (lib / "READY TO PLAY").exists()
-    assert (lib / "REVIEW QUEUE").exists()
+    assert (lib / "LIBRARY").exists()
+    assert (lib / "REJECT").exists()
+    assert (lib / "ARCHIVE").exists()
 
-    # Skieruj lokalną ścieżkę taksonomii do katalogu tymczasowego, aby nie nadpisywać taxonomy.local.yml w repo
-    monkeypatch.setattr(taxonomy, 'TAXONOMY_LOCAL_PATH', tmp_path / 'taxonomy.local.yml')
-
-    # Taksonomia → foldery
-    tax = {
-        "ready_buckets": [
-            "CLUB/HOUSE",
-            "CLUB/AFRO HOUSE",
-            "OPEN FORMAT/PARTY DANCE",
-            "MIXES",
-        ],
-        "review_buckets": ["UNDECIDED", "NEEDS EDIT"],
-    }
-    taxonomy.save_taxonomy(tax)
-    taxonomy.ensure_taxonomy_folders()
-
-    # Struktura READY TO PLAY
-    assert (lib / "READY TO PLAY" / "CLUB" / "HOUSE").exists()
-    assert (lib / "READY TO PLAY" / "CLUB" / "AFRO HOUSE").exists()
-    assert (lib / "READY TO PLAY" / "OPEN FORMAT" / "PARTY DANCE").exists()
-    assert (lib / "READY TO PLAY" / "MIXES").exists()
-
-    # Struktura REVIEW QUEUE
-    assert (lib / "REVIEW QUEUE" / "UNDECIDED").exists()
-    assert (lib / "REVIEW QUEUE" / "NEEDS EDIT").exists()
+    # Test logistics path structure - create a sample artist folder
+    artist_folder = lib / "LIBRARY" / "Test Artist"
+    artist_folder.mkdir(parents=True)
+    assert artist_folder.exists()
 
     # Pliki YAML – pomijamy sprawdzenie, bo zapisują się do głównego katalogu

@@ -1,5 +1,7 @@
 # Auto-Bucket TODO (lokalne buckety + przyszłościowa architektura)
 
+**⚠️ FUTURE FEATURE:** This document describes TODO items for a FUTURE smart playlist/bucket assignment system. The current system (November 2025) uses simple logistics folders with genre classification. Bucketing features are planned future enhancements.
+
 ## Teraz (użytkownik lokalny)
 
 - [ ] CLI: `ml-train-local` – trenowanie modelu na zaakceptowanych bucketach użytkownika (CSV → cechy Essentia → RF). [NOW]

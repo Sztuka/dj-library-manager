@@ -22,26 +22,38 @@
 
 ## System Overview
 
-DJ Library Manager is a Rekordbox-first DJ library organization system. The system scans new audio files, enforces Rekordbox analysis quality, enriches metadata from online sources (MusicBrainz, Last.fm, optionally SoundCloud), classifies tracks by genre, and organizes them into folder structures.
+DJ Library Manager is a **library cleaner first**, not a set builder. The system scans messy audio collections, enforces quality control via Rekordbox analysis, enriches metadata from online sources (MusicBrainz, Last.fm, Beatport, SoundCloud), and organizes tracks into a clean, deterministic folder structure.
+
+### Core Philosophy (November 2025 Refactor)
+
+**What changed:**
+
+- ❌ **Removed:** Bucket-based taxonomy (`READY TO PLAY/CLUB/AFRO HOUSE` etc.)
+- ✅ **Added:** Simple logistics folders (`LIBRARY`, `REJECT`, `ARCHIVE`)
+- ✅ **Added:** Canonical genre resolution (genres.yml) separate from folder organization
+- ✅ **Future:** Smart playlists and ML-based context will be built on top of clean library structure
+
+**Why:**
+
+1. **Folders are logistics**, not expressions of "sets" or "vibes"
+2. **Genre classification** is orthogonal to file organization
+3. **Playlists are the right place** for context-based organization (cocktail vs club vs pool party)
+4. **ML predictions** should drive search/filtering, not folder placement
 
 ### Core Features:
 
 - **Rekordbox Integration**: DB-first validation of analyzed tracks (BPM/Key from Rekordbox)
 - **Strict Mode**: Enforce Rekordbox analysis in UNSORTED folder for quality control
 - **UNSORTED Inbox Scanning**: Extract tags, validate Rekordbox analysis, generate proposals
-- **Online Enrichment**: Metadata from MusicBrainz, AcoustID, Last.fm, SoundCloud (optional)
-- **Album Artwork Fetching**: 3-source fallback (MusicBrainz Cover Art Archive → Last.fm → SoundCloud) with rate limiting
-- **Local Audio Analysis**: BPM/Key/Energy extraction with Essentia (Rekordbox alternative/cache)
-- **Tag Writing**: Write metrics to ID3 tags (Camelot notation, TBPM/TKEY compatibility)
+- **Online Enrichment**: Metadata from MusicBrainz, AcoustID, Last.fm, SoundCloud, Beatport
+- **Canonical Genre Resolution**: Multi-source genre detection → normalized genre keys (genres.yml)
+- **Album Artwork Fetching**: 3-source fallback (Beatport → MusicBrainz CAA → Last.fm → SoundCloud) with rate limiting
+- **Local Audio Analysis**: Essentia feature extraction (50+ features) → SQLite cache for ML training
 - **Tag Cleaning**: Remove spam metadata (musicdjs.club, chomikuj.pl) while preserving DJ software data (Traktor/Serato cues, ratings, artwork)
-- **Genre Resolution**: Multi-source genre detection (Beatport/Last.fm/MusicBrainz/SoundCloud) with weighted aggregation + per-source CSV columns
-- **Automatic Classification**: AI guessing + taxonomy mapping to buckets
-- **Taxonomy Management**: Category (bucket) structure validation
-- **Rules-Based Decisions**: Auto-decide based on metadata heuristics
-- **File Moving & Renaming**: Structured organization with undo support
+- **File Moving & Renaming**: Deterministic logistics-only organization with undo support
 - **Duplicate Detection**: Audio fingerprint + file hash comparison
 - **Suggest/Accept Workflow**: Metadata proposals for user review
-- **ML Training Export**: Export analyzed tracks with Essentia features for ML model training
+- **ML Training Export**: Export analyzed tracks with Essentia features for external ML model training
 
 ---
 
@@ -53,32 +65,36 @@ DJ Library Manager is a Rekordbox-first DJ library organization system. The syst
 dj-library-manager/
 ├── djlib/              # Main application module
 │   ├── config.py       # Path and settings configuration
-│   ├── taxonomy.py     # Bucket taxonomy management
-│   ├── csvdb.py        # CSV database operations
+│   ├── csvdb.py        # CSV database operations (includes rekordbox_id, traktor_id)
 │   ├── tags.py         # Audio tag reading/writing
 │   ├── tag_cleaner.py  # ID3 spam tag removal (preserves DJ software data)
+│   ├── djlib_tags.py   # Custom DJLIB_* tags (track_id, rekordbox_id, traktor_id)
+│   ├── external_sync.py # DJ software integration (Rekordbox/Traktor sync)
 │   ├── rekordbox_status.py  # Rekordbox DB integration
 │   ├── fingerprint.py  # Audio fingerprint and file hash
 │   ├── filename.py     # File naming generation
 │   ├── mover.py        # File moving operations
-│   ├── classify.py     # AI guessing buckets (legacy)
 │   ├── placement.py    # Automatic bucket decisions
 │   ├── enrich.py       # Online metadata enrichment
-│   ├── genre.py        # Genre resolution and taxonomy mapping
 │   ├── extern.py       # External integrations (Last.fm)
-│   ├── buckets.py      # Bucket validation
 │   ├── unsorted.py     # UNSORTED folder management
+│   ├── legacy/         # DEPRECATED modules (not actively used)
+│   │   ├── buckets.py      # Old bucket validation
+│   │   ├── classify.py     # Old AI guessing buckets
+│   │   ├── genre.py        # Old genre resolution
+│   │   └── taxonomy.py     # Old taxonomy management
 │   ├── audio/          # Local audio analysis
 │   │   ├── cache.py    # Audio metrics cache (SQLite)
 │   │   ├── features.py # Audio feature extraction
 │   │   └── essentia_backend.py # Essentia analysis backend
 │   ├── metadata/       # Metadata API clients
 │   │   ├── genre_resolver.py   # Main genre resolver (source weights)
+│   │   ├── beatport.py         # Beatport client (JWT auto-refresh)
 │   │   ├── mb_client.py        # MusicBrainz client
 │   │   ├── lastfm.py           # Last.fm client
 │   │   ├── soundcloud.py       # SoundCloud client + health check
 │   │   └── coverart.py         # Album artwork fetching (3-source fallback)
-│   ├── bucketing/      # Auto-bucketing modules
+│   ├── bucketing/      # Auto-bucketing modules (FUTURE - for playlists)
 │   │   ├── base.py     # Base interfaces
 │   │   ├── rules.py    # Deterministic rules (v0)
 │   │   └── simple_ml.py # ML classifier (v0.1)
@@ -87,164 +103,223 @@ dj-library-manager/
 │       └── models.py   # Model evaluation utilities
 ├── scripts/            # CLI scripts
 ├── docs/               # Documentation
-├── taxonomy.yml        # Bucket definitions
-├── taxonomy_map.yml    # Tag → bucket mapping
-├── rules.yml           # Auto-decide rules
+├── genres.yml          # Canonical genre definitions with synonyms (ACTIVE)
+├── rules.yml           # Auto-decide rules (legacy)
+├── taxonomy.yml        # Bucket definitions (DEPRECATED - see djlib/legacy/)
+├── taxonomy_map.yml    # Tag → bucket mapping (DEPRECATED - genres.yml is canonical)
 └── config.local.yml    # Local configuration (gitignored)
 ```
 
 ### Library Structure (LIB_ROOT):
 
 ```
-~/Music_DJ/
+~/Music_Library/
 ├── UNSORTED/                 # Scanned by scan command (strict mode)
-├── READY TO PLAY/            # Production-ready tracks
-│   ├── CLUB/
-│   │   ├── HOUSE
-│   │   ├── TECH HOUSE
-│   │   ├── TECHNO
-│   │   └── ...
+├── Artist 1/                 # Main collection (organized by artist)
+│   ├── Artist 1 - Track A (Remix) [5A 123].flac
+│   └── Artist 1 - Track B [2B 128].mp3
+├── Artist 2/
+│   └── Artist 2 - Track C [8A 120].flac
+├── MIXES/                    # DJ mixes (flat structure)
+│   └── DJ Mix Name [128].mp3
+└── ...
+
+~/Music Rejected/             # Separate folder (flat structure)
+├── track-1.mp3
+├── track-2.flac
+└── ...
+
+~/Music Archive/              # Separate folder (organized by artist)
+├── Artist A/
+│   └── Artist A - Old Track [1A 110].mp3
+└── ...
+
+./LOGS/                       # Operation logs (in repo)
+├── enrich_status.json        # Enrichment status
+├── fingerprint_status.json
+├── audio_analysis.sqlite     # Essentia feature cache
+├── moves-{timestamp}.csv     # Move logs (with undo support)
+└── dupes.csv                 # Duplicate reports
+
+./data/
+├── unsorted.xlsx             # Staging spreadsheet (Excel workflow)
+├── library.csv               # Main database (track metadata + paths)
+└── training_dataset_full.csv # ML training export
+```
+
+**Legacy folders** (deprecated, may exist in old installations):
+
+```
+~/Music_Library/
+├── READY TO PLAY/            # Old bucket structure (DEPRECATED)
+│   ├── CLUB/                 # Use main library folders for new tracks
 │   └── OPEN FORMAT/
-│       ├── RNB
-│       ├── HIP-HOP
-│       └── ...
-├── REVIEW QUEUE/             # Needs review
-│   ├── UNDECIDED
-│   └── NEEDS EDIT
-├── LOGS/                     # Operation logs
-│   ├── enrich_status.json    # Enrichment status (plan: add SoundCloud decision)
-│   ├── fingerprint_status.json
-│   ├── moves-{timestamp}.csv # Move logs
-│   └── dupes.csv             # Duplicate reports
-├── unsorted.xlsx             # Staging spreadsheet (Excel)
-└── library.csv               # Main database (deprecated, use unsorted.xlsx)
+└── REVIEW QUEUE/             # Old review structure (DEPRECATED)
+    └── UNDECIDED/
 ```
+
+**Note:** Bucketing system (READY TO PLAY/CLUB/etc.) was removed in November 2025 refactor. Folders are now simple logistics: Main Library (organized by artist), Reject (flat), Archive (organized). Playlist generation and smart sets will be future features built on top of this clean structure.
 
 ---
 
-## Taxonomy and Naming Conventions
+## Folder Organization Philosophy
 
-### Naming Standards
+### New Model (November 2025)
 
-**IMPORTANT:** All bucket names use SPACES (not underscores).
+**Folders are pure logistics**, not expressions of musical categories or "vibes".
 
-### target_subfolder Format:
+**Structure:**
 
-```
-READY TO PLAY/{SECTION}/{BUCKET}
-REVIEW QUEUE/{BUCKET}
-```
+- `LIBRARY/{Artist}/{filename}` - All accepted tracks, organized by artist for easy browsing
+- `REJECT/{filename}` - Tracks rejected but kept (no artist folders, flat structure)
+- `ARCHIVE/{Artist}/{filename}` - Inactive/old tracks (optional)
 
-Where `{SECTION}` is: `CLUB` or `OPEN FORMAT`
+**Why:**
 
-### Available Buckets (from taxonomy.yml):
+1. **Deterministic**: One artist = one folder, no ambiguity
+2. **Scalable**: No "which genre bucket?" decisions during curation
+3. **Portable**: Easy to move to any DJ software or file manager
+4. **Playlist-first**: Musical organization happens in playlists, not folders
 
-#### READY TO PLAY / CLUB:
+**Future enhancements** (not in folder structure):
 
-- `CLUB/AFRO HOUSE`
-- `CLUB/DEEP HOUSE`
-- `CLUB/ELECTRO`
-- `CLUB/ELECTRO SWING`
-- `CLUB/HOUSE`
-- `CLUB/MELODIC TECHNO`
-- `CLUB/TECH HOUSE`
-- `CLUB/TECHNO`
-- `CLUB/TRANCE`
-- `CLUB/DNB`
-- `MIXES` (top-level bucket)
+- Smart playlists based on genre, energy, context
+- ML-predicted "cocktail" vs "club main room" scores
+- Harmonic mixing suggestions (Camelot key wheel)
+- BPM progression sequences
 
-#### READY TO PLAY / OPEN FORMAT:
+### Genre Classification
 
-- `OPEN FORMAT/2000s`
-- `OPEN FORMAT/2010s`
-- `OPEN FORMAT/70s`
-- `OPEN FORMAT/80s`
-- `OPEN FORMAT/90s`
-- `OPEN FORMAT/FUNK SOUL`
-- `OPEN FORMAT/HIP-HOP`
-- `OPEN FORMAT/LATIN REGGAETON`
-- `OPEN FORMAT/PARTY DANCE`
-- `OPEN FORMAT/POLISH SINGALONG`
-- `OPEN FORMAT/RNB`
-- `OPEN FORMAT/ROCK CLASSICS`
-- `OPEN FORMAT/ROCKNROLL`
+**Canonical genres** defined in `genres.yml` (single source of truth):
 
-#### REVIEW QUEUE:
+- Each genre has a `key` (e.g., `AFRO_HOUSE`), `label` (e.g., "Afro House"), and `synonyms`
+- Resolver matches raw genre strings → canonical key + label
+- Stored in `library.csv` as:
+  - `genre`: User-selected label (e.g., "Afro House")
+  - `genre_canonical`: Normalized key (e.g., "AFRO_HOUSE")
 
-- `UNDECIDED`
-- `NEEDS EDIT`
+**Examples of canonical genres:**
 
-### Important Conventions:
+- Electronic: `AFRO_HOUSE`, `TECH_HOUSE`, `MELODIC_TECHNO`, `TECHNO`, `HARD_TECHNO`, `HARDCORE`, `HOUSE`, `ELECTRO_SWING`, `TRANCE`, `DNB`
+- Urban/Pop: `HIP_HOP`, `RNB`, `LATIN`, `POP`
+- Rock: `ROCK`, `INDIE_ROCK`, `ROCK_N_ROLL`
+- Classic: `DISCO`, `FUNK`, `SOUL`, `BLUES`, `SWING`
+- Caribbean: `REGGAE`, `DANCEHALL`
+- Afrobeats: `AFROBEATS` (distinct from `AFRO_HOUSE`)
 
-1. **Spaces instead of underscores**: `TECH HOUSE` not `TECH_HOUSE`
-2. **Uppercase**: All names in UPPERCASE
-3. **Word order**: `MELODIC TECHNO` not `TECHNO MELODIC`, `AFRO HOUSE` not `AFROHOUSE`
-4. **Section separator**: `/` between section and bucket
-5. **Prefix in target_subfolder**: Always full path, e.g., `READY TO PLAY/CLUB/HOUSE`
+See `genres.yml` for complete list and synonyms.
+
+**Used for:**
+
+- Filtering/search in future UI
+- ML training dataset labels
+- Playlist generation rules
+- Metadata enrichment from multiple sources
+
+**NOT used for:**
+
+- Folder organization (folders are logistics only)
+
+**Important:** Concepts like "singalong", "party", "wedding" are **bucket/usage concepts** (organizational categories), **not canonical genres**. They belong in folder structure or playlists, not in the genre field.
+
+### Legacy Taxonomy (Deprecated)
+
+**Old model (pre-November 2025):**
+
+- Buckets like `READY TO PLAY/CLUB/AFRO HOUSE`
+- target_subfolder determined folder placement
+- Required taxonomy.yml + taxonomy_map.yml configuration
+
+**Current model:**
+
+- Simple logistics folders: Main Library (by artist), Reject (flat), Archive (by artist), Mixes (flat)
+- Canonical genres in genres.yml (30 genres with synonyms)
+- destination column: library/reject/archive/mixes
+- Bucketing/playlists = future feature
+
+**Status:** Legacy modules in `djlib/legacy/`, kept for backward compatibility only.
 
 ---
 
-## CSV Data Structure
+## File Naming Format
 
-### File: `unsorted.xlsx` (Excel staging)
+### Standard Format:
 
 Main staging database in Excel format. Columns defined in `djlib/csvdb.py::FIELDNAMES`:
 
-| Column                  | Description                           | Example                                |
-| ----------------------- | ------------------------------------- | -------------------------------------- |
-| `source_path`           | Original file path                    | `/Users/user/Music/UNSORTED/track.mp3` |
-| `artist`                | Artist (accepted)                     | `Daft Punk`                            |
-| `title`                 | Track title (accepted)                | `Get Lucky`                            |
-| `version_info`          | Version/remix (accepted)              | `Radio Edit`, `Extended Mix`           |
-| `tag_genre`             | Genre from audio tags                 | `Electronic`                           |
-| `tag_bpm`               | BPM from Rekordbox/tags               | `120`                                  |
-| `tag_key_camelot`       | Key from Rekordbox/tags (Camelot)     | `6A`                                   |
-| `energy_hint`           | Energy hint (optional)                | `high`, `medium`                       |
-| `file_hash`             | SHA-256 file hash                     | `a1b2c3...`                            |
-| `fingerprint`           | Audio fingerprint (Chromaprint)       | `AQAA...`                              |
-| `is_duplicate`          | Duplicate flag (by fingerprint)       | `TRUE`, `FALSE`                        |
-| `bucket_suggest`        | AI-suggested bucket                   | `READY TO PLAY/CLUB/HOUSE`             |
-| `bucket_suggest_reason` | Suggestion rationale                  | `genre=house; conf=0.95`               |
-| `target_bucket`         | User's final decision                 | `READY TO PLAY/CLUB/HOUSE`             |
-| `done`                  | Approval flag (TRUE = ready to apply) | `TRUE`, `FALSE`                        |
-| `notes`                 | User notes                            | Any text                               |
-| **Metadata proposals:** |                                       |                                        |
-| `artist_suggest`        | Proposed artist                       | `Daft Punk`                            |
-| `title_suggest`         | Proposed title                        | `Get Lucky`                            |
-| `version_suggest`       | Proposed version                      | `Radio Edit`                           |
-| `genre_suggest`         | Proposed main genre (aggregated)      | `House, Electronic, Dance`             |
-| `genres_musicbrainz`    | Raw genres from MusicBrainz           | `house; electronic`                    |
-| `genres_lastfm`         | Raw tags from Last.fm                 | `house; french; disco`                 |
-| `genres_soundcloud`     | Tag list from SoundCloud (optional)   | `house; afro; remix`                   |
-| `pop_playcount`         | Last.fm playcount (if available)      | `123456`                               |
-| `pop_listeners`         | Last.fm listeners (if available)      | `34567`                                |
-| `album_suggest`         | Proposed album                        | `Random Access Memories`               |
-| `year_suggest`          | Proposed release year                 | `2013`                                 |
-| `meta_source`           | Metadata source                       | `musicbrainz`, `acoustid+musicbrainz`  |
-| **Essentia features:**  | (for ML export only)                  |                                        |
-| `ess_bpm`               | BPM from Essentia                     | `120.5`                                |
-| `ess_key_camelot`       | Key from Essentia (Camelot)           | `6A`                                   |
-| `ess_energy`            | Energy score (0-1)                    | `0.75`                                 |
-| `ess_danceability`      | Danceability score                    | `0.82`                                 |
-| `ess_*`                 | Other Essentia features (see ML docs) | Various metrics                        |
+| Column                  | Description                             | Example                                 |
+| ----------------------- | --------------------------------------- | --------------------------------------- |
+| `source_path`           | Original file path                      | `/Users/user/Music/UNSORTED/track.mp3`  |
+| `artist`                | Artist (accepted)                       | `Daft Punk`                             |
+| `title`                 | Track title (accepted)                  | `Get Lucky`                             |
+| `version_info`          | Version/remix (accepted)                | `Radio Edit`, `Extended Mix`            |
+| `tag_genre`             | Genre from audio tags                   | `Electronic`                            |
+| `tag_bpm`               | BPM from Rekordbox/tags                 | `120`                                   |
+| `tag_key_camelot`       | Key from Rekordbox/tags (Camelot)       | `6A`                                    |
+| `energy_hint`           | Energy hint (optional)                  | `high`, `medium`                        |
+| `file_hash`             | SHA-256 file hash                       | `a1b2c3...`                             |
+| `fingerprint`           | Audio fingerprint (Chromaprint)         | `AQAA...`                               |
+| `is_duplicate`          | Duplicate flag (by fingerprint)         | `TRUE`, `FALSE`                         |
+| `bucket_suggest`        | AI-suggested bucket                     | `READY TO PLAY/CLUB/HOUSE`              |
+| `bucket_suggest_reason` | Suggestion rationale                    | `genre=house; conf=0.95`                |
+| `target_bucket`         | User's final decision                   | `READY TO PLAY/CLUB/HOUSE`              |
+| `done`                  | Approval flag (TRUE = ready to apply)   | `TRUE`, `FALSE`                         |
+| `notes`                 | User notes                              | Any text                                |
+| **Metadata proposals:** |                                         |                                         |
+| `artist_suggest`        | Proposed artist                         | `Daft Punk`                             |
+| `title_suggest`         | Proposed title                          | `Get Lucky`                             |
+| `version_suggest`       | Proposed version                        | `Radio Edit`                            |
+| `genre_suggest`         | Proposed main genre (aggregated)        | `House`                                 |
+| `genres_beatport`       | Raw genre from Beatport                 | `Afro House`                            |
+| `genres_musicbrainz`    | Raw genres from MusicBrainz             | `house; electronic`                     |
+| `genres_lastfm`         | Raw tags from Last.fm                   | `house; french; disco`                  |
+| `genres_soundcloud`     | Tag list from SoundCloud (optional)     | `house; afro; remix`                    |
+| `pop_playcount`         | Last.fm playcount (if available)        | `123456`                                |
+| `pop_listeners`         | Last.fm listeners (if available)        | `34567`                                 |
+| `album_suggest`         | Proposed album                          | `Random Access Memories`                |
+| `year_suggest`          | Proposed release year                   | `2013`                                  |
+| `meta_source`           | Metadata source                         | `musicbrainz`, `acoustid+musicbrainz`   |
+| `genre`                 | Final genre (one of 30 from genres.yml) | `House`                                 |
+| `destination`           | Destination folder                      | `library`, `reject`, `archive`, `mixes` |
+| `status`                | Track status (informational)            | `accept`, `reject`, `review`            |
+| **Essentia features:**  | (for ML export only)                    |                                         |
+| `ess_bpm`               | BPM from Essentia                       | `120.5`                                 |
+| `ess_key_camelot`       | Key from Essentia (Camelot)             | `6A`                                    |
+| `ess_energy`            | Energy score (0-1)                      | `0.75`                                  |
+| `ess_danceability`      | Danceability score                      | `0.82`                                  |
+| `ess_*`                 | Other Essentia features (see ML docs)   | Various metrics                         |
 
 ### Important Fields:
 
-**`target_bucket`**:
+**`destination`**:
 
+- `library` = Main Library (organized by artist)
+- `reject` = Reject folder (flat structure)
+- `archive` = Archive folder (organized by artist)
+- `mixes` = MIXES folder (flat, for DJ mixes)
 - Empty = not decided
-- `REJECT` = rejected
-- `READY TO PLAY/...` or `REVIEW QUEUE/...` = ready to move
+
+**`status`** (informational only, doesn't control moves):
+
+- `accept` = approved
+- `reject` = rejected
+- `review` = needs review
+- Empty = not decided
 
 **`done`**:
 
-- `TRUE` = approved for apply command
+- `TRUE` = approved for apply command (move based on `destination`)
 - `FALSE` or empty = skip
 
 **`is_duplicate`**:
 
 - Checked by comparing `fingerprint` (Chromaprint)
 - Falls back to `file_hash` if no fingerprint
+
+**Legacy fields** (backward compatibility only):
+
+- `bucket_suggest`, `bucket_suggest_reason`, `target_bucket`: Old bucketing system (deprecated)
+- `ai_guess_bucket`: Old ML suggestions (deprecated)
 
 ---
 
@@ -330,12 +405,17 @@ Artist - Title (Mix) [6A 120] (3).mp3
 
 **Key Variables**:
 
-- `LIB_ROOT`: Main library directory (default `~/Music_DJ`)
-- `UNSORTED_DIR`: Folder to scan (default `~/Music_DJ/UNSORTED`)
-- `READY_TO_PLAY_DIR`: `LIB_ROOT / "READY TO PLAY"`
-- `REVIEW_QUEUE_DIR`: `LIB_ROOT / "REVIEW QUEUE"`
-- `LOGS_DIR`: `LIB_ROOT / "LOGS"`
-- `UNSORTED_XLSX_PATH`: `LIB_ROOT / "unsorted.xlsx"`
+- `LIB_ROOT`: Main library directory (default `~/Music Library`)
+- `INBOX_UNSORTED`: UNSORTED folder to scan (default `~/Music Unsorted`)
+- `REJECT_ROOT`: Reject folder (default `~/Music Rejected`)
+- `ARCHIVE_ROOT`: Archive folder (default `~/Music Archive`)
+- `MIXES_ROOT`: Mixes folder (default `~/Music Library/MIXES`)
+- `LOGS_DIR`: Application logs (default `./LOGS` in repo)
+- `UNSORTED_XLSX`: Staging spreadsheet (default `./data/unsorted.xlsx` in repo)
+
+**Legacy variables** (deprecated, kept for backward compatibility):
+
+- `READY_TO_PLAY_DIR`, `REVIEW_QUEUE_DIR`: Old bucketing structure
 
 **Configuration**:
 
@@ -375,8 +455,9 @@ Artist - Title (Mix) [6A 120] (3).mp3
 
 **Sources**:
 
-- **MusicBrainz** (weight 3.0): Recording/release-group/artist genres
+- **Beatport** (weight 10.0, NEW): EDM genres + 1400px artwork, JWT auto-refresh
 - **Last.fm** (weight 6.0): Track top tags
+- **MusicBrainz** (weight 3.0): Recording/release-group/artist genres
 - **SoundCloud** (weight 2.0, optional): Track genre + tag_list
 
 **Algorithm**:
@@ -402,20 +483,55 @@ Artist - Title (Mix) [6A 120] (3).mp3
 
 **Workflow**:
 
-1. Scan LIBRARY folders (READY TO PLAY, REVIEW QUEUE)
-2. For each file: extract Essentia features
-3. Combine with user-assigned bucket (label)
-4. Export CSV with columns: `source_path`, `bucket`, `ess_bpm`, `ess_key_camelot`, `ess_energy`, `ess_*`
+1. Scan Main Library folders (organized by artist) + MIXES
+2. For each file: extract Essentia features from cache
+3. Combine with user-assigned genre (label from genres.yml)
+4. Export CSV with columns: `source_path`, `genre`, `ess_bpm`, `ess_key_camelot`, `ess_energy`, `ess_*`
 
 **Use Cases**:
 
-- Train bucket classification models
+- Train genre classification models
 - Evaluate feature importance
-- Build custom auto-bucketing systems
+- Build custom genre prediction systems
+- FUTURE: Playlist/bucket assignment models
 
 ---
 
 ## Workflows and Processes
+
+### Overview
+
+**Production Workflow (November 2025):**
+
+```
+WORKFLOW 0: Sync DJ Libraries & Tags (optional)
+  ↓ Compare library.csv with Rekordbox/Traktor
+  ↓ Add missing tracks, update paths, add custom tags
+  
+WORKFLOW 1: Scan UNSORTED
+  ↓ Read Rekordbox/Traktor DBs → get rekordbox_id/traktor_id
+  ↓ Tag files with DJLIB_TRACK_ID + external IDs
+  ↓ Generate unsorted.xlsx
+  
+WORKFLOW 2: Enrich Online
+  ↓ MusicBrainz/Last.fm/Beatport/SoundCloud metadata
+  
+WORKFLOW 3: Manual Curation (Excel)
+  ↓ Edit metadata, select destination, mark done=TRUE
+  
+WORKFLOW 4: Export (Apply)
+  ↓ Move files to LIBRARY/REJECT/ARCHIVE
+  ↓ AUTO-SYNC with Rekordbox/Traktor (add new + update paths)
+  
+WORKFLOW 5: Analyze Audio (Essentia)
+  ↓ Extract 50+ features for ML training
+  ↓ Only analyzes approved tracks in LIBRARY
+  
+WORKFLOW 6: ML Dataset Export
+  ↓ Export training data with audio features
+```
+
+---
 
 ### 1. UNSORTED Folder Workflow (Rekordbox-First)
 
@@ -496,15 +612,18 @@ Artist - Title (Mix) [6A 120] (3).mp3
 **Process**:
 
 1. User opens `unsorted.xlsx` in Excel
-2. Reviews proposals (`artist_suggest`, `title_suggest`, `genre_suggest`, `bucket_suggest`)
-3. Edits final values (`artist`, `title`, `target_bucket`)
-4. Selects bucket from taxonomy dropdown (data validation)
-5. Marks `done = TRUE` for approved tracks
+2. Reviews proposals (`artist_suggest`, `title_suggest`, `genre_suggest`)
+3. Edits final values (`artist`, `title`, `genre`, `destination`)
+4. Selects genre from dropdown (30 canonical genres from genres.yml)
+5. Selects destination: `library`, `reject`, `archive`, or `mixes`
+6. Optionally sets `status`: `accept`, `reject`, or `review` (informational only)
+7. Marks `done = TRUE` for approved tracks
 
 **Validation**:
 
-- Bucket dropdown: only valid taxonomy values
-- Required fields: `artist`, `title`, `target_bucket`, `done`
+- Genre dropdown: only valid genres from genres.yml
+- Destination dropdown: library/reject/archive/mixes
+- Required fields: `artist`, `title`, `destination`, `done`
 
 ### 5. Apply Decisions (Move to LIBRARY)
 
@@ -515,13 +634,14 @@ Artist - Title (Mix) [6A 120] (3).mp3
 1. Load `unsorted.xlsx`
 2. Filter rows with `done = TRUE`
 3. For each approved track:
-   - Resolve target path from `target_bucket`
+   - Resolve target path from `destination` column (library/reject/archive/mixes)
    - Generate final filename with Camelot notation
+   - Clean spam tags, ALWAYS clear album tag
    - Move and rename file
    - Log operation to `LOGS/moves-{timestamp}.csv`
 4. Remove done=TRUE rows from `unsorted.xlsx`
 
-**Result**: Files organized in LIBRARY, staging cleared
+**Result**: Files organized in destination folders, staging cleared
 
 **Dry Run**: `--dry-run` shows planned operations without execution
 
@@ -542,10 +662,10 @@ Artist - Title (Mix) [6A 120] (3).mp3
 
 **Process**:
 
-1. Scan LIBRARY folders (READY TO PLAY, REVIEW QUEUE)
+1. Scan Main Library folders (organized by artist) + MIXES
 2. For each file:
    - Extract Essentia features (BPM, Key, Energy, Danceability, Spectral, etc.)
-   - Determine bucket from file path
+   - Get genre label from library.csv
 3. Export to `data/training_dataset_full.csv`
 
 **Output Columns**:
@@ -620,10 +740,15 @@ Artist - Title (Mix) [6A 120] (3).mp3
 - If file with same name exists: add number `(2)`, `(3)`, etc.
 - **Implementation**: `djlib/mover.py::move_with_rename()`
 
-### target_bucket Validation
+### destination Validation (CURRENT)
 
-- Check if target exists in taxonomy before moving
-- **Implementation**: `djlib/taxonomy.py::is_valid_target()`
+- Check if destination is valid: `library`, `reject`, `archive`, or `mixes`
+- **Implementation**: `djlib/unsorted.py::DESTINATION_CHOICES`
+
+### target_bucket Validation (LEGACY - deprecated)
+
+- Old bucketing system (pre-November 2025)
+- **Implementation**: `djlib/legacy/taxonomy.py::is_valid_target()`
 
 ---
 
@@ -758,23 +883,35 @@ add_ready_bucket("CLUB/PROGRESSIVE HOUSE")
 ensure_taxonomy_dirs()  # Creates directories
 ```
 
-### Check Target Validity:
+### Check Genre Validity (CURRENT):
 
 ```python
-from djlib.taxonomy import is_valid_target
+from djlib.metadata.genre_resolver import GENRES_YML_PATH
+import yaml
 
-is_valid_target("READY TO PLAY/CLUB/HOUSE")  # True
-is_valid_target("READY TO PLAY/CLUB/UNKNOWN")  # False
+with open(GENRES_YML_PATH) as f:
+    genres_config = yaml.safe_load(f)
+    valid_genres = list(genres_config['genres'].keys())
+
+is_valid = "House" in valid_genres  # True
 ```
 
-### Use Auto-Decide:
+### Check Destination Validity (CURRENT):
 
 ```python
-from djlib.placement import decide_bucket
+from djlib.unsorted import DESTINATION_CHOICES
 
-row = {"genre": "tech house", "bpm": "128", ...}
-bucket, confidence, reason = decide_bucket(row)
-# ("CLUB/TECH HOUSE", 0.95, "genre=tech house")
+destination = "library"
+is_valid = destination in DESTINATION_CHOICES  # True
+```
+
+### Legacy Examples (deprecated, for backward compatibility only):
+
+```python
+from djlib.legacy.taxonomy import is_valid_target
+
+is_valid_target("READY TO PLAY/CLUB/HOUSE")  # Old system
+is_valid_target("READY TO PLAY/CLUB/UNKNOWN")  # Old system
 ```
 
 ---
@@ -783,24 +920,34 @@ bucket, confidence, reason = decide_bucket(row)
 
 ### When Proposing Changes:
 
-1. **Check taxonomy.yml**: Always use names consistent with current taxonomy
-2. **Use spaces**: Never underscores in bucket names
-3. **target_subfolder format**: Always full path with prefix (`READY TO PLAY/...`)
-4. **CSV schema**: Don't add new columns without updating `FIELDNAMES`
+1. **Check genres.yml**: Always use genres from the canonical 30-genre list
+2. **Use destination column**: library/reject/archive/mixes (not target_subfolder)
+3. **Album handling**: ALWAYS cleared during export (updates["album"] = "")
+4. **CSV schema**: Don't add new columns without updating `UNSORTED_COLUMNS` in unsorted.py
 5. **Path handling**: Always use `pathlib.Path`, not strings
-6. **Backward compatibility**: Check if existing scripts will work with changes
+6. **Backward compatibility**: Legacy fields (target_subfolder, bucket_suggest) kept for old data migration
 
-### When Adding New Buckets:
+### When Adding New Genres:
 
-1. Add to `taxonomy.yml` (`ready_buckets` or `review_buckets` section)
-2. Run `ensure_taxonomy_dirs()` to create directories
-3. Update `djlib/placement.py` if bucket should be auto-recognized
-4. Update `rules.yml` if rules needed for this bucket
+1. Add to `genres.yml` with synonyms
+2. Update genre_resolver weights if needed
+3. Run validation tests to ensure synonym matching works
+4. Document in genres.yml with clear definition
 
-### When Modifying Auto-Decide Rules:
+### Current System (November 2025):
 
-- `rules.yml`: Simple keyword-based rules (contains → target)
-- `placement.py`: Advanced rules based on metadata (genre, BPM, era)
+- **Folder structure**: Main Library/{Artist}/, Reject/ (flat), Archive/{Artist}/, Mixes/ (flat)
+- **Genre system**: 30 canonical genres in genres.yml with comprehensive synonyms
+- **Excel workflow**: destination column controls moves, status is informational only
+- **Bucketing**: FUTURE feature for smart playlists (not folder organization)
+- **Legacy support**: target_subfolder still works for backward compatibility, but destination is preferred
+
+### Deprecated Features (kept for backward compatibility):
+
+- `djlib/legacy/`: buckets.py, classify.py, genre.py, taxonomy.py
+- `taxonomy.yml`, `taxonomy_map.yml`: Old bucketing configs
+- `target_subfolder`, `bucket_suggest`, `ai_guess_bucket`: Old CSV columns
+- `READY TO PLAY/`, `REVIEW QUEUE/`: Old folder structure
 
 ---
 

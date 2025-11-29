@@ -1,3 +1,13 @@
+# ==========================================
+# DEPRECATED - Legacy auto-bucketing rules
+# ==========================================
+# The new logistics model uses LIBRARY/Artist/Album structure.
+# Bucketing (CLUB/OPEN FORMAT) has been replaced with:
+#   - Canonical genres in genres.yml (AFRO_HOUSE, FUNK, SOUL, etc.)
+#   - Manual playlist organization in DJ software
+# This file is kept for backward compatibility only.
+# ==========================================
+
 # Proste reguły: jeśli artysta/tytuł/genre/comment zawiera słowo-klucz → ustaw target_subfolder.
 # Pierwsza dopasowana reguła wygrywa.
 

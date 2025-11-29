@@ -96,6 +96,42 @@ def read_tags(path: Path) -> Dict[str, str]:
     genre = _first_str(tags.get("genre")).strip()
     comment = _first_str(tags.get("comment")).strip()
     bpm = _first_str(tags.get("bpm")).strip()
+    
+    # Read year from date or year tag
+    # Easy mode doesn't expose date/year for FLAC, need raw access
+    year = ""
+    album = ""
+    try:
+        raw = MutFile(str(path))
+        if raw and getattr(raw, "tags", None):
+            raw_tags = raw.tags
+            # Try various date/year tag names (Vorbis comments for FLAC, ID3 for MP3)
+            year_candidates = [
+                _first_str(raw_tags.get("originaldate")),  # Original release date (priority)
+                _first_str(raw_tags.get("year")),
+                _first_str(raw_tags.get("date")),
+                _first_str(raw_tags.get("releasedate")),
+            ]
+            for candidate in year_candidates:
+                candidate = (candidate or "").strip()
+                if candidate:
+                    # Extract year from formats: "1958", "1958-03-15", "1958/03/15"
+                    year = candidate.split("-")[0].split("/")[0][:4]
+                    if year.isdigit() and len(year) == 4:
+                        break
+            
+            # Read album from raw tags
+            album_candidates = [
+                _first_str(raw_tags.get("album")),
+                _first_str(raw_tags.get("TALB")),  # ID3v2 album tag
+            ]
+            for candidate in album_candidates:
+                candidate = (candidate or "").strip()
+                if candidate:
+                    album = candidate
+                    break
+    except Exception:
+        pass
 
     key_candidates = [
         _first_str(tags.get("initialkey")),
@@ -155,13 +191,43 @@ def read_tags(path: Path) -> Dict[str, str]:
         "energy_hint": energy_hint,
         "genre": genre,
         "comment": comment,
+        "year": year,
+        "album": album,
     }
 
 def write_tags(path: Path, updates: Dict[str, str]) -> None:
     """
     Zapisz metadane do pliku audio.
-    Obsługiwane klucze: artist, title, bpm, key_camelot, genre, comment
+    Obsługiwane klucze: artist, title, bpm, key_camelot, genre, comment, year, album
     """
+    # First handle year and album with raw tags (must be done before easy mode)
+    if "year" in updates and updates["year"]:
+        year_val = updates["year"].strip()
+        if year_val:
+            try:
+                raw = MutFile(str(path))
+                if raw and hasattr(raw, 'tags') and raw.tags:
+                    # FLAC/Vorbis and most formats support 'date' as Vorbis comment
+                    if hasattr(raw.tags, '__setitem__'):
+                        raw.tags["date"] = [year_val]  # Vorbis comments need list
+                        raw.tags["year"] = [year_val]  # Compatibility
+                        raw.save()
+            except Exception as e:
+                pass  # Ignore errors
+    
+    if "album" in updates and updates["album"]:
+        album_val = updates["album"].strip()
+        if album_val:
+            try:
+                raw = MutFile(str(path))
+                if raw and hasattr(raw, 'tags') and raw.tags:
+                    if hasattr(raw.tags, '__setitem__'):
+                        raw.tags["album"] = [album_val]  # Vorbis comments need list
+                        raw.save()
+            except Exception as e:
+                pass  # Ignore errors
+    
+    # Now handle other tags with easy mode
     f = MutFile(str(path), easy=True)
     if f is None:
         raise ValueError(f"Nie można otworzyć pliku audio: {path}")

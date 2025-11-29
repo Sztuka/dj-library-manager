@@ -1,15 +1,18 @@
 # DJ Library Manager — Roadmap (Rekordbox + Essentia, Non-Commercial)
 
-This document describes the roadmap for Rekordbox-first architecture with Essentia audio analysis as cache/alternative source for BPM and Key, extended with Energy and low-level features, and integration with the Auto-Bucket module. We assume non-commercial mode (private / potentially open-source in the future), optimizing for quality without copyleft restrictions.
+This document describes the roadmap for Rekordbox-first architecture with Essentia audio analysis as cache/alternative source for BPM and Key, extended with Energy and low-level features. We assume non-commercial mode (private / potentially open-source in the future), optimizing for quality without copyleft restrictions.
+
+**Note on Bucketing (November 2025):** The bucketing system (READY TO PLAY/CLUB/etc.) has been removed from folder organization. Current focus is on clean library structure (Main Library by artist, Reject, Archive). Bucketing/playlist generation features described in this document are **FUTURE ENHANCEMENTS** - they will be built as smart playlists on top of the existing clean structure, not as folder organization.
 
 ## 1) Assumptions and Goals (Updated November 2025)
 
 - **Rekordbox as Source of Truth**: BPM and Key from Rekordbox DB (TBPM/TKEY tags) take priority in UNSORTED folder
 - **Strict Mode Enforcement**: `scan --strict` requires Rekordbox DB confirmation for quality control
-- **Essentia as Cache/Alternative**: Local metrics (BPM/Key/Energy) cached for non-Rekordbox files or after moves
+- **Essentia as Cache/Alternative**: Local metrics (BPM/Key/Energy) cached for ML training and analysis
 - **Energy + Audio Features**: Local metrics (LUFS, Dynamic Complexity, Spectral Centroid/Rolloff, Onset Rate) → basis for "energy score"
-- **Bucketing**: Deterministic rules first (v0), then classic ML (v0.1), optionally hybrid with embeddings (v0.3)
-- **Online Sources (Beatport/MB/Last.fm/SoundCloud\*)**: Beatport gold standard for EDM genres (weight 10.0), others remain auxiliary; main decisions (BPM/Key/Energy/Bucket) based on audio. (\*SoundCloud optional, with health check and skip option)
+- **Bucketing**: FUTURE feature for smart playlists - not currently used for folder organization
+- **Current Organization**: Simple logistics folders (Main Library by artist, Reject flat, Archive by artist)
+- **Online Sources (Beatport/MB/Last.fm/SoundCloud\*)**: Beatport gold standard for EDM genres (weight 10.0), others remain auxiliary; main decisions (BPM/Key/Energy) based on audio. (\*SoundCloud optional, with health check and skip option)
 - **Caching, Repeatability & Audit**: Deterministic analysis, cache by file hash + algorithm version
 
 ## 2) Module Architecture
@@ -31,11 +34,10 @@ djlib/
     lastfm.py           # Last.fm client
     soundcloud.py       # SoundCloud client (client_id auto-refresh)
     coverart.py         # Album artwork fetching (4-source fallback)
-  bucketing/
-    base.py             # Interfaces
-    rules.py            # v0 deterministic bucketing rules
-    simple_ml.py        # v0.1 RandomForest (per plan)
-    hybrid_model.py     # v0.3 (optional)
+  bucketing/                # FUTURE: Smart playlist generation
+    base.py             # Base interfaces
+    rules.py            # Deterministic rules (v0)
+    simple_ml.py        # ML classifier (v0.1)
   ml/                   # NEW: ML training dataset export
     __init__.py
     export_dataset.py   # Training dataset generation
@@ -50,65 +52,124 @@ scripts/
 
 ## 3) End-to-End Pipeline
 
-### UNSORTED Folder (Quality Control)
+### WORKFLOW 0: Sync DJ Libraries & Tags (Optional)
 
-1. **Configuration** (LIB_ROOT/UNSORTED) — as today
-2. **Rekordbox Preparation** — Analyze files in Rekordbox (BPM/Key detection)
-3. **Scan UNSORTED** (`scan --strict`):
+**Command:** `python -m djlib.cli sync-dj-libraries --write`
+
+**Purpose:** Ensure library.csv is in sync with Rekordbox/Traktor databases
+
+**Steps:**
+1. Compare library.csv with Rekordbox DB and Traktor collection.nml
+2. Identify missing tracks (in library.csv but not in DJ software)
+3. Add missing tracks to Rekordbox (via `pyrekordbox.add_content()`)
+4. Add missing tracks to Traktor (via XML manipulation)
+5. Update paths for moved tracks in Traktor
+6. Add custom DJLIB tags where missing
+
+**Output:** Updated Rekordbox/Traktor databases with all library tracks
+
+### WORKFLOW 1: Scan UNSORTED
+
+**Command:** `python -m djlib.cli scan --strict`
+
+**Purpose:** Quality control for new tracks
+
+**Steps:**
+1. **Rekordbox Preparation** — Analyze files in Rekordbox (BPM/Key detection)
+2. **Scan UNSORTED**:
+   - Read Rekordbox DB → extract rekordbox_id
+   - Read Traktor collection.nml → extract traktor_id
    - Validate Rekordbox DB analysis (was_analyzed_from_db)
    - Check TBPM/TKEY tags as fallback
    - Strict mode: reject files without Rekordbox confirmation
-   - Export to `unsorted.xlsx` with proposals
-4. **Analyze Audio** (Essentia cache - OPTIONAL):
-   - `detect_bpm_essentia(path) -> bpm, conf, corrected_factor`
-   - `detect_key_essentia(path) -> key_camelot, strength`
-   - `compute_energy(path) -> energy_score (0..1), {lufs, dyn_complexity, onset_rate, spectral_*}`
-   - Caching: (file_hash, algo_version) → result
-   - Write to ID3 tags (--write-tags flag)
-5. **Enrich Online** (`enrich-online`):
-   - **Beatport** (NEW): EDM-focused metadata with JWT auto-refresh
-     - 100+ precise subgenres (progressive house, melodic techno, afro house)
-     - High-resolution artwork (1400x1400px)
-     - BPM/Key from Beatport's analysis
-     - Transparent token renewal via Playwright (~10s per hour)
-     - One-time credential setup in system keyring
-   - MusicBrainz/AcoustID metadata lookup
-   - Multi-source genre resolution with weights: **Beatport 10.0** (priority for EDM) > Last.fm 6.0 > MB 3.0 > SoundCloud 2.0
-   - Per-source columns: `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (DONE)
-   - Popularity metrics: `pop_playcount`, `pop_listeners`
-   - Album artwork fetching (`--fetch-covers`): 4-source fallback (Cover Art Archive 500px → **Beatport 1400x1400** → Last.fm 300px → SoundCloud 500px)
-6. **Manual Review** (Excel `unsorted.xlsx`):
-   - User validates metadata proposals
-   - Selects bucket from taxonomy dropdown
-   - Marks `done = TRUE` for approved tracks
-7. **Apply Decisions** (`apply`):
-   - Clean spam tags (musicdjs.club, chomikuj.pl, p2pdl.com) while preserving DJ software data
-   - Move only `done = TRUE` tracks to LIBRARY
-   - Generate final filenames with Camelot notation
-   - Update paths, clear staging
+   - Tag files with DJLIB_TRACK_ID + rekordbox_id + traktor_id
+   - Export to `unsorted.xlsx` with metadata proposals
 
-### LIBRARY Folder (After Move)
+**Output:** `data/unsorted.xlsx` with validated tracks ready for curation
 
-8. **ML Training Export** (`ml-export-training-dataset`):
-   - Combine accepted tracks with Essentia features
-   - Export to `data/training_dataset_full.csv`
-   - Features: `ess_bpm`, `ess_key_camelot`, `ess_energy`, `ess_danceability`, etc.
-   - Labels: user-assigned buckets from LIBRARY
+### WORKFLOW 2: Enrich Online (Optional)
 
-### Bucketing (Future)
+**Command:** `python -m djlib.cli enrich-online`
 
-9. **Bucket v0** (deterministic rules):
-   - Map based on BPM (ranges), Key (mode A/B), Energy (thresholds), percussiveness
-10. **Auto-Bucket v0.1** (ML):
+**Purpose:** Fetch metadata from online sources
 
-- Features: `{bpm_detected, key_detected, energy_score, genre_tokens}`
-- Model: RandomForest + metrics + export `bucket_predictions.csv`
+**Sources:**
+- **Beatport** (NEW): EDM-focused metadata with JWT auto-refresh
+  - 100+ precise subgenres (progressive house, melodic techno, afro house)
+  - High-resolution artwork (1400x1400px)
+  - BPM/Key from Beatport's analysis
+  - Weight: 10.0 (priority for EDM)
+- MusicBrainz/AcoustID metadata lookup
+- Last.fm popularity metrics
+- SoundCloud (optional, with health check)
 
-11. **Feedback & Evaluation**:
+**Features:**
+- Multi-source genre resolution with weights: Beatport 10.0 > Last.fm 6.0 > MB 3.0 > SoundCloud 2.0
+- Per-source columns: `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud`
+- Popularity metrics: `pop_playcount`, `pop_listeners`
+- Album artwork fetching (`--fetch-covers`): 4-source fallback
 
-- `feedback.csv` → retrain, `metrics.json`, acceptance ≥ 80%
+**Output:** Enriched `unsorted.xlsx` with online metadata
 
-**Note:** Meta-commands `round-1`/`round-2` temporarily disabled; will return as orchestrator after UNSORTED workflow stabilization.
+### WORKFLOW 3: Manual Curation (Excel)
+
+**Manual step:** Edit `data/unsorted.xlsx`
+
+**Actions:**
+- Review and validate metadata proposals
+- Select genre from dropdown (30 canonical genres from genres.yml)
+- Select destination: library/reject/archive/mixes
+- Mark `done = TRUE` for approved tracks
+
+### WORKFLOW 4: Export & Auto-Sync
+
+**Command:** `python -m djlib.cli apply`
+
+**Purpose:** Move files and sync with DJ software
+
+**Steps:**
+1. Clean spam tags (musicdjs.club, chomikuj.pl) while preserving DJ software data
+2. ALWAYS clears album tags (compilations not useful for DJs)
+3. Move only `done = TRUE` tracks based on `destination` column
+4. Generate final filenames with Camelot notation
+5. **AUTO-SYNC with DJ software:**
+   - Add new tracks to Rekordbox (via `pyrekordbox.add_content()`)
+   - Add new tracks to Traktor (via XML manipulation)
+   - Update paths for moved tracks in Traktor
+6. Update library.csv, clear staging
+
+**Output:** Organized library with DJ software automatically synchronized
+
+### WORKFLOW 5: Analyze Audio (Essentia)
+
+**Command:** `python -m djlib.cli analyze-audio`
+
+**Purpose:** Extract audio features for ML training and future playlists
+
+**Analysis:**
+- Only analyzes approved tracks in LIBRARY (not rejected)
+- `detect_bpm_essentia(path) -> bpm, conf, corrected_factor`
+- `detect_key_essentia(path) -> key_camelot, strength`
+- `compute_energy(path) -> energy_score (0..1), {lufs, dyn_complexity, onset_rate, spectral_*}`
+- 50+ spectral/MFCC/chroma features
+- Caching: (file_hash, algo_version) → result
+- Optional: Write to ID3 tags (--write-tags flag)
+
+**Output:** `LOGS/audio_analysis.sqlite` with cached features
+
+### WORKFLOW 6: ML Dataset Export
+
+**Command:** `python -m djlib.cli ml-export-training-dataset`
+
+**Purpose:** Generate training dataset for ML models
+
+**Features:**
+- Combine library.csv with Essentia features
+- Export to `data/training_dataset_full.csv`
+- Columns: `tag_bpm`, `tag_key_camelot`, `ess_bpm`, `ess_key_camelot`, `ess_energy`, `ess_danceability`, etc.
+- Labels: user-assigned genres from library
+
+**Output:** `data/training_dataset_full.csv` ready for ML training
 
 ## 4) Essentia — Integration Details
 
@@ -154,30 +215,115 @@ scripts/
 - **BPM/Key Stability**: If divergence between windows > thresholds (e.g., BPM differs >3%), log to `LOGS/unstable_analysis.csv` and lower confidence.
 - **Unsupported/Problem Files** (decoder, silence, < 20s): Log to `LOGS/failed_decodes.csv`.
 
-## 5) Bucketing — Paths (No Functional Changes in This Update)
+## 5) Future ML Features - Priority Order
 
-### v0 (Rules)
+**Current Status (November 2025):** All ML features below are NOT YET IMPLEMENTED. They represent the planned roadmap for future development.
 
-- **Example**: `house|tech house` + `120-128 BPM` + `energy≥0.6` → `READY TO PLAY/HOUSE BANGERS`;
-  `downbeat|electronica` + `70-100 BPM` + `energy≤0.4` → `CHILL/OPENING`.
-- **Rules**: Kept in `bucketing/rules.py`, configurable in YAML.
+### Priority 1: Genre Prediction (ML Model) - FIRST STEP, NOT YET IMPLEMENTED
 
-### v0.1 (ML)
+**Status:** FUTURE - requires minimum 500+ labeled tracks in library before training makes sense
 
-- Per document `auto_bucket_module_plan.md` and `auto_bucket_todo_list.md` — integrate audio features.
+**Goal:** Automatic genre classification based on Essentia audio features
 
-### v0.3 (Hybrid)
+**Input:**
 
-- **SBERT** text embedding + audio features, MLP/XGBoost classifier.
+- Essentia features: BPM, Key, Energy, Danceability, Spectral features, MFCCs, etc.
+- NO external metadata (pure audio analysis)
+
+**Output:**
+
+- Predicted genre from 30 canonical genres (genres.yml)
+- Confidence score
+
+**Use Case:**
+
+- User: "Analyze new tracks and suggest genres"
+- Model: Trained on user's accepted tracks from library
+- Result: Accurate genre suggestions based on audio characteristics
+
+**Implementation (FUTURE):**
+
+- Train RandomForest/XGBoost on exported training dataset
+- Features: `ess_bpm`, `ess_key`, `ess_energy`, `ess_danceability`, spectral, MFCCs
+- Labels: User-curated genres from library.csv
+
+**Prerequisites:**
+
+- ✅ Essentia analysis pipeline (DONE)
+- ✅ Training dataset export (DONE)
+- ⏳ Minimum 500+ labeled tracks in library (in progress)
+- ❌ ML model training code (TODO)
+
+### Priority 2: Smart Playlist Generation (AI Assistant) - FUTURE, AFTER GENRE PREDICTION
+
+**Status:** FUTURE - long-term goal, after genre prediction is working
+
+**Goal:** Natural language playlist creation based on context/mood/energy
+
+**Examples:**
+
+- User: "4 hours for cocktail bar with light foot-tapping"
+- User: "Peak hour bangers, high energy, 128-130 BPM"
+- User: "Smooth opening set, warm vibes, nothing too intense"
+
+**Input:**
+
+- Natural language query (LLM parsing)
+- Library metadata: genres, BPM, key, energy, tags
+- Audio features from Essentia cache
+
+**Output:**
+
+- Generated playlist matching criteria
+- Smooth transitions (key compatibility, energy flow)
+
+**Implementation (FUTURE, AFTER GENRE PREDICTION):**
+
+- LLM parses user intent → search criteria
+- Filter library: BPM ranges, energy levels, genres, occasion_tags
+- Optional: harmonic mixing (key compatibility)
+- Export to M3U/Rekordbox playlist
+
+**Note:** This is NOT folder organization - playlists are dynamic, context-based, and regenerated on demand.
+
+**Prerequisites:**
+
+- ✅ Essentia analysis pipeline (DONE)
+- ✅ Clean library with metadata (in progress)
+- ❌ Genre prediction working (TODO - Priority 1)
+- ❌ LLM integration (TODO)
+- ❌ Playlist generation engine (TODO)
+
+### Deprecated: Bucket/Folder Assignment
+
+**What's NOT happening:**
+
+- ❌ NO automatic folder assignment (CLUB/OPENING/WARMUP/etc.)
+- ❌ NO subfolder taxonomy based on musical characteristics
+- ❌ NO "bucket" predictions that create folder structure
+
+**Why:**
+
+- Folder structure is pure logistics (Main Library by artist)
+- Musical categorization belongs in metadata (genre) and playlists
+- Context is fluid ("cocktail bar" vs "peak hour") - doesn't map to static folders
 
 ## 6) CLI and UX (Implemented Extensions)
 
-### Commands
+### Commands (Current)
 
-- `djlib.cli analyze-audio` — Analyze entire UNSORTED (with cache), progress and time metrics.
-- `scripts/report_preview.py` — Columns: `bpm_detected`, `bpm_confidence`, `bpm_correction`, `key_detected_camelot`, `key_strength`, `energy_score`, per-source genres (DONE).
-- `scripts/assign_buckets.py` — Predict buckets (v0.1), export `bucket_predictions.csv`.
-- **Debug Mode**: `--debug` writes features/justifications to LOGS/.
+- `djlib.cli analyze-audio` — Analyze entire UNSORTED (with cache), progress and time metrics (DONE)
+- `scripts/report_preview.py` — Preview metadata with per-source genres (DONE)
+- **Debug Mode**: `--debug` writes features/justifications to LOGS/ (DONE)
+
+**FUTURE Priority 1 (Genre Prediction - NOT YET IMPLEMENTED):**
+
+- `djlib.cli predict-genre` — Predict genres based on Essentia features using trained ML model
+- `djlib.cli train-genre-model` — Train genre classifier on accepted library tracks
+
+**FUTURE Priority 2 (Smart Playlists - NOT YET IMPLEMENTED):**
+
+- `djlib.cli generate-playlist "4h cocktail bar light vibes"` — AI-powered playlist generation
 
 ### 6.1) CLI Flags (Proposed)
 
@@ -188,7 +334,15 @@ scripts/
 - `report-preview [--compute-missing-only] [--with-breakdown]`
   - `--compute-missing-only`: Don't calculate BPM/Key/Energy if correct tags already exist.
   - `--with-breakdown`: Additional columns with energy components and debug BPM/Key.
-- `assign-buckets [--rules path.yml] [--model models/bucket_model.pkl] [--debug]`
+
+**FUTURE Priority 1 (Genre Prediction - NOT YET IMPLEMENTED):**
+
+- `predict-genre [--threshold 0.7] [--write-tags]` — Suggest genres with ML model (TODO)
+- `train-genre-model [--min-samples 500]` — Train on accepted library tracks (TODO)
+
+**FUTURE Priority 2 (Smart Playlists - NOT YET IMPLEMENTED):**
+
+- `generate-playlist "<natural language query>" [--duration 240] [--format m3u]` — AI playlist generation (TODO)
 
 ## 7) Caching and Algorithm Versioning
 
@@ -224,7 +378,7 @@ scripts/
 
 ### Unit Tests
 
-- Parsing, Camelot conversions, 0.5×/2× corrections, bucket mapping, noise filters.
+- Parsing, Camelot conversions, 0.5×/2× corrections, genre classification, noise filters.
 
 ### Integration Tests
 
@@ -332,49 +486,65 @@ scripts/
 
 If you confirm direction, next steps: finalize Energy + bucket rules v0, then ML module.
 
-## 14) Starter `rules.yml` (Example)
+## 14) Future Feature Examples (NOT CURRENTLY IMPLEMENTED - ALL TODO)
 
-```yaml
-version: 1
-defaults:
-  target_bpm_range: [80, 180]
-  energy_thresholds:
-    low: 0.35
-    mid: 0.55
-    high: 0.70
+**Important:** All features below are planned for future development. None are implemented yet.
 
-rules:
-  - name: HOUSE_BANGERS
-    when:
-      bpm: [120, 130]
-      energy_min: high
-      styles_any: [house, tech house, electro house]
-    then:
-      bucket: READY TO PLAY/HOUSE BANGERS
-      confidence: 0.8
+### Priority 1: Genre Prediction Model (FIRST STEP - TODO)
 
-  - name: CHILL_OPENING
-    when:
-      bpm: [70, 100]
-      energy_max: low
-      styles_any: [downbeat, electronica, chillout]
-    then:
-      bucket: CHILL/OPENING
-      confidence: 0.75
+**Training command (future, not yet implemented):**
 
-  - name: HIPHOP_WARM
-    when:
-      bpm: [80, 110]
-      styles_any: [hip hop]
-      key_mode_any: [A]
-    then:
-      bucket: HIPHOP/WARMUP
-      confidence: 0.7
-
-resolution:
-  tie_breaker: [confidence, energy, bpm_proximity]
-  fallback_bucket: REVIEW QUEUE/UNSURE
+```bash
+python -m djlib.cli train-genre-model --min-samples 500
+# Trains on library.csv + Essentia features
+# Outputs: models/genre_classifier.pkl + metrics.json
 ```
+
+**Prediction command (future, not yet implemented):**
+
+```bash
+python -m djlib.cli predict-genre --threshold 0.7
+# Suggests genres for unsorted.xlsx tracks
+# Updates genre_suggest column with ML predictions
+```
+
+**Model features (when implemented):**
+
+- Input: Pure Essentia audio features (BPM, Key, Energy, Spectral, MFCCs)
+- Output: One of 30 canonical genres from genres.yml
+- Confidence threshold: Skip low-confidence predictions
+
+**Timeline:** After collecting 500+ labeled tracks in library
+
+### Priority 2: Smart Playlist Generation (AI-Powered, AFTER GENRE PREDICTION)
+
+**Example queries (future, not yet implemented):**
+
+```bash
+# Context-based playlist
+python -m djlib.cli generate-playlist \
+  "4 hours for cocktail bar with light foot-tapping" \
+  --format m3u --output ~/playlists/cocktail-2025-11-28.m3u
+
+# Energy-based playlist
+python -m djlib.cli generate-playlist \
+  "peak hour bangers, 128-130 BPM, high energy house and techno" \
+  --duration 120
+
+# Mood-based playlist
+python -m djlib.cli generate-playlist \
+  "smooth opening set, warm vibes, nothing too intense"
+```
+
+**How it works (future, after genre prediction is working):**
+
+1. LLM parses natural language → criteria (BPM range, energy level, genres, mood)
+2. Query library: filter by criteria
+3. Optional: harmonic mixing (key compatibility)
+4. Generate playlist with smooth transitions
+5. Export to M3U or Rekordbox XML
+
+**Note:** Playlists are DYNAMIC and CONTEXT-BASED - not static folder structures.
 
 ---
 

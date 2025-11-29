@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, csv, time, os, json
+import argparse, csv, time, os, json, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List
@@ -17,18 +17,21 @@ from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
 from djlib.rekordbox_status import was_analyzed, extract_metadata_from_db
 from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
-from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 from djlib.metadata.genre_resolver import resolve as resolve_genres
-from djlib.classify import guess_bucket
 from djlib.fingerprint import file_sha256, fingerprint_info
 from djlib.filename import build_final_filename, extension_for, split_title_and_version, merge_title_and_version
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
-from djlib.buckets import is_valid_target
-from djlib.placement import decide_bucket
 from djlib.ml.export_dataset import export_training_dataset
 from djlib.tag_cleaner import clean_tags
-from djlib.taxonomy import load_taxonomy, allowed_targets
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, is_done
+from djlib.external_sync import (
+    import_rekordbox_snapshot, 
+    import_traktor_snapshot,
+    create_path_map,
+    sync_rekordbox_paths,
+    sync_traktor_paths
+)
+from djlib.djlib_tags import read_djlib_tags, generate_track_id  # NEW: Read persistent track IDs
 try:
     from djlib.audio import check_env as audio_check_env
     from djlib.audio import analyze as audio_analyze
@@ -61,11 +64,9 @@ def _load_unsorted() -> List[Dict[str, str]]:
 
 
 def _save_unsorted(rows: List[Dict[str, str]]) -> None:
-    try:
-        choices = allowed_targets()
-    except Exception:
-        choices = []
-    write_unsorted_rows(UNSORTED_XLSX, rows, choices)
+    """Save rows to unsorted.xlsx."""
+    # No longer needs bucket choices (legacy system removed)
+    write_unsorted_rows(UNSORTED_XLSX, rows, [])
 
 # ============ KOMENDY ============
 
@@ -159,6 +160,16 @@ def cmd_scan(args: argparse.Namespace) -> None:
     known_fps = {r.get("fingerprint", "") for r in library_rows if r.get("fingerprint")}
     known_hashes.update({r.get("file_hash", "") for r in staging_rows if r.get("file_hash")})
     known_fps.update({r.get("fingerprint", "") for r in staging_rows if r.get("fingerprint")})
+    
+    # Get current Rekordbox track IDs for auto-tagging
+    from djlib.external_sync import get_rekordbox_track_ids, get_traktor_track_ids
+    rekordbox_mapping = get_rekordbox_track_ids()
+    traktor_mapping = get_traktor_track_ids()
+    
+    if rekordbox_mapping:
+        print(f"📖 Found {len(rekordbox_mapping)} tracks in Rekordbox database")
+    if traktor_mapping:
+        print(f"📖 Found {len(traktor_mapping)} tracks in Traktor collection")
 
     status_path = LOGS_DIR / "scan_status.json"
 
@@ -257,10 +268,6 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
         is_dup = "true" if (fp and fp in known_fps) else "false"
 
-        ai_bucket, ai_comment = guess_bucket(
-            tags["artist"], tags["title"], tags["bpm"], tags["genre"], tags["comment"]
-        )
-
         # Scan uses only local metadata (fast) - online enrichment is separate workflow
         sugg = suggest_metadata(p, tags, enable_online=False)
         if (sugg.get("duration_suggest") or "").strip() == "" and dur:
@@ -268,9 +275,39 @@ def cmd_scan(args: argparse.Namespace) -> None:
             ss = dur % 60
             sugg["duration_suggest"] = f"{mm}:{ss:02d}"
 
-        track_id = f"{fhash[:12]}_{int(time.time())}"
+        # Check if file has DJLIB_TRACK_ID tag (from Phase 1 snapshot import)
+        djlib_tags = read_djlib_tags(p)
+        if djlib_tags.get('track_id'):
+            # Reuse existing track_id (file was previously in DJ software)
+            track_id = djlib_tags['track_id']
+            rekordbox_id = djlib_tags.get('rekordbox_id', '')
+            traktor_id = djlib_tags.get('traktor_id', '')
+        else:
+            # Generate new track_id (new file)
+            track_id = generate_track_id(p, tags.get("artist", ""), tags.get("title", ""))
+            
+            # Get DJ software IDs from current DBs (if file is in Rekordbox/Traktor)
+            rekordbox_id = rekordbox_mapping.get(p, '')
+            traktor_id = traktor_mapping.get(p, '')
+            
+            # Tag file immediately with DJLIB custom tags
+            if rekordbox_id or traktor_id or True:  # Always tag, even if not in DJ software yet
+                try:
+                    from djlib.djlib_tags import write_djlib_tags
+                    write_djlib_tags(
+                        p,
+                        track_id=track_id,
+                        rekordbox_id=rekordbox_id if rekordbox_id else None,
+                        traktor_id=traktor_id if traktor_id else None,
+                        original_path=str(p)
+                    )
+                except Exception as e:
+                    print(f"⚠️  Could not tag {p.name}: {e}")
+        
         rec: Dict[str, str] = {
             "track_id": track_id,
+            "rekordbox_id": rekordbox_id,
+            "traktor_id": traktor_id,
             "file_path": str(p),
             "file_hash": fhash,
             "fingerprint": fp,
@@ -288,8 +325,6 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "tag_genre_original": _safe_str(tags_original.get("genre")),
             "tag_bpm_original": _safe_str(tags_original.get("bpm")),
             "tag_key_original": _safe_str(tags_original.get("key_camelot")),
-            "ai_guess_bucket": _safe_str(ai_bucket),
-            "ai_guess_comment": _safe_str(ai_comment),
             "target_subfolder": "",
             "must_play": "",
             "occasion_tags": "",
@@ -349,78 +384,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
         }
     )
 
-def _load_rules(path: Path) -> Dict[str, Any]:
-    import yaml
-    if not path.exists():
-        return {"rules": [], "fallbacks": {}}
-    with path.open("r", encoding="utf-8") as f:
-        return (yaml.safe_load(f) or {"rules": [], "fallbacks": {}})
-
-def _decide_for_row(row: Dict[str, str], rules: Dict[str, Any]) -> str:
-    artist = (row.get("artist") or "").lower()
-    title  = (row.get("title") or "").lower()
-    genre  = (row.get("genre") or "").lower()
-    comm   = (row.get("ai_guess_comment") or row.get("comment") or "").lower()
-    haystack = " ".join([artist, title, genre, comm])
-
-    for rule in rules.get("rules", []):
-        words = [w.lower() for w in rule.get("contains", [])]
-        if any(w in haystack for w in words):
-            return rule.get("target", "")
-
-    fb = rules.get("fallbacks", {})
-    guess = row.get("ai_guess_bucket") or ""
-    if guess in fb:
-        return fb[guess]
-    return fb.get("default", "REVIEW QUEUE/UNDECIDED")
-
-def cmd_auto_decide(args: argparse.Namespace) -> None:
-    rules_path = Path(args.rules or (REPO_ROOT / "rules.yml"))
-    rules = _load_rules(rules_path)
-    rows = _load_unsorted()
-    updated = 0
-
-    for r in rows:
-        if is_done(r.get("done")):
-            continue
-        if args.only_empty and (r.get("target_subfolder") or "").strip():
-            continue
-        proposal = _decide_for_row(r, rules)
-        if is_valid_target(proposal):
-            r["target_subfolder"] = proposal
-            updated += 1
-
-    if updated:
-        _save_unsorted(rows)
-    print(f"Auto-decide: updated={updated}")
-
-def cmd_auto_decide_smart(_: argparse.Namespace) -> None:
-    """Lepsze auto-decide: używa heurystyk z djlib.placement z progami ufności.
-    ≥0.85: ustaw docelowy kubełek; 0.65..0.85: tylko sugestia (ai_guess_*)."""
-    HARDCOMMIT_CONF = 0.85
-    SUGGEST_CONF = 0.65
-    rows = _load_unsorted()
-    set_cnt = sug_cnt = 0
-    for r in rows:
-        if is_done(r.get("done")):
-            continue
-        if r.get("target_subfolder"):
-            continue
-        tgt, conf, reason = decide_bucket(r)
-        if not tgt:
-            continue
-        if conf >= HARDCOMMIT_CONF:
-            r["target_subfolder"] = f"READY TO PLAY/{tgt}"
-            r["ai_guess_bucket"] = ""
-            r["ai_guess_comment"] = f"rule:{reason}; conf={conf:.2f}"
-            set_cnt += 1
-        elif conf >= SUGGEST_CONF:
-            r["ai_guess_bucket"]  = f"READY TO PLAY/{tgt}"
-            r["ai_guess_comment"] = f"rule:{reason}; conf={conf:.2f}"
-            sug_cnt += 1
-    if set_cnt or sug_cnt:
-        _save_unsorted(rows)
-    print(f"✅ Auto-decide (smart): set={set_cnt}, suggested={sug_cnt}")
+# REMOVED: _load_rules, _decide_for_row, cmd_auto_decide, cmd_auto_decide_smart
+# Legacy bucketing system (CLUB/OPEN FORMAT) has been replaced with LIBRARY/Artist/Album structure.
+# Auto-bucketing logic is no longer relevant. Use manual genre selection in unsorted.xlsx instead.
 
 def cmd_enrich_online(args: argparse.Namespace) -> None:
     """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
@@ -571,9 +537,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         pass
     _flush_status()
 
-    # przygotuj mapowanie tagów → bucket
-    tag_map = load_taxonomy_map()
-
     for r in rows:
         if is_done(r.get("done")):
             continue
@@ -690,24 +653,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         r["pop_playcount"] = str(info["playcount"])  # zapis w CSV jako string
                     if info.get("listeners") and int(info.get("listeners", 0)) > int(r.get("pop_listeners", 0) or 0):
                         r["pop_listeners"] = str(info["listeners"])  # zapis w CSV jako string
-        except Exception:
-            pass
-
-        # Zaproponuj kubełek na podstawie gatunków
-        try:
-            genre_str = (r.get("genre_suggest") or "").strip()
-            if genre_str and tag_map:
-                # Parse genres back to individual tags for voting
-                genre_tags = [g.strip() for g in genre_str.split(",") if g.strip()]
-                votes = {tag: 1.0 for tag in genre_tags}  # equal weight for each genre
-                bucket, conf, breakdown = suggest_bucket_from_votes(votes, tag_map)
-                if bucket and conf >= 0.65:
-                    r["ai_guess_bucket"]  = f"READY TO PLAY/{bucket}"
-                    # zbuduj krótki komentarz z top tagów
-                    top_tags = [tag for tag, _, mapped in breakdown if mapped][:3]
-                    tags_str = ", ".join(top_tags) if top_tags else genre_str.split(",")[0]
-                    r["ai_guess_comment"] = f"genres; conf={conf:.2f}; tags: {tags_str}"
-                    any_change = True
         except Exception:
             pass
 
@@ -969,6 +914,13 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
     print(f"🛠️  Fix titles from filenames: updated={updated}")
 
 def cmd_apply(args: argparse.Namespace) -> None:
+    """Apply approved changes from unsorted.xlsx.
+    
+    New model: Uses status/destination columns (library/reject/archive/mixes).
+    Legacy model: Falls back to target_subfolder if destination is empty.
+    """
+    from djlib.logistics import build_library_path, build_reject_path, build_archive_path, build_mixes_path
+    
     rows = _load_unsorted()
     ready = [r for r in rows if is_done(r.get("done"))]
     if not ready:
@@ -987,18 +939,16 @@ def cmd_apply(args: argparse.Namespace) -> None:
     log_rows = []
 
     for r in ready:
-        target = (r.get("target_subfolder") or "").strip()
-        if not target:
-            continue
+        # Determine destination path (new model or legacy fallback)
+        destination = (r.get("destination") or "").lower().strip()
+        target_subfolder = (r.get("target_subfolder") or "").strip()
+        
         src = Path(r.get("file_path") or "")
         if not src.exists():
             print(f"[WARN] Nie znaleziono pliku: {src}")
             continue
 
-        dest_dir = resolve_target_path(target)
-        if dest_dir is None:
-            continue
-
+        # Build final filename
         title_candidate = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
         version_pref = (
             r.get("version_info")
@@ -1021,53 +971,93 @@ def cmd_apply(args: argparse.Namespace) -> None:
             r.get("bpm", ""),
             extension_for(src),
         )
+        
+        artist = r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or ""
+        
+        # Determine destination path
+        dest_path: Path | None = None
+        
+        if destination == "library":
+            dest_path = build_library_path(artist, final_name)
+        elif destination == "reject":
+            dest_path = build_reject_path(final_name)
+        elif destination == "archive":
+            dest_path = build_archive_path(artist, final_name)
+        elif destination == "mixes":
+            # DJ mixes: flat structure, no artist folders
+            dest_path = build_mixes_path(final_name)
+        elif target_subfolder:
+            # Legacy fallback: use target_subfolder if destination is empty
+            dest_dir = resolve_target_path(target_subfolder)
+            if dest_dir:
+                dest_path = dest_dir / final_name
+        
+        if not dest_path:
+            print(f"[WARN] Brak destination/target_subfolder dla {src.name}")
+            continue
 
-        dest_path = dest_dir / final_name
         print(f"{'DRY-RUN ' if args.dry_run else ''}MOVE: {src} -> {dest_path}")
 
         if args.dry_run:
             continue
 
-        dest_real = move_with_rename(src, dest_dir, final_name)
-        log_rows.append([str(src), str(dest_real), r.get("track_id", "")])
+        # Ensure parent directory exists and handle naming conflicts
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        if dest_path.exists():
+            stem = dest_path.stem
+            ext = dest_path.suffix
+            i = 2
+            while True:
+                cand = dest_path.parent / f"{stem} ({i}){ext}"
+                if not cand.exists():
+                    dest_path = cand
+                    break
+                i += 1
+        
+        shutil.move(str(src), str(dest_path))
+        log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
+        
+        # Update record
         record = {
             "track_id": r.get("track_id", ""),
-            "file_path": str(dest_real),
+            "file_path": str(dest_path),
             "original_path": r.get("file_path") or "",
             "file_hash": r.get("file_hash") or "",
             "fingerprint": r.get("fingerprint") or "",
             "added_date": utc_now_str(),
             "final_filename": final_name,
-            "final_path": str(dest_real),
-            "artist": r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or "",
+            "final_path": str(dest_path),
+            "artist": artist,
             "title": final_title,
             "version_info": version_pref,
             "genre": r.get("genre") or r.get("genre_suggest") or "",
             "bpm": r.get("bpm") or "",
             "key_camelot": r.get("key_camelot") or "",
             "energy_hint": r.get("energy_hint") or "",
-            "target_subfolder": target,
+            "destination": destination or "library",  # Default to library if not specified
             "must_play": r.get("must_play") or "",
             "occasion_tags": r.get("occasion_tags") or "",
             "notes": r.get("notes") or "",
             "is_duplicate": r.get("is_duplicate") or "",
             "pop_playcount": r.get("pop_playcount") or "",
             "pop_listeners": r.get("pop_listeners") or "",
+            # Legacy fields
+            "target_subfolder": target_subfolder or "",
         }
         library_rows.append(record)
+        
         # Po udanym przeniesieniu wyczyść spam tagi i zapisz zaakceptowane metadane
         try:
             # Najpierw wyczyść spam tagi (musicdjs.club, chomikuj.pl, etc.)
-            result = clean_tags(dest_real, dry_run=False)
+            result = clean_tags(dest_path, dry_run=False)
             if result and result.get("removed_tags"):
                 tags_cleaned += 1
             # Teraz zapisz właściwe metadane
             updates = {}
-            artist = (record["artist"] or "").strip()
-            title_out = merge_title_and_version(record.get("title", ""), record.get("version_info", ""))
             if artist:
                 updates["artist"] = artist
+            title_out = merge_title_and_version(record.get("title", ""), record.get("version_info", ""))
             if title_out:
                 updates["title"] = title_out
             genre = (record["genre"] or "").strip()
@@ -1083,11 +1073,19 @@ def cmd_apply(args: argparse.Namespace) -> None:
             key_cam = (record["key_camelot"] or "").strip().upper()
             if key_cam:
                 updates["key_camelot"] = key_cam
+            # Zapisz rok z kolumny year (lub fallback na year_suggest)
+            year_val = (r.get("year") or r.get("year_suggest") or "").strip()
+            if year_val:
+                updates["year"] = year_val
+            
+            # ALWAYS clear album tag (DJ libraries don't need compilation names)
+            updates["album"] = ""
+            
             if updates:
-                write_tags(dest_real, updates)
+                write_tags(dest_path, updates)
                 tags_written += 1
         except Exception as e:
-            print(f"[WARN] Tag write/clean failed for {dest_real}: {e}")
+            print(f"[WARN] Tag write/clean failed for {dest_path}: {e}")
             tags_errors += 1
             if "clean_tags" in str(e):
                 tags_clean_errors += 1
@@ -1099,9 +1097,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
     if log_rows:
         with log_path.open("w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow(["src_before", "dest_after", "track_id"])
+            # Updated headers for Phase 2 path mapping compatibility
+            w.writerow(["src", "dest", "track_id"])
             w.writerows(log_rows)
         print(f"Zapisano log: {log_path}")
+        print(f"💡 Tip: Use 'create-path-map --move-log {log_path}' to prepare for DJ software sync")
 
     remaining = [r for r in rows if r.get("track_id") not in processed_ids]
     _save_unsorted(remaining)
@@ -1109,6 +1109,40 @@ def cmd_apply(args: argparse.Namespace) -> None:
     print(f"Przeniesiono {len(processed_ids)} pozycji do biblioteki.")
     print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")
     print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
+    
+    # Auto-sync with DJ software libraries (Rekordbox + Traktor)
+    if not args.dry_run and processed_ids:
+        print()
+        print("=" * 60)
+        print("🔄 SYNCING WITH DJ SOFTWARE LIBRARIES")
+        print("=" * 60)
+        print()
+        
+        try:
+            from djlib.external_sync import sync_dj_libraries_after_export
+            
+            result = sync_dj_libraries_after_export(
+                CSV_PATH,  # library.csv path
+                dry_run=False
+            )
+            
+            print()
+            print("=" * 60)
+            print("✅ DJ SOFTWARE SYNC COMPLETE")
+            print("=" * 60)
+            if result.get('rekordbox_added', 0) > 0:
+                print(f"\n✅ Rekordbox: Added {result['rekordbox_added']} new tracks")
+            if result.get('rekordbox_updated', 0) > 0:
+                print(f"\n🔄 Rekordbox: Updated {result['rekordbox_updated']} track paths")
+            if result.get('traktor_added', 0) > 0:
+                print(f"\n✅ Traktor: Added {result['traktor_added']} new tracks")
+            if result.get('traktor_updated', 0) > 0:
+                print(f"\n🔄 Traktor: Updated {result['traktor_updated']} track paths")
+            print()
+        except Exception as e:
+            print(f"\n⚠️  DJ software sync failed: {e}")
+            print("   You can manually run: djlib add-to-traktor --collection <path>")
+            print()
 
 def scan_command() -> None:
     """Funkcja wywołująca skanowanie (używana przez webapp i inne moduły)."""
@@ -1126,8 +1160,13 @@ def cmd_undo(_: argparse.Namespace) -> None:
     rows = list(csv.DictReader(log.open("r", encoding="utf-8")))
     reverted = 0
     for r in rows:
-        src_before = Path(r["src_before"])
-        dest_after = Path(r["dest_after"])
+        # Support both old (src_before/dest_after) and new (src/dest) column names
+        src_before = Path(r.get("src_before") or r.get("src") or "")
+        dest_after = Path(r.get("dest_after") or r.get("dest") or "")
+        
+        if not src_before or not dest_after:
+            continue
+            
         if dest_after.exists():
             dest_after.rename(src_before)
             reverted += 1
@@ -1193,63 +1232,6 @@ def cmd_genres_resolve(args: argparse.Namespace) -> None:
     for src, _, local in res.breakdown:
         parts = ", ".join(f"{k}:{v:.2f}" for k, v in sorted(local.items(), key=lambda kv: kv[1], reverse=True)[:5])
         print(f"  - {src}: {parts}")
-
-def cmd_detect_taxonomy(_: argparse.Namespace) -> None:
-    """Wykrywa istniejącą strukturę folderów i zapisuje jako taxonomy.local.yml."""
-    from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy, load_taxonomy
-    from djlib.config import LIB_ROOT
-
-    # Załaduj istniejącą taksonomię
-    existing = load_taxonomy()
-    existing_ready = set(existing["ready_buckets"])
-    existing_review = set(existing["review_buckets"])
-
-    # Wykryj nową z filesystem
-    detected = detect_taxonomy_from_fs(LIB_ROOT)
-    detected_ready = set(detected["ready_buckets"])
-    detected_review = set(detected["review_buckets"])
-
-    # Merge: dodaj nowe wykryte, zachowaj istniejące
-    merged_ready = existing_ready | detected_ready
-    merged_review = existing_review | detected_review
-
-    merged = {
-        "ready_buckets": sorted(merged_ready),
-        "review_buckets": sorted(merged_review),
-    }
-
-    save_taxonomy(merged)
-    print(f"Zaktualizowano taksonomię: {len(merged_ready)} ready buckets, {len(merged_review)} review buckets")
-    if merged_ready:
-        print("Ready buckets:", ", ".join(merged_ready))
-    if merged_review:
-        print("Review buckets:", ", ".join(merged_review))
-
-
-def cmd_taxonomy_backup(_: argparse.Namespace) -> None:
-    """Zrób snapshot taksonomii na podstawie realnej struktury folderów (LIB_ROOT) i zapisz do backupów.
-
-    Nie modyfikuje istniejącego taxonomy.local.yml. Tworzy:
-    - taxonomy.local.yml.backup (nadpisywalny snapshot)
-    - taxonomy.local.<timestamp>.yml (archiwalny snapshot)
-    """
-    from djlib.taxonomy import detect_taxonomy_from_fs
-    from djlib.config import LIB_ROOT
-    import yaml as _yaml
-
-    lib_root = LIB_ROOT
-    data = detect_taxonomy_from_fs(lib_root)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup_path = REPO_ROOT / "taxonomy.local.yml.backup"
-    archive_path = REPO_ROOT / f"taxonomy.local.{stamp}.yml"
-    try:
-        with backup_path.open("w", encoding="utf-8") as f:
-            _yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
-        with archive_path.open("w", encoding="utf-8") as f:
-            _yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
-        print(f"📦 Snapshot zapisany: {backup_path} oraz {archive_path}")
-    except Exception as e:
-        print(f"[ERR] Nie udało się zapisać backupu taksonomii: {e}")
 
 def cmd_analyze_audio(args: argparse.Namespace) -> None:
     """Analiza audio (BPM/Key/Energy) dla INBOX lub wskazanego pliku/katalogu.
@@ -1415,6 +1397,344 @@ def cmd_qa_acceptance(args: argparse.Namespace) -> None:
             print(f"  - {b}: {c}")
 
 
+def cmd_import_rekordbox(args: argparse.Namespace) -> None:
+    """
+    Phase 1: Import Rekordbox snapshot (READ-ONLY).
+    Creates CSV snapshot for path mapping.
+    """
+    output_path = Path(args.out)
+    tag_files = args.tag_files
+    workers = args.workers
+    
+    print("\n" + "=" * 60)
+    print("PHASE 1: IMPORT REKORDBOX SNAPSHOT (READ-ONLY)")
+    if tag_files:
+        print("         + TAGGING FILES WITH DJLIB_TRACK_ID")
+        print(f"         + WORKERS: {workers}")
+    print("=" * 60)
+    print()
+    
+    try:
+        count = import_rekordbox_snapshot(output_path, tag_files=tag_files, workers=workers)
+        print()
+        print("=" * 60)
+        print(f"✅ SUCCESS: Exported {count} tracks")
+        print("=" * 60)
+        print(f"\nSnapshot saved to: {output_path}")
+        if tag_files:
+            print("\n🔑 Files tagged with DJLIB_TRACK_ID for reliable path tracking")
+        print("\nNext steps:")
+        print("  1. Run 'apply' to move tracks")
+        print("  2. Use this snapshot to create path map")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def cmd_import_traktor(args: argparse.Namespace) -> None:
+    """
+    Phase 1: Import Traktor snapshot (READ-ONLY).
+    Creates CSV snapshot for path mapping.
+    """
+    collection_path = Path(args.collection)
+    output_path = Path(args.out)
+    tag_files = args.tag_files
+    workers = args.workers
+    
+    print("\n" + "=" * 60)
+    print("PHASE 1: IMPORT TRAKTOR SNAPSHOT (READ-ONLY)")
+    if tag_files:
+        print("         + TAGGING FILES WITH DJLIB_TRACK_ID")
+        print(f"         + WORKERS: {workers}")
+    print("=" * 60)
+    print()
+    
+    try:
+        count = import_traktor_snapshot(collection_path, output_path, tag_files=tag_files, workers=workers)
+        print()
+        print("=" * 60)
+        print(f"✅ SUCCESS: Exported {count} tracks")
+        print("=" * 60)
+        print(f"\nSnapshot saved to: {output_path}")
+        if tag_files:
+            print("\n🔑 Files tagged with DJLIB_TRACK_ID for reliable path tracking")
+        print("\nNext steps:")
+        print("  1. Run 'apply' to move tracks")
+        print("  2. Use this snapshot to create path map")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
+    """
+    WORKFLOW 0: Sync library.csv with DJ software databases.
+    Ensures all approved tracks are in Rekordbox + Traktor with custom tags.
+    """
+    from djlib.external_sync import sync_dj_libraries_after_export
+    
+    dry_run = not args.write
+    
+    print("\n" + "=" * 60)
+    print("WORKFLOW 0: SYNC DJ LIBRARIES & TAGS")
+    if dry_run:
+        print("         (DRY-RUN MODE)")
+    else:
+        print("         ⚠️  WRITE MODE - WILL MODIFY DJ SOFTWARE DBs!")
+    print("=" * 60)
+    print()
+    print("This workflow:")
+    print("  1. Compares library.csv with Rekordbox/Traktor databases")
+    print("  2. Adds missing tracks to both DJ software")
+    print("  3. Updates paths for moved tracks")
+    print("  4. Adds custom DJLIB tags where missing")
+    print()
+    
+    try:
+        result = sync_dj_libraries_after_export(
+            CSV_PATH,
+            dry_run=dry_run
+        )
+        
+        print()
+        print("=" * 60)
+        print("✅ SYNC COMPLETE")
+        print("=" * 60)
+        
+        if result.get('rekordbox_added', 0) > 0:
+            print(f"\n✅ Rekordbox: Added {result['rekordbox_added']} new tracks")
+        if result.get('rekordbox_updated', 0) > 0:
+            print(f"🔄 Rekordbox: Updated {result['rekordbox_updated']} track paths")
+        
+        if result.get('traktor_added', 0) > 0:
+            print(f"\n✅ Traktor: Added {result['traktor_added']} new tracks")
+        if result.get('traktor_updated', 0) > 0:
+            print(f"🔄 Traktor: Updated {result['traktor_updated']} track paths")
+        
+        if dry_run:
+            print("\n💡 Run with --write to apply changes")
+        print()
+        
+    except Exception as e:
+        print(f"\n❌ Sync failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def cmd_create_path_map(args: argparse.Namespace) -> None:
+    """
+    Phase 2: Create path mapping from move log + snapshots (READ-ONLY).
+    """
+    move_log = Path(args.move_log)
+    rekordbox_snapshot = Path(args.rekordbox_snapshot) if args.rekordbox_snapshot else None
+    traktor_snapshot = Path(args.traktor_snapshot) if args.traktor_snapshot else None
+    output_path = Path(args.out) if args.out else None
+    
+    print("\n" + "=" * 60)
+    print("PHASE 2: CREATE PATH MAP (READ-ONLY)")
+    print("=" * 60)
+    print()
+    
+    try:
+        path_map_path = create_path_map(
+            move_log,
+            rekordbox_snapshot,
+            traktor_snapshot,
+            output_path
+        )
+        print()
+        print("=" * 60)
+        print("✅ SUCCESS: Path map created")
+        print("=" * 60)
+        print(f"\nPath map saved to: {path_map_path}")
+        print("\nNext steps:")
+        print("  Phase 3 not yet implemented (path sync to DJ software DBs)")
+        print("  For now, use this map for manual verification or custom scripts")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def cmd_sync_rekordbox(args: argparse.Namespace) -> None:
+    """
+    Phase 3: Sync paths to Rekordbox DB (WRITE - NOT YET IMPLEMENTED).
+    """
+    print("\n" + "=" * 60)
+    print("PHASE 3: SYNC REKORDBOX PATHS (NOT YET IMPLEMENTED)")
+    print("=" * 60)
+    print()
+    print("⚠️  This feature is planned but not yet implemented.")
+    print()
+    print("Why not implemented yet:")
+    print("  • Requires extensive safety testing")
+    print("  • Needs automatic backup/restore")
+    print("  • Must support dry-run + confirmation")
+    print("  • Transaction support for atomic updates")
+    print()
+    print("Current status: Use Phase 1 + Phase 2 for preparation")
+    print()
+
+
+def cmd_sync_traktor(args: argparse.Namespace) -> None:
+    """
+    Phase 3: Sync paths to Traktor collection.nml (WRITE - NOT YET IMPLEMENTED).
+    """
+    print("\n" + "=" * 60)
+    print("PHASE 3: SYNC TRAKTOR PATHS (NOT YET IMPLEMENTED)")
+    print("=" * 60)
+    print()
+    print("⚠️  This feature is planned but not yet implemented.")
+    print()
+    print("Why not implemented yet:")
+    print("  • Requires extensive safety testing")
+    print("  • Needs automatic backup/restore")
+    print("  • Must preserve XML structure")
+    print("  • Transaction support for atomic updates")
+    print()
+    print("Current status: Use Phase 1 + Phase 2 for preparation")
+    print()
+
+
+def cmd_add_to_traktor(args: argparse.Namespace) -> None:
+    """
+    Add tracks from unsorted.xlsx to Traktor collection.nml.
+    """
+    from djlib.external_sync import add_tracks_to_traktor
+    
+    collection_path = Path(args.collection)
+    dry_run = not args.write
+    
+    print("\n" + "=" * 60)
+    print("ADD TRACKS TO TRAKTOR")
+    if dry_run:
+        print("         (DRY-RUN MODE)")
+    else:
+        print("         ⚠️  WRITE MODE - WILL MODIFY TRAKTOR DB!")
+    print("=" * 60)
+    print()
+    
+    # Load tracks from unsorted.xlsx
+    staging_rows = _load_unsorted()
+    if not staging_rows:
+        print("❌ No tracks in unsorted.xlsx")
+        return
+    
+    print(f"📋 Found {len(staging_rows)} tracks in unsorted.xlsx")
+    print()
+    
+    # Convert to format expected by add_tracks_to_traktor
+    tracks = []
+    for row in staging_rows:
+        track_id = row.get('track_id', '')
+        traktor_id = row.get('traktor_id', '')
+        file_path = row.get('file_path', '')
+        
+        if not file_path:
+            continue
+        
+        tracks.append({
+            'file_path': file_path,
+            'artist': row.get('artist', ''),
+            'title': row.get('title', ''),
+            'bpm': row.get('bpm', ''),
+            'key': row.get('key_camelot', ''),
+            'traktor_id': traktor_id if traktor_id else track_id,  # Use track_id as fallback
+        })
+    
+    try:
+        added_count, updated_count = add_tracks_to_traktor(collection_path, tracks, dry_run=dry_run)
+        
+        print()
+        print("=" * 60)
+        if dry_run:
+            if added_count > 0:
+                print(f"🔍 DRY-RUN: Would add {added_count} new tracks")
+            if updated_count > 0:
+                print(f"🔍 DRY-RUN: Would update {updated_count} existing track paths")
+            print("\nTo actually apply changes, run with --write flag")
+        else:
+            if added_count > 0:
+                print(f"✅ SUCCESS: Added {added_count} new tracks to Traktor")
+            if updated_count > 0:
+                print(f"🔄 SUCCESS: Updated {updated_count} existing track paths")
+        print("=" * 60)
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def cmd_add_to_rekordbox(args: argparse.Namespace) -> None:
+    """
+    Add tracks from unsorted.xlsx to Rekordbox database.
+    """
+    from djlib.external_sync import add_tracks_to_rekordbox
+    
+    dry_run = not args.write
+    
+    print("\n" + "=" * 60)
+    print("ADD TRACKS TO REKORDBOX")
+    if dry_run:
+        print("         (DRY-RUN MODE)")
+    else:
+        print("         ⚠️  WRITE MODE - WILL MODIFY REKORDBOX DB!")
+    print("=" * 60)
+    print()
+    
+    # Load tracks from unsorted.xlsx
+    staging_rows = _load_unsorted()
+    if not staging_rows:
+        print("❌ No tracks in unsorted.xlsx")
+        return
+    
+    print(f"📋 Found {len(staging_rows)} tracks in unsorted.xlsx")
+    print()
+    
+    # Convert to format expected by add_tracks_to_rekordbox
+    tracks = []
+    for row in staging_rows:
+        track_id = row.get('track_id', '')
+        rekordbox_id = row.get('rekordbox_id', '')
+        file_path = row.get('file_path', '')
+        
+        if not file_path:
+            continue
+        
+        tracks.append({
+            'file_path': file_path,
+            'artist': row.get('artist', ''),
+            'title': row.get('title', ''),
+            'bpm': row.get('bpm', ''),
+            'key': row.get('key_camelot', ''),
+            'rekordbox_id': rekordbox_id,
+        })
+    
+    try:
+        added_count, updated_count = add_tracks_to_rekordbox(tracks, dry_run=dry_run)
+        
+        print()
+        print("=" * 60)
+        if dry_run:
+            if added_count > 0:
+                print(f"🔍 DRY-RUN: Would add {added_count} new tracks")
+            if updated_count > 0:
+                print(f"🔍 DRY-RUN: Would update {updated_count} existing track paths")
+            print("\nTo actually apply changes, run with --write flag")
+        else:
+            if added_count > 0:
+                print(f"✅ SUCCESS: Added {added_count} new tracks to Rekordbox")
+            if updated_count > 0:
+                print(f"🔄 SUCCESS: Updated {updated_count} existing track paths")
+        print("=" * 60)
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def cmd_setup_beatport(args: argparse.Namespace) -> None:
     """Configure Beatport credentials for API access."""
     from djlib.metadata.beatport import set_beatport_credentials
@@ -1464,6 +1784,58 @@ def build_parser() -> argparse.ArgumentParser:
     # Setup Beatport credentials
     sp.add_parser("setup-beatport", help="Configure Beatport credentials for API access").set_defaults(func=cmd_setup_beatport)
     
+    # ========== EXTERNAL DJ SOFTWARE INTEGRATION ==========
+    
+    # Phase 1: Import snapshots (READ-ONLY)
+    irb = sp.add_parser("import-rekordbox", help="Import Rekordbox collection snapshot (Phase 1 - READ-ONLY)")
+    irb.add_argument("--out", default="LOGS/external_snapshots/rekordbox_snapshot.csv", help="Output CSV path")
+    irb.add_argument("--tag-files", action="store_true", help="Write DJLIB_TRACK_ID to audio files (recommended)")
+    irb.add_argument("--workers", type=int, default=4, help="Number of parallel workers for tagging (default: 4)")
+    irb.set_defaults(func=cmd_import_rekordbox)
+    
+    itr = sp.add_parser("import-traktor", help="Import Traktor collection snapshot (Phase 1 - READ-ONLY)")
+    itr.add_argument("--collection", required=True, help="Path to Traktor collection.nml")
+    itr.add_argument("--out", default="LOGS/external_snapshots/traktor_snapshot.csv", help="Output CSV path")
+    itr.add_argument("--tag-files", action="store_true", help="Write DJLIB_TRACK_ID to audio files (recommended)")
+    itr.add_argument("--workers", type=int, default=4, help="Number of parallel workers for tagging (default: 4)")
+    itr.set_defaults(func=cmd_import_traktor)
+    
+    # WORKFLOW 0: Sync DJ libraries with library.csv
+    sdl = sp.add_parser("sync-dj-libraries", help="Sync library.csv with Rekordbox/Traktor databases (WORKFLOW 0)")
+    sdl.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
+    sdl.set_defaults(func=cmd_sync_dj_libraries)
+    
+    # Phase 2: Create path map (READ-ONLY)
+    cpm = sp.add_parser("create-path-map", help="Create path mapping from move log + snapshots (Phase 2 - READ-ONLY)")
+    cpm.add_argument("--move-log", required=True, help="Path to move log from 'apply' command")
+    cpm.add_argument("--rekordbox-snapshot", default=None, help="Path to Rekordbox snapshot CSV")
+    cpm.add_argument("--traktor-snapshot", default=None, help="Path to Traktor snapshot CSV")
+    cpm.add_argument("--out", default=None, help="Output path map CSV (auto-generated if not specified)")
+    cpm.set_defaults(func=cmd_create_path_map)
+    
+    # Phase 3: Sync paths (WRITE - NOT YET IMPLEMENTED)
+    srb = sp.add_parser("sync-rekordbox-paths", help="Sync paths to Rekordbox DB (Phase 3 - NOT IMPLEMENTED)")
+    srb.set_defaults(func=cmd_sync_rekordbox)
+    
+    str_parser = sp.add_parser("sync-traktor-paths", help="Sync paths to Traktor collection.nml (Phase 3 - NOT IMPLEMENTED)")
+    str_parser.set_defaults(func=cmd_sync_traktor)
+    
+    # Add tracks to Traktor (NEW)
+    att = sp.add_parser("add-to-traktor", help="Add tracks from unsorted.xlsx to Traktor collection.nml")
+    att.add_argument("--collection", required=True, help="Path to Traktor collection.nml")
+    att.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
+    att.set_defaults(func=cmd_add_to_traktor)
+    
+    # Add tracks to Rekordbox (NEW)
+    arb = sp.add_parser("add-to-rekordbox", help="Add tracks from unsorted.xlsx to Rekordbox database")
+    arb.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
+    arb.set_defaults(func=cmd_add_to_rekordbox)
+    
+    str_parser = sp.add_parser("sync-traktor-paths", help="Sync paths to Traktor collection.nml (Phase 3 - NOT IMPLEMENTED)")
+    str_parser.set_defaults(func=cmd_sync_traktor)
+    
+    # ========== END EXTERNAL INTEGRATION ==========
+    
     scan_parser = sp.add_parser("scan", help="Scan UNSORTED folder for new tracks")
     scan_parser.add_argument(
         "--strict",
@@ -1472,10 +1844,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_parser.set_defaults(func=cmd_scan)
 
-    ap = sp.add_parser("auto-decide")
-    ap.add_argument("--rules", default=str(REPO_ROOT / "rules.yml"))
-    ap.add_argument("--only-empty", action="store_true")
-    ap.set_defaults(func=cmd_auto_decide)
+    # REMOVED: auto-decide parser (legacy bucketing system)
 
     ap2 = sp.add_parser("apply")
     ap2.add_argument("--dry-run", action="store_true")
@@ -1545,11 +1914,8 @@ def build_parser() -> argparse.ArgumentParser:
     res.add_argument("--version", default="", help="Version/remix info to improve SoundCloud lookup")
     res.set_defaults(func=cmd_genres_resolve)
 
-    sp.add_parser("detect-taxonomy").set_defaults(func=cmd_detect_taxonomy)
-
-    # --- Meta-komendy: round-1 i round-2 ---
-    tb = sp.add_parser("taxonomy-backup", help="Zrób snapshot taksonomii na podstawie folderów i zapisz backup")
-    tb.set_defaults(func=cmd_taxonomy_backup)
+    # REMOVED: detect-taxonomy and taxonomy-backup commands (legacy bucketing system)
+    
     return p
 
 def main() -> None:

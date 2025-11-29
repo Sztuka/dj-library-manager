@@ -1,10 +1,30 @@
+"""Genre voting and taxonomy mapping (DEPRECATED).
+
+⚠️  WARNING: This module is DEPRECATED as of November 2025.
+
+External genre votes → bucket mapping (via taxonomy_map.yml) has been replaced with:
+- Canonical genre resolution via `djlib.genre_canonical`
+- Multi-source genre resolver in `djlib.metadata.genre_resolver`
+
+This module is maintained for backward compatibility only.
+See djlib/legacy/README.md for migration guide.
+"""
+
 from __future__ import annotations
 from typing import Dict, Tuple, List
 import re
+import warnings
 from djlib.extern import lastfm_toptags
 from djlib.taxonomy import normalize_label  # reuse normalization
 from pathlib import Path
 import yaml
+
+# Issue deprecation warning
+warnings.warn(
+    "djlib.genre is deprecated. Use djlib.genre_canonical and djlib.metadata.genre_resolver.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 TAXONOMY_MAP_PATH = BASE_DIR / "taxonomy_map.yml"

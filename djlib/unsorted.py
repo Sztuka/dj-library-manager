@@ -38,7 +38,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("title_suggest", hidden=True, width=24, locked=True),
     ColumnSpec("version_suggest", hidden=True, width=20, locked=True),
     ColumnSpec("genre_suggest", hidden=True, width=24, locked=True),
-    ColumnSpec("album_suggest", hidden=True, width=22, locked=True),
+    ColumnSpec("album_suggest", hidden=False, width=32, locked=True),
     ColumnSpec("year_suggest", hidden=False, width=12, locked=True),
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
     # Genre hints (visible for decision making, but locked)
@@ -49,26 +49,28 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("pop_playcount", width=14, locked=True),
     ColumnSpec("pop_listeners", width=14, locked=True),
     ColumnSpec("meta_source", hidden=True, width=20, locked=True),
-    ColumnSpec("ai_guess_bucket", hidden=True, width=28, locked=True),
-    ColumnSpec("ai_guess_comment", hidden=True, width=30, locked=True),
     # Editable fields (user must review/accept)
     ColumnSpec("artist", width=30),
     ColumnSpec("title", width=45),
     ColumnSpec("version_info", width=42),
-    ColumnSpec("genre", width=20),
-    ColumnSpec("target_subfolder", width=34),
+    ColumnSpec("year", width=10),
+    ColumnSpec("genre", width=24),  # User-selected genre (dropdown from genres.yml)
+    ColumnSpec("status", width=12),  # accept / reject / review
+    ColumnSpec("destination", width=14),  # library / reject / archive
     ColumnSpec("must_play", width=14),
     ColumnSpec("occasion_tags", width=24),
-    ColumnSpec("notes", width=36),
+    ColumnSpec("notes", width=40),
     ColumnSpec("bpm", width=10),
     ColumnSpec("key_camelot", width=12),
-    # Preview of final filename (locked)
+    # Computed final filename (locked)
     ColumnSpec("final_filename", width=100, locked=True),
     # Status column (editable dropdown)
     ColumnSpec("done", width=10),
 ]
 
 DONE_CHOICES = ("TRUE", "FALSE")
+STATUS_CHOICES = ("accept", "reject", "review", "")
+DESTINATION_CHOICES = ("library", "reject", "archive", "mixes", "")
 
 
 def _as_str(val: object | None) -> str:
@@ -125,6 +127,13 @@ def load_unsorted_rows(path: Path) -> List[Dict[str, str]]:
 
 
 def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choices: Sequence[str]) -> None:
+    """Write rows to unsorted.xlsx with new status/destination model.
+    
+    Args:
+        path: Path to unsorted.xlsx
+        rows: Row data dictionaries
+        bucket_choices: Legacy parameter (ignored, kept for compatibility)
+    """
     wb = Workbook()
     ws: Worksheet = wb.active  # type: ignore[assignment]
     ws.title = "Unsorted"
@@ -254,25 +263,72 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
 
     # Validation lists sheet
     lists_ws = wb.create_sheet("_lists")
-    for idx, bucket in enumerate(bucket_choices, start=1):
-        lists_ws.cell(row=idx, column=1, value=_as_str(bucket))
-    lists_ws.cell(row=1, column=2, value=DONE_CHOICES[0])
-    lists_ws.cell(row=2, column=2, value=DONE_CHOICES[1])
+    
+    # Genre labels (from genres.yml)
+    from djlib.genre_canonical import get_genre_labels
+    try:
+        genre_labels = get_genre_labels()
+        for idx, label in enumerate(genre_labels, start=1):
+            lists_ws.cell(row=idx, column=1, value=label)
+    except Exception:
+        genre_labels = []
+    
+    # Status choices
+    for idx, status in enumerate(STATUS_CHOICES, start=1):
+        lists_ws.cell(row=idx, column=2, value=status)
+    
+    # Destination choices
+    for idx, dest in enumerate(DESTINATION_CHOICES, start=1):
+        lists_ws.cell(row=idx, column=3, value=dest)
+    
+    # Done choices
+    lists_ws.cell(row=1, column=4, value=DONE_CHOICES[0])
+    lists_ws.cell(row=2, column=4, value=DONE_CHOICES[1])
+    
+    # Legacy bucket choices (if provided, for backward compatibility)
+    if bucket_choices:
+        for idx, bucket in enumerate(bucket_choices, start=1):
+            lists_ws.cell(row=idx, column=5, value=_as_str(bucket))
+    
     lists_ws.sheet_state = "hidden"
 
-    # Data validation for target_subfolder
+    # Data validation for genre
     try:
-        target_col_idx = [i for i, spec in enumerate(UNSORTED_COLUMNS, start=1) if spec.name == "target_subfolder"][0]
-        target_letter = get_column_letter(target_col_idx)
-        if bucket_choices:
-            formula = f"'_lists'!$A$1:$A${len(bucket_choices)}"
-        else:
-            formula = '"READY TO PLAY/UNSORTED"'
-        dv_target = DataValidation(type="list", formula1=formula, allow_blank=True, showDropDown=False)
-        dv_target.error = "Select bucket from the list"
-        dv_target.errorTitle = "Invalid bucket"
-        ws.add_data_validation(dv_target)
-        dv_target.add(f"{target_letter}2:{target_letter}1048576")
+        genre_col_idx = [i for i, spec in enumerate(UNSORTED_COLUMNS, start=1) if spec.name == "genre"][0]
+        genre_letter = get_column_letter(genre_col_idx)
+        if genre_labels:
+            formula = f"'_lists'!$A$1:$A${len(genre_labels)}"
+            dv_genre = DataValidation(type="list", formula1=formula, allow_blank=True, showDropDown=False)
+            dv_genre.error = "Select genre from the list"
+            dv_genre.errorTitle = "Invalid genre"
+            ws.add_data_validation(dv_genre)
+            dv_genre.add(f"{genre_letter}2:{genre_letter}1048576")
+    except Exception:
+        pass
+
+    # Data validation for status column
+    try:
+        status_idx = [i for i, spec in enumerate(UNSORTED_COLUMNS, start=1) if spec.name == "status"][0]
+        status_letter = get_column_letter(status_idx)
+        dv_status = DataValidation(type="list", formula1=f"'_lists'!$B$1:$B${len(STATUS_CHOICES)}", 
+                                   allow_blank=True, showDropDown=False)
+        dv_status.error = "Use accept/reject/review"
+        dv_status.errorTitle = "Invalid status"
+        ws.add_data_validation(dv_status)
+        dv_status.add(f"{status_letter}2:{status_letter}1048576")
+    except Exception:
+        pass
+
+    # Data validation for destination column
+    try:
+        dest_idx = [i for i, spec in enumerate(UNSORTED_COLUMNS, start=1) if spec.name == "destination"][0]
+        dest_letter = get_column_letter(dest_idx)
+        dv_dest = DataValidation(type="list", formula1=f"'_lists'!$C$1:$C${len(DESTINATION_CHOICES)}", 
+                                allow_blank=True, showDropDown=False)
+        dv_dest.error = "Use library/reject/archive/mixes"
+        dv_dest.errorTitle = "Invalid destination"
+        ws.add_data_validation(dv_dest)
+        dv_dest.add(f"{dest_letter}2:{dest_letter}1048576")
     except Exception:
         pass
 
@@ -280,13 +336,16 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
     try:
         done_idx = [i for i, spec in enumerate(UNSORTED_COLUMNS, start=1) if spec.name == "done"][0]
         done_letter = get_column_letter(done_idx)
-        dv_done = DataValidation(type="list", formula1="'_lists'!$B$1:$B$2", allow_blank=False, showDropDown=False)
+        dv_done = DataValidation(type="list", formula1="'_lists'!$D$1:$D$2", allow_blank=False, showDropDown=False)
         dv_done.error = "Use TRUE/FALSE"
         dv_done.errorTitle = "Invalid value"
         ws.add_data_validation(dv_done)
         dv_done.add(f"{done_letter}2:{done_letter}1048576")
     except Exception:
         pass
+    
+    # Legacy: target_subfolder validation removed (column no longer exists)
+    # Bucket-based taxonomy (CLUB/OPEN FORMAT) has been replaced with simple logistics (library/reject/archive)
 
     # Enable sheet protection (locked cells will be protected, unlocked cells editable)
     ws.protection.sheet = True

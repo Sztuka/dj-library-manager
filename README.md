@@ -1,20 +1,21 @@
 # DJ Library Manager
 
-**Automated DJ library organization system with Rekordbox integration, audio analysis, and ML-powered categorization.**
+**Automated DJ library organization with Rekordbox integration, metadata enrichment, and audio analysis.**
 
 ## 🎯 What This Does
 
-Smart workflow manager for DJs that:
+Smart library workflow for DJs that:
 
-- ✅ **Scans UNSORTED folder** → validates Rekordbox analysis → generates `unsorted.xlsx` staging area
+- ✅ **Scans UNSORTED folder** → validates Rekordbox analysis → generates `data/unsorted.xlsx` staging area
 - ✅ **Extracts audio features** with Essentia (BPM, key, energy, spectral features) → SQLite cache for ML training
-- ✅ **Multi-source metadata enrichment** (Beatport, MusicBrainz, Last.fm, SoundCloud) → genre suggestions & popularity metrics
-- ✅ **Manual curation workflow** via Excel → edit metadata, assign buckets, mark `done = TRUE`
-- ✅ **Cleans spam metadata** → removes piracy tags (musicdjs.club, chomikuj.pl) while preserving DJ software data (Traktor/Serato cues)
-- ✅ **Safe file operations** → moves approved tracks to library folders with undo support
-- ✅ **ML dataset export** → combines Rekordbox tags + Essentia features for training genre/bucket models
+- ✅ **Multi-source metadata enrichment** (Beatport, MusicBrainz, Last.fm, SoundCloud) → canonical genre resolution (30 genres)
+- ✅ **Manual curation workflow** via Excel → edit metadata, select destination (library/reject/archive/mixes), mark `done = TRUE`
+- ✅ **Cleans spam metadata** → removes piracy tags + **ALWAYS clears album tags** (compilations not useful for DJs)
+- ✅ **Safe file operations** → moves approved tracks to organized structure with undo support
+- ✅ **DJ software integration** → import Rekordbox/Traktor snapshots, create path maps for future sync
+- ✅ **ML dataset export** → combines Rekordbox tags + Essentia features for training genre/context models
 
-**Key innovation:** Treats Rekordbox as source of truth for BPM/Key while using Essentia for rich ML features (spectral, MFCC, chroma). No tag conflicts, one workflow.
+**Core philosophy:** This is a **library cleaner** with genre-focused organization. Destination folders (library/reject/archive) are pure logistics, not musical categories. Smart playlists are future enhancements.
 
 ## 🚀 Quick Start
 
@@ -56,7 +57,25 @@ python -m djlib.cli analyze-audio --check-env
 - **SoundCloud**: Works out-of-box (auto-refresh client_id)
 - **MusicBrainz/Last.fm**: No setup required
 
-### 5-Step Workflow
+### 6-Step Workflow
+
+**0. SYNC DJ LIBRARIES** (optional, maintains sync with Rekordbox/Traktor)
+
+```bash
+# Dry-run (safe preview):
+python -m djlib.cli sync-dj-libraries
+# Or task: "WORKFLOW 0 (dry-run) — Sync DJ Libraries & Tags"
+
+# Actually sync:
+python -m djlib.cli sync-dj-libraries --write
+# Or task: "WORKFLOW 0 — Sync DJ Libraries & Tags"
+
+# What this does:
+# 1. Compares library.csv with Rekordbox/Traktor databases
+# 2. Adds missing tracks to both DJ software
+# 3. Updates paths for moved tracks
+# 4. Adds custom DJLIB tags where missing
+```
 
 **1. PREPARE FILES IN REKORDBOX**
 
@@ -74,32 +93,54 @@ python -m djlib.cli scan --strict
 
 # Or use VS Code task: "WORKFLOW 1 — Scan UNSORTED"
 # Creates unsorted.xlsx with metadata staging area
+# Auto-reads rekordbox_id/traktor_id and tags files
 ```
 
-**3. ANALYZE AUDIO FEATURES** (optional, for ML training)
+**3. ENRICH METADATA** (optional, adds online metadata)
 
 ```bash
-python -m djlib.cli analyze-audio
-# Or task: "WORKFLOW 2 — Analyze audio (Essentia)"
-# Extracts 50+ features → LOGS/audio_analysis.sqlite
+python -m djlib.cli enrich-online
+# Or task: "WORKFLOW 2 — Enrich online"
+# Fetches: MusicBrainz, Last.fm, Beatport, SoundCloud
+# Adds: genres, release dates, popularity metrics
 ```
 
 **4. CURATE IN EXCEL**
 
 - Open `unsorted.xlsx`
-- Fill: `artist`, `title`, `genre`, `target_subfolder`
+- Review and edit: `artist`, `title`, `version_info`, `genre`
+- Select `genre` from dropdown (canonical genres from `genres.yml`)
+- Set `status`: `accept` / `reject` / `review`
+- Set `destination`: `library` (main collection) / `reject` / `archive`
 - Mark ready tracks: `done = TRUE`
 - Save and close
+
+**Folder structure:**
+
+- **Main Library** (`~/Music Library/{Artist}/...`) - Approved tracks, organized by artist
+- **Reject** (`~/Music Rejected/...`) - Rejected tracks (separate from library, flat structure)
+- **Archive** (`~/Music Archive/{Artist}/...`) - Archived tracks (separate from library, organized by artist)
+- **Mixes** (`~/Music Library/MIXES/...`) - DJ mixes (flat structure, no metadata requirements)
 
 **5. EXPORT APPROVED TRACKS**
 
 ```bash
 python -m djlib.cli apply
-# Or task: "WORKFLOW 4 — Export approved tracks"
+# Or task: "WORKFLOW 3 — Export approved tracks"
 # Cleans spam tags (musicdjs.club, chomikuj.pl, etc.)
 # Preserves DJ software data (PRIV/Traktor cues, GEOB/Serato markers, POPM/ratings, APIC/artwork)
-# Moves done=TRUE files → library folders
+# Moves done=TRUE files → LIBRARY, REJECT, or ARCHIVE folders
 # Updates library.csv with metadata
+# AUTO-SYNCS with Rekordbox/Traktor (adds new tracks, updates paths)
+```
+
+**6. ANALYZE AUDIO FEATURES** (for ML training & future playlists)
+
+```bash
+python -m djlib.cli analyze-audio
+# Or task: "WORKFLOW 4 — Analyze audio (Essentia)"
+# Extracts 50+ features → LOGS/audio_analysis.sqlite
+# Only analyzes approved tracks in LIBRARY (not rejected)
 ```
 
 ### Optional: ML Dataset Export
@@ -112,6 +153,40 @@ python -m djlib.cli ml-export-training-dataset
 # - ess_bpm/ess_key_camelot/ess_energy (from Essentia)
 # - 50+ spectral/MFCC/chroma features for training
 ```
+
+### Optional: DJ Software Integration (Rekordbox/Traktor)
+
+**Automatic Sync (Recommended):**
+
+DJ software sync happens automatically during workflows:
+
+- **WORKFLOW 0**: Manual sync of library.csv → Rekordbox/Traktor
+- **WORKFLOW 1 (scan)**: Reads rekordbox_id/traktor_id, tags files
+- **WORKFLOW 3 (apply)**: Auto-adds new tracks to both DJ software
+
+**Manual Commands (Advanced):**
+
+```bash
+# Add tracks from unsorted.xlsx to Rekordbox
+python -m djlib.cli add-to-rekordbox --write
+
+# Add tracks from unsorted.xlsx to Traktor
+python -m djlib.cli add-to-traktor --collection ~/Documents/.../collection.nml --write
+
+# Take snapshots (Phase 1 - READ-ONLY)
+python -m djlib.cli import-rekordbox --tag-files
+python -m djlib.cli import-traktor --collection ~/Documents/.../collection.nml --tag-files
+```
+
+**Custom DJLIB Tags:**
+
+All files are tagged with permanent IDs for reliable tracking:
+
+- `DJLIB_TRACK_ID` - Internal UUID (permanent identifier)
+- `DJLIB_REKORDBOX_ID` - Rekordbox DB primary key
+- `DJLIB_TRAKTOR_ID` - Traktor AUDIO_ID
+
+**See:** `docs/REKORDBOX_TRAKTOR_SYNC_USAGE.md` for complete guide.
 
 ---
 
@@ -139,10 +214,13 @@ UNSORTED/
 unsorted.xlsx (staging area)
   ↓ manual curation (Excel)
   ↓ apply (move done=TRUE files)
-LIBRARY/
-  CLUB/
-  OPEN FORMAT/
-  REVIEW QUEUE/
+~/Music Library/
+  Artist/
+    Artist - Title (Version) [Key BPM].ext
+  MIXES/
+    DJ Mix Name [BPM].mp3
+~/Music Rejected/           # Separate folder (flat)
+~/Music Archive/Artist/     # Separate folder (organized)
 library.csv (master database)
   ↓ ml-export-training-dataset
 data/training_dataset_full.csv (ML training)
@@ -187,6 +265,7 @@ python -m djlib.cli scan --strict
 ```
 
 **Key conversion:**
+
 - Rekordbox musical notation (B, Cm, F#m) → Camelot (1B, 5A, 2A)
 - BPM precision: 2 decimals in tags (112.57), rounded in filenames (113)
 
@@ -330,13 +409,13 @@ track_id,file_path,
 tag_bpm,tag_key_camelot,          # From Rekordbox (source of truth)
 ess_bpm,ess_key_camelot,ess_energy, # From Essentia (algorithmic)
 ess_spectral_centroid,ess_spectral_rolloff,...  # 50+ features
-genre_label,bucket_label          # Training labels
+genre_label                       # Training label (canonical genre from genres.yml)
 ```
 
 **Use cases:**
 
 - Train genre classifier (compare Rekordbox vs Essentia BPM)
-- Bucket prediction (auto-assign CLUB/OPEN FORMAT/etc)
+- Context prediction (cocktail vs club main room - future enhancement)
 - Energy-based recommendations
 - Detect analysis discrepancies (manual correction needed)
 
@@ -345,7 +424,7 @@ genre_label,bucket_label          # Training labels
 ```bash
 python -m djlib.cli ml-export-training-dataset \
   --out data/training_full.csv \
-  --require-both-labels  # Skip tracks without genre+bucket
+  --require-genre  # Skip tracks without genre label
 ```
 
 See `docs/ML_PIPELINE.md` for training examples.
@@ -472,13 +551,14 @@ pytest --cov=djlib --cov-report=term-missing
 
 ## 📚 Documentation Index
 
-| Topic                     | File                            | Description                                           |
-| ------------------------- | ------------------------------- | ----------------------------------------------------- |
-| **Setup & Installation**  | `docs/INSTALL.md`               | Essentia installation, dependencies                   |
-| **Rekordbox Integration** | `docs/REKORDBOX_INTEGRATION.md` | DB queries, strict mode, scenarios                    |
-| **Architecture**          | `docs/ARCHITECTURE_EN.md`       | Modules, data flow, design decisions (English)        |
-| **Roadmap**               | `docs/ROADMAP_EN.md`            | Development plan: Rekordbox + Essentia + ML (English) |
-| **ML Pipeline**           | `docs/ML_PIPELINE.md`           | Training workflows, feature engineering               |
+| Topic                     | File                                   | Description                                             |
+| ------------------------- | -------------------------------------- | ------------------------------------------------------- |
+| **Setup & Installation**  | `docs/INSTALL.md`                      | Essentia installation, dependencies                     |
+| **Rekordbox Integration** | `docs/REKORDBOX_INTEGRATION.md`        | DB queries, strict mode, scenarios                      |
+| **DJ Software Sync**      | `docs/REKORDBOX_TRAKTOR_SYNC_USAGE.md` | Import snapshots, path mapping, future sync (Phase 1-3) |
+| **Architecture**          | `docs/ARCHITECTURE_EN.md`              | Modules, data flow, design decisions (English)          |
+| **Roadmap**               | `docs/ROADMAP_EN.md`                   | Development plan: Rekordbox + Essentia + ML (English)   |
+| **ML Pipeline**           | `docs/ML_PIPELINE.md`                  | Training workflows, feature engineering                 |
 
 ---
 

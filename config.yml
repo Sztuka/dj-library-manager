@@ -1,5 +1,10 @@
-INBOX_UNSORTED: ~/Unsorted
-LIB_ROOT: ~/Music Library
+INBOX_UNSORTED: ~/Music Unsorted # Inbox for new tracks
+LIB_ROOT: ~/Music Library # Main library - approved tracks (Artist/file.ext)
+REJECT_ROOT: ~/Music Rejected # Rejected tracks (flat structure)
+ARCHIVE_ROOT: ~/Music Archive # Archived tracks (Artist/file.ext)
+MIXES_ROOT: ~/Music Library/MIXES # DJ mixes (flat structure, no metadata)
+LOGS_DIR: ./LOGS # Application logs (inside project repo)
+UNSORTED_XLSX: ./data/unsorted.xlsx # Work-in-progress Excel file (inside repo)
 
 # Application API keys (public, can be committed)
 acoustid_api_key: REDACTED_ACOUSTID_KEY

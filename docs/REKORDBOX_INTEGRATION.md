@@ -3,6 +3,7 @@
 ## Overview
 
 The `djlib.rekordbox_status` module provides:
+
 1. **Detection** - Whether files have been analyzed in Rekordbox (BPM & Key)
 2. **Metadata Extraction** - Direct extraction of BPM/Key from Rekordbox database
 

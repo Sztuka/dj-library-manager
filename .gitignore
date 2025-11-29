@@ -32,6 +32,8 @@ taxonomy.local.yml
 # ===== Data / artifacts =====
 data/
 !data/.gitkeep
+unsorted.xlsx
+*.xlsx
 
 # ===== Audio and large binaries =====
 *.mp3

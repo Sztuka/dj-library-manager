@@ -1,12 +1,12 @@
 # DJ Library Manager
 
-Lokalny pomocnik do **porządkowania biblioteki DJ-a**: skanuje INBOX, sugeruje docelowe kubełki (foldery), robi „dry-run” i bezpieczne przenosiny z opcją **undo**. Działa pod **Rekordbox** / granie z dysku/pendrive (foldery), nie ingeruje w Twoje playlisty.
+Lokalny pomocnik do **porządkowania biblioteki DJ-a**: skanuje UNSORTED, waliduje analizę Rekordbox, wzbogaca metadane z wielu źródeł, umożliwia manualną kurację w Excel i bezpiecznie przenosi zatwierdzone pliki z opcją **undo**. Integruje się z **Rekordbox** i wspiera eksport danych do treningu modeli ML.
 
-## Features (MVP / Extended)
+## Features
 
-- **Setup Wizard (web)** – 3 kroki: _Lokalizacja_ → _Taksonomia_ → _Foldery & Skan_.
-- **Struktura dysku**: `READY TO PLAY` (CLUB / OPEN FORMAT / MIXES) oraz `REVIEW QUEUE` (UNDECIDED / NEEDS EDIT).
-- **Scan → CSV** – metadane audio (rozmiar, SHA256, tagi; BPM/key jeśli już w pliku) + wielokrotne nawiasy w nazwie pliku konsolidowane do `version_suggest`.
+- **Workflow Excel-based** – skan UNSORTED → `unsorted.xlsx` → manualna edycja metadanych → export zatwierdzonych
+- **Struktura dysku**: Main Library (~/Music Library/{Artist}/), Reject (~/Music Rejected/), Archive (~/Music Archive/{Artist}/), Mixes (~/Music Library/MIXES/)
+- **Scan → Excel** – metadane audio (rozmiar, SHA256, tagi Rekordbox: BPM/Key) + wielokrotne nawiasy w nazwie pliku konsolidowane do `version_suggest`
 - **Auto-decide** – zasady z `rules.yml` (na razie proste reguły) + plan rozszerzenia o wagi heurystyczne (np. afro house remix tokens).
 - **Apply (dry-run / real)** – przenosi pliki do docelowych kubełków; **Undo** cofa ostatnie przenosiny.
 - **Zero „podłóg”** – nazwy kubełków/folderów z **przerwami, UPPERCASE**.
@@ -25,12 +25,14 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 
 1. **STEP 0 — Setup: create venv & install deps**
 2. **TOOLS — Install Essentia (Homebrew)** (opcjonalnie) oraz **TOOLS — Check audio env**.
-3. **WORKFLOW 1 — Scan UNSORTED**: zbiera fingerprinty/metadane i aktualizuje `unsorted.xlsx`.
-4. **WORKFLOW 2 — Analyze audio (Essentia)**: liczy cechy i zapisuje je do cache (`LOGS/audio_analysis.sqlite`).
-5. Edytuj `unsorted.xlsx` – uzupełnij `artist`/`title`/`genre`/`target_subfolder`, oznacz wiersze `done = TRUE`.
-6. **WORKFLOW 3 — Export approved tracks** (`python -m djlib.cli apply`): przenosi tylko wiersze z `done = TRUE`, zapisuje finalne tagi i dopisuje rekordy do `library.csv`.
-7. **WORKFLOW 4 — ML dataset export** (`python -m djlib.cli ml-export-training-dataset`): tworzy `data/training_dataset_full.csv` na podstawie cache Essentii i `library.csv`.
-8. Testy: _TESTS — run_ / _TESTS — coverage_ (opcjonalnie przed commitem).
+3. **WORKFLOW 0 — Sync DJ Libraries & Tags** (opcjonalnie): synchronizuje library.csv z bazami Rekordbox/Traktor.
+4. **WORKFLOW 1 — Scan UNSORTED**: czyta ID z Rekordbox/Traktor, taguje pliki i aktualizuje `unsorted.xlsx`.
+5. **WORKFLOW 2 — Enrich Online** (opcjonalnie): pobiera metadane z internetu (Beatport, MusicBrainz, Last.fm).
+6. Edytuj `unsorted.xlsx` – uzupełnij `artist`/`title`/`genre`/`destination` (library/reject/archive/mixes), oznacz wiersze `done = TRUE`.
+7. **WORKFLOW 3 — Export approved tracks** (`python -m djlib.cli apply`): przenosi `done = TRUE`, zapisuje tagi i automatycznie synchronizuje DJ software.
+8. **WORKFLOW 4 — Analyze audio (Essentia)** (opcjonalnie, po exportie): liczy cechy i zapisuje je do cache (`LOGS/audio_analysis.sqlite`).
+9. **WORKFLOW 5 — ML dataset export** (`python -m djlib.cli ml-export-training-dataset`): tworzy `data/training_dataset_full.csv` na podstawie cache Essentii i `library.csv`.
+10. Testy: _TESTS — run_ / _TESTS — coverage_ (opcjonalnie przed commitem).
 
 ## How-to: praca z `unsorted.xlsx`
 
@@ -46,27 +48,30 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 3. **Otwórz `unsorted.xlsx`**
 
 - Pierwszy wiersz to nagłówki, kolumny techniczne są ukryte.
-- Włącz filtr (`A1` → Filtr) jeżeli chcesz szybciej filtrować po `target_subfolder`, `done` lub `ai_guess_bucket`.
+- Włącz filtr (`A1` → Filtr) jeżeli chcesz szybciej filtrować po `destination`, `genre`, `status` lub `done`.
 
 4. **Korzystaj z dropdownów**
 
-- `target_subfolder` pobiera wartości z `_lists` → to zawsze aktualna taksonomia; nie wpisuj nazw ręcznie.
+- `genre` pobiera wartości z `genres.yml` – 30 kanonicznych gatunków; nie wpisuj nazw ręcznie.
+- `destination` akceptuje: `library`, `reject`, `archive`, `mixes`, lub puste.
+- `status` akceptuje: `accept`, `reject`, `review`, lub puste (informacyjne, nie kontroluje przenosin).
 - Kolumna `done` akceptuje tylko `TRUE/FALSE`; Excel pokazuje listę wyboru.
 
 5. **Uzupełnij metadane**
 
-- Kolumny `artist`, `title`, `version_info`, `genre`, `must_play`, `occasion_tags`, `notes` są edytowalne.
+- Kolumny `artist`, `title`, `version_info`, `year`, `genre`, `status`, `destination`, `must_play`, `occasion_tags`, `notes` są edytowalne.
 - Jeśli sugerowane wartości (`*_suggest`) są poprawne, możesz je skopiować: `artist_suggest → artist` itp.
-- `bpm` i `key_camelot` są kopiowane z tagów lub Essentii – popraw je ręcznie, jeśli trzeba.
+- `bpm` i `key_camelot` są kopiowane z tagów Rekordbox – popraw je ręcznie, jeśli trzeba.
+- **Album**: Zawsze czyszczony podczas exportu (kompilacje nie są przydatne dla DJów).
 
-6. **Weryfikuj wskazówki**
+6. **Weryfikuj sugestie**
 
-- `ai_guess_bucket` i `ai_guess_comment` opisują heurystyki/reguły; traktuj je jako inspirację, nie pewnik.
-- `pop_playcount`/`pop_listeners` pomagają priorytetyzować hity – możesz filtrować po tych kolumnach przed edycją.
+- `genre_suggest` bazuje na fuzji Last.fm/MusicBrainz/Beatport – możesz zaakceptować lub zmienić ręcznie.
+- `pop_playcount`/`pop_listeners` pomagają priorytetyzować popularne utwory – możesz filtrować po tych kolumnach przed edycją.
 
 7. **Ustaw `done = TRUE` wyłącznie, gdy**
 
-- plik ma finalny bucket, nazwy są poprawne, a tagi nie wymagają dodatkowej edycji;
+- plik ma wybraną destynację (`destination` = library/reject/archive/mixes), nazwy są poprawne, a metadane kompletne;
 - duplikaty (`is_duplicate = true`) zostały manualnie przeanalizowane – często zostają w stanie `FALSE` do decyzji.
 
 8. **Zapisz i zamknij arkusz przed `apply`**
@@ -76,7 +81,8 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 
 9. **Uruchom `python -m djlib.cli apply`**
 
-- Pliki z `done = TRUE` i poprawnym `target_subfolder` zostaną przeniesione do docelowych folderów, `library.csv` zostanie uzupełniony, a wiersze znikną z `unsorted.xlsx`.
+- Pliki z `done = TRUE` i poprawnym `destination` zostaną przeniesione do docelowych folderów, `library.csv` zostanie uzupełniony, a wiersze znikną z `unsorted.xlsx`.
+- Kolumna `status` jest tylko informacyjna – za przenosiny odpowiada `destination`.
 - Jeśli chcesz zobaczyć plan bez przenosin, dodaj `--dry-run`.
 
 10. **Cofnij się w razie błędu**
@@ -87,8 +93,8 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 
 - Jeżeli dropdowny zniknęły, uruchom ponownie `scan` lub `apply` (obie komendy regenerują arkusz).
 - Gdy Essentia nie policzyła BPM/Key, uruchom `python -m djlib.cli analyze-audio --recompute` lub `sync-audio-metrics --force`.
-- Kolumny `genres_*` są tylko do odczytu – edytuj jedynie `genre`/`target_subfolder`.
-- Filtrowanie po `done = FALSE` + `target_subfolder` pusty to szybki sposób na znalezienie rekordów wymagających decyzji.
+- Kolumny `genres_*` i `*_suggest` są tylko do odczytu – edytuj jedynie `genre`/`destination`.
+- Filtrowanie po `done = FALSE` + `destination` pusty to szybki sposób na znalezienie rekordów wymagających decyzji.
 - Jeśli Excel pokazuje komunikat o edycji tylko do odczytu, skopiuj plik w inne miejsce, edytuj i nadpisz oryginał po zamknięciu programu.
 
 ## Pliki konfiguracyjne i klucze
@@ -137,7 +143,6 @@ python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 | `python -m djlib.cli scan`                       | Skan INBOX → `unsorted.xlsx`                 | –                                      |
 | `python -m djlib.cli analyze-audio`              | Lokalne obliczenie cech (Essentia)           | `--check-env`, `--recompute`, `--path` |
 | `python -m djlib.cli enrich-online`              | Wzbogacanie multi-source                     | `--force-genres`, `--skip-soundcloud`  |
-| `python -m djlib.cli auto-decide`                | Uzupełnienie pustych targetów                | `--only-empty`                         |
 | `python -m djlib.cli apply`                      | Export `done=TRUE` → biblioteka              | `--dry-run`                            |
 | `python -m djlib.cli undo`                       | Cofnięcie ostatnich przenosin                | –                                      |
 | `python -m djlib.cli dupes`                      | Raport duplikatów                            | –                                      |

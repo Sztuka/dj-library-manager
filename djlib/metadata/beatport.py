@@ -25,6 +25,10 @@ from datetime import datetime, timezone
 _LAST_REQUEST = 0.0
 MIN_INTERVAL = 1.0  # Beatport: 1 req/s
 
+# Token refresh lock (prevents concurrent refresh attempts)
+_REFRESHING = False
+_MEMORY_TOKEN: Optional[str] = None  # In-memory cache for current process
+
 API_BASE = "https://api.beatport.com/v4"
 CACHE_DIR = Path.home() / ".djlib"
 TOKEN_CACHE = CACHE_DIR / "beatport_token.json"
@@ -66,7 +70,14 @@ def _is_token_valid(token: str, buffer_seconds: int = 300) -> bool:
 
 
 def _load_cached_token() -> Optional[str]:
-    """Load token from cache file."""
+    """Load token from cache file or memory."""
+    global _MEMORY_TOKEN
+    
+    # Check in-memory cache first (fastest)
+    if _MEMORY_TOKEN and _is_token_valid(_MEMORY_TOKEN):
+        return _MEMORY_TOKEN
+    
+    # Check file cache
     if not TOKEN_CACHE.exists():
         return None
     
@@ -75,15 +86,24 @@ def _load_cached_token() -> Optional[str]:
             data = json.load(f)
             token = data.get("token", "")
             if token and _is_token_valid(token):
+                # Cache in memory for future calls
+                _MEMORY_TOKEN = token
                 return token
     except Exception:
+        pass
         pass
     
     return None
 
 
 def _save_cached_token(token: str) -> None:
-    """Save token to cache file."""
+    """Save token to cache file and memory."""
+    global _MEMORY_TOKEN
+    
+    # Save to memory immediately
+    _MEMORY_TOKEN = token
+    
+    # Save to file
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     
     payload = _decode_jwt(token)
@@ -254,8 +274,14 @@ def _refresh_token_with_playwright() -> str:
                 raise Exception("Login failed - still on login page after 5 attempts. Check credentials.")
             
             # Trigger an API call to capture token (search for anything)
-            page.goto("https://www.beatport.com/search?q=test", timeout=10000)
-            page.wait_for_timeout(3000)  # Wait for API call
+            try:
+                page.goto("https://www.beatport.com/search?q=test", timeout=15000)
+                page.wait_for_timeout(3000)  # Wait for API call
+            except Exception as e:
+                # If we already captured token, this timeout is acceptable
+                if not captured_token:
+                    raise Exception(f"Failed to trigger API call after login: {e}")
+                print(f"⚠ Warning: Search timeout, but token already captured")
             
         except Exception as e:
             browser.close()
@@ -270,8 +296,11 @@ def _refresh_token_with_playwright() -> str:
     return captured_token
 
 
-def get_valid_token() -> str:
+def get_valid_token(max_retries: int = 2) -> str:
     """Get valid Beatport token - auto-refresh if expired.
+    
+    Args:
+        max_retries: Maximum number of refresh attempts (default: 2)
     
     Returns:
         Valid JWT token
@@ -279,15 +308,48 @@ def get_valid_token() -> str:
     Raises:
         Exception if refresh fails or credentials missing
     """
+    global _REFRESHING
+    
     # Try cached token first
     token = _load_cached_token()
     if token:
         return token
     
-    # Token expired or missing - refresh
-    token = _refresh_token_with_playwright()
-    _save_cached_token(token)
-    return token
+    # If another process is already refreshing, wait and retry
+    if _REFRESHING:
+        print("⏳ Waiting for token refresh to complete...")
+        import time
+        for _ in range(20):  # Wait up to 40 seconds
+            time.sleep(2)
+            token = _load_cached_token()
+            if token:
+                return token
+        raise Exception("Token refresh timeout - another process failed to refresh")
+    
+    # Set lock
+    _REFRESHING = True
+    
+    try:
+        # Token expired or missing - refresh with retry limit
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                token = _refresh_token_with_playwright()
+                _save_cached_token(token)
+                return token
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    print(f"⚠ Token refresh failed (attempt {attempt + 1}/{max_retries}): {e}")
+                    import time
+                    time.sleep(2)  # Brief pause before retry
+                else:
+                    print(f"❌ Token refresh failed after {max_retries} attempts")
+        
+        raise Exception(f"Failed to get valid Beatport token: {last_error}")
+    finally:
+        # Always release lock
+        _REFRESHING = False
 
 
 def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> Optional[Dict]:
@@ -331,28 +393,13 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
         )
         
         if response.status_code == 401:
-            # Token expired during request - refresh and retry once
+            # Token expired during request - remove cache but don't auto-refresh
+            # This prevents infinite loops
             if TOKEN_CACHE.exists():
                 TOKEN_CACHE.unlink()
             
-            try:
-                print("🔄 Beatport token expired, refreshing...")
-                token = _refresh_token_with_playwright()
-                _save_cached_token(token)
-                
-                # Retry request with new token
-                response = requests.get(
-                    f"{API_BASE}/catalog/search/",
-                    params={"q": query, "type": "tracks"},
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=10
-                )
-                
-                if response.status_code != 200:
-                    return None
-            except Exception as e:
-                print(f"❌ Beatport refresh failed: {e}")
-                return None
+            print("⚠ Beatport token expired. Re-run command to refresh.")
+            return None
         
         if response.status_code != 200:
             return None

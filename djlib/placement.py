@@ -1,6 +1,28 @@
+"""Automatic bucket assignment logic (DEPRECATED).
+
+⚠️  WARNING: This module is DEPRECATED as of November 2025.
+
+Bucket-based path assignment has been replaced with simple logistics (LIBRARY/REJECT/ARCHIVE).
+Genre/BPM heuristics should be used for genre classification only, not folder placement.
+
+For new code, use:
+- `djlib.genre_canonical` for genre resolution
+- `djlib.logistics` for destination paths
+
+See djlib/legacy/README.md for migration guide.
+"""
+
 from __future__ import annotations
 from typing import Dict, Tuple, Optional, List
 import re
+import warnings
+
+# Issue deprecation warning
+warnings.warn(
+    "djlib.placement is deprecated. Use djlib.genre_canonical for genre classification.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 CLUB_GENRES = {
     "house","tech house","tech-house","techhouse",
@@ -16,8 +38,10 @@ VIBE_MAP = [
     ({"latin","reggaeton","reggaetón","bachata","salsa"},       "OPEN FORMAT/LATIN REGGAETON"),
     ({"rock and roll","rock'n'roll","rocknroll","rockabilly"},  "OPEN FORMAT/ROCKNROLL"),
     ({"rock","classic rock","hard rock"},                       "OPEN FORMAT/ROCK CLASSICS"),
-    ({"funk","soul","motown","boogie","northern soul"},         "OPEN FORMAT/FUNK SOUL"),
-    ({"pop","dance","eurodance","edm","disco"},                 "OPEN FORMAT/PARTY DANCE"),
+    ({"funk","motown","boogie"},                                "OPEN FORMAT/FUNK"),
+    ({"soul","northern soul"},                                   "OPEN FORMAT/SOUL"),
+    ({"disco"},                                                  "OPEN FORMAT/DISCO"),
+    ({"pop","dance pop"},                                        "OPEN FORMAT/POP"),
 ]
 
 
@@ -92,7 +116,7 @@ def decide_bucket(row: Dict[str,str]) -> Tuple[Optional[str], float, str]:
         if any(k in genre for k in keys):
             return (bucket, 0.75, f"vibe via genre={genre or 'n/a'}")
 
-    # default
+    # default - POP is new generic pop bucket
     if genre:
-        return ("OPEN FORMAT/PARTY DANCE", 0.6, f"default party (genre={genre})")
+        return ("OPEN FORMAT/POP", 0.6, f"default pop (genre={genre})")
     return (None, 0.0, "undecided")

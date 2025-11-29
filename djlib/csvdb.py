@@ -5,6 +5,8 @@ from typing import List, Dict
 
 FIELDNAMES = [
     "track_id",
+    "rekordbox_id",
+    "traktor_id",
     "file_path",
     "original_path",
     "file_hash",

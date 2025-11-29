@@ -35,15 +35,17 @@ def _first_existing(paths: list[Path]) -> Path | None:
 
 @dataclass
 class AppConfig:
-    library_root: Path          # gdzie tworzymy strukturę (READY_TO_PLAY/…, REVIEW_QUEUE/…, LOGS/, library.csv)
-    inbox_dir: Path             # skąd skanujemy nowe pliki (może być poza library_root)
+    library_root: Path          # Main library folder (~/Music Library)
+    inbox_dir: Path             # Inbox for new files (~/Music Unsorted)
+    # Removed: library_subdir, reject_subdir, archive_subdir
+    # New model: separate root paths (REJECT_ROOT, ARCHIVE_ROOT) in config.yml
 
 def _expand(p: str | Path) -> Path:
     return Path(str(p)).expanduser().resolve()
 
 def _defaults() -> AppConfig:
     lib = _expand("~/Music Library")
-    inbox = _expand("~/Unsorted")
+    inbox = _expand("~/Music Unsorted")
     return AppConfig(library_root=lib, inbox_dir=inbox)
 
 # ---------------------------
@@ -61,16 +63,16 @@ def _write_yaml(p: Path, data: Dict[str, Any]) -> None:
 
 def _to_dict(cfg: AppConfig, extras: Dict[str, Any] | None = None) -> Dict[str, Any]:
     base = {
-        "library_root": str(cfg.library_root),
-        "inbox_dir": str(cfg.inbox_dir),
+        "LIB_ROOT": str(cfg.library_root),
+        "INBOX_UNSORTED": str(cfg.inbox_dir),
     }
     if extras:
         base.update(extras)
     return base
 
 def _from_dict(d: Dict[str, Any]) -> AppConfig:
-    lib = _expand(d.get("library_root", "~/Music Library"))
-    inbox = _expand(d.get("inbox_dir", "~/Unsorted"))
+    lib = _expand(d.get("LIB_ROOT") or d.get("library_root", "~/Music Library"))
+    inbox = _expand(d.get("INBOX_UNSORTED") or d.get("inbox_dir", "~/Music Unsorted"))
     return AppConfig(library_root=lib, inbox_dir=inbox)
 
 # ---------------------------
@@ -87,11 +89,16 @@ def _prompt_path(question: str, default: Path) -> Path:
 
 def _interactive_setup() -> AppConfig:
     print("\n=== DJ Library Manager – konfiguracja ===")
-    print("Podaj ścieżki. Zawsze możesz to później zmienić, uruchamiając ponownie konfigurator.\n")
+    print("Struktura folderów:")
+    print("  • ~/Music Library/      — główna biblioteka (zatwierdzone utwory, Artist/file.ext)")
+    print("  • ~/Music Unsorted/     — folder wejściowy (nowe pliki do skanowania)")
+    print("  • ~/Music Rejected/     — odrzucone (osobny folder, flat)")
+    print("  • ~/Music Archive/      — archiwum (osobny folder, Artist/file.ext)")
+    print()
 
     d = _defaults()
-    library_root = _prompt_path("Gdzie stworzyć strukturę biblioteki (READY TO PLAY/…, REVIEW QUEUE/…, LOGS, library.csv)?", d.library_root)
-    inbox_dir    = _prompt_path("Gdzie znajduje się folder z nieposortowaną muzyką (INBOX, skanowany przez 'Scan')?", d.inbox_dir)
+    library_root = _prompt_path("Gdzie jest główna biblioteka (Music Library)?", d.library_root)
+    inbox_dir    = _prompt_path("Gdzie jest folder wejściowy (UNSORTED)?", d.inbox_dir)
 
     cfg = AppConfig(library_root=library_root, inbox_dir=inbox_dir)
     print("\nWybrane:")
@@ -216,17 +223,6 @@ def _load_or_setup() -> Tuple[AppConfig, Path]:
             dest = _choose_config_path()
             _write_yaml(dest, _to_dict(detected))
             _create_marker_files(detected)
-            
-            # Po wykryciu konfiguracji automatycznie wykryj taksonomię z istniejącej struktury
-            try:
-                from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
-                detected_tax = detect_taxonomy_from_fs(detected.library_root)
-                if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
-                    save_taxonomy(detected_tax)
-                    print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
-            except Exception as e:
-                print(f"⚠ Nie udało się wykryć taksonomii: {e}")
-            
             return detected, dest
     
     # Brak wykrytej konfiguracji – pytaj użytkownika
@@ -234,17 +230,6 @@ def _load_or_setup() -> Tuple[AppConfig, Path]:
     dest = _choose_config_path()
     _write_yaml(dest, _to_dict(cfg))
     _create_marker_files(cfg)  # Utwórz pliki znaczników
-    
-    # Po konfiguracji automatycznie wykryj taksonomię z istniejącej struktury
-    try:
-        from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
-        detected_tax = detect_taxonomy_from_fs(cfg.library_root)
-        if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
-            save_taxonomy(detected_tax)
-            print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
-    except Exception as e:
-        print(f"⚠ Nie udało się wykryć taksonomii: {e}")
-    
     return cfg, dest
 
 def reconfigure() -> Tuple[AppConfig, Path]:
@@ -296,17 +281,6 @@ def reconfigure() -> Tuple[AppConfig, Path]:
             dest = _choose_config_path()
             _write_yaml(dest, _to_dict(detected))
             _create_marker_files(detected)
-            
-            # Automatyczna detekcja taksonomii
-            try:
-                from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
-                detected_tax = detect_taxonomy_from_fs(detected.library_root)
-                if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
-                    save_taxonomy(detected_tax)
-                    print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
-            except Exception as e:
-                print(f"⚠ Nie udało się wykryć taksonomii: {e}")
-            
             return detected, dest
     
     # 3. Brak wykrytej struktury – nowa konfiguracja
@@ -315,16 +289,6 @@ def reconfigure() -> Tuple[AppConfig, Path]:
     dest = _choose_config_path()
     _write_yaml(dest, _to_dict(cfg))
     _create_marker_files(cfg)
-    
-    # Próba detekcji taksonomii (jeśli struktura już istnieje)
-    try:
-        from djlib.taxonomy import detect_taxonomy_from_fs, save_taxonomy
-        detected_tax = detect_taxonomy_from_fs(cfg.library_root)
-        if detected_tax["ready_buckets"] or detected_tax["review_buckets"]:
-            save_taxonomy(detected_tax)
-            print(f"✓ Wykryto taksonomię: {len(detected_tax['ready_buckets'])} ready buckets, {len(detected_tax['review_buckets'])} review buckets")
-    except Exception as e:
-        print(f"⚠ Nie udało się wykryć taksonomii: {e}")
     
     return cfg, dest
 
@@ -336,12 +300,45 @@ _CONFIG, CONFIG_FILE = _load_or_setup()
 
 LIB_ROOT = _CONFIG.library_root
 INBOX_DIR = _CONFIG.inbox_dir
+
+# Logistics directories are now separate root paths (configured in config.yml)
+# No longer subfolders of LIB_ROOT
+
+# Legacy bucket directories (deprecated, kept for backward compatibility)
 READY_TO_PLAY_DIR = LIB_ROOT / "READY TO PLAY"
 REVIEW_QUEUE_DIR  = LIB_ROOT / "REVIEW QUEUE"
 
-LOGS_DIR = LIB_ROOT / "LOGS"
+# LOGS_DIR - computed from config file at runtime, default is ./LOGS in repo
+def _get_logs_dir() -> Path:
+    """Get LOGS_DIR from config file, avoiding circular dependency."""
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        try:
+            data = _read_yaml(existing)
+            logs_path = data.get("LOGS_DIR", str(_REPO / "LOGS"))
+            return Path(logs_path).resolve()
+        except Exception:
+            pass
+    return (_REPO / "LOGS").resolve()
+
+LOGS_DIR = _get_logs_dir()
+
 CSV_PATH = LIB_ROOT / "library.csv"
-UNSORTED_XLSX = LIB_ROOT / "unsorted.xlsx"
+
+# UNSORTED_XLSX - computed from config file at runtime, default is ./data/unsorted.xlsx in repo
+def _get_unsorted_xlsx() -> Path:
+    """Get UNSORTED_XLSX from config file, avoiding circular dependency."""
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        try:
+            data = _read_yaml(existing)
+            xlsx_path = data.get("UNSORTED_XLSX", str(_REPO / "data" / "unsorted.xlsx"))
+            return Path(xlsx_path).resolve()
+        except Exception:
+            pass
+    return (_REPO / "data" / "unsorted.xlsx").resolve()
+
+UNSORTED_XLSX = _get_unsorted_xlsx()
 
 AUDIO_EXTS = {
     ".mp3", ".wav", ".aiff", ".aif", ".flac", ".m4a", ".aac", ".ogg", ".alac", ".wv"
@@ -352,11 +349,21 @@ def ensure_base_dirs() -> None:
     cfg = load_config()
     lib = Path(cfg["LIB_ROOT"])
     inbox = Path(cfg["INBOX_UNSORTED"])
+    reject = Path(cfg.get("REJECT_ROOT", str(lib.parent / "Music Rejected")))
+    archive = Path(cfg.get("ARCHIVE_ROOT", str(lib.parent / "Music Archive")))
+    mixes = Path(cfg.get("MIXES_ROOT", str(lib / "MIXES")))
+    logs = Path(cfg.get("LOGS_DIR", "./LOGS")).resolve()
+    
+    # Create separate root folders (no LIBRARY/ subfolder in LIB_ROOT)
+    for p in [lib, inbox, reject, archive, mixes, logs]:
+        p.mkdir(parents=True, exist_ok=True)
+    
+    # Legacy bucket directories (create if they exist for backward compatibility)
     ready = lib / "READY TO PLAY"
     review = lib / "REVIEW QUEUE"
-    logs = lib / "LOGS"
-    for p in [lib, inbox, ready, review, logs]:
-        p.mkdir(parents=True, exist_ok=True)
+    if ready.exists() or review.exists():
+        for p in [ready, review]:
+            p.mkdir(parents=True, exist_ok=True)
     
     # Upewnij się, że pliki znaczników istnieją
     app_cfg = AppConfig(library_root=lib, inbox_dir=inbox)
@@ -369,9 +376,16 @@ def load_config() -> Dict[str, Any]:
         cfg = _from_dict(_read_yaml(existing))
     else:
         cfg = _defaults()
+    # Read paths from config file (new model: separate root folders)
+    config_dict = _read_yaml(_first_existing(_CANDIDATES) or _CANDIDATES[0])
     return {
         "LIB_ROOT": str(cfg.library_root),
         "INBOX_UNSORTED": str(cfg.inbox_dir),
+        "REJECT_ROOT": config_dict.get("REJECT_ROOT", str(cfg.library_root.parent / "Music Rejected")),
+        "ARCHIVE_ROOT": config_dict.get("ARCHIVE_ROOT", str(cfg.library_root.parent / "Music Archive")),
+        "MIXES_ROOT": config_dict.get("MIXES_ROOT", str(cfg.library_root / "MIXES")),
+        "LOGS_DIR": config_dict.get("LOGS_DIR", "./LOGS"),
+        "UNSORTED_XLSX": config_dict.get("UNSORTED_XLSX", "./data/unsorted.xlsx"),
     }
 
 def save_config_paths(lib_root: str, inbox: str) -> None:

@@ -1,4 +1,24 @@
+"""AI bucket guessing (DEPRECATED).
+
+⚠️  WARNING: This module is DEPRECATED as of November 2025.
+
+Simple keyword-based bucket suggestions have been replaced with:
+- Canonical genre resolution (djlib.genre_canonical)
+- Multi-source metadata enrichment (djlib.metadata.genre_resolver)
+
+See djlib/legacy/README.md for migration guide.
+"""
+
 from __future__ import annotations
+import warnings
+
+# Issue deprecation warning
+warnings.warn(
+    "djlib.classify is deprecated. Use djlib.genre_canonical for genre classification.",
+    DeprecationWarning,
+    stacklevel=2
+)
+
 
 def guess_bucket(artist: str, title: str, bpm: str, genre: str, comment: str):
     """

@@ -1,7 +1,30 @@
+"""Taxonomy module (DEPRECATED).
+
+⚠️  WARNING: This module is DEPRECATED as of November 2025.
+
+The bucket-based taxonomy (`READY TO PLAY/CLUB/AFRO HOUSE` etc.) has been replaced
+with simple logistics folders (LIBRARY, REJECT, ARCHIVE).
+
+For new code, use:
+- `djlib.logistics` for path building
+- `djlib.genre_canonical` for genre resolution
+
+This module is maintained for backward compatibility only.
+See djlib/legacy/README.md for migration guide.
+"""
+
 from __future__ import annotations
 from pathlib import Path
 from typing import List, Dict, Tuple
 import yaml
+import warnings
+
+# Issue deprecation warning when module is imported
+warnings.warn(
+    "djlib.taxonomy is deprecated. Use djlib.logistics for paths and djlib.genre_canonical for genres.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 def normalize_label(label: str) -> str:
     """
