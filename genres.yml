@@ -1,295 +1,459 @@
 # Canonical genre definitions with synonyms
-# Used by genre resolver for normalization and suggestion
-
-# ============ ELECTRONIC / CLUB ============
+# Used by genre resolver in dj-library-manager
 
 AFRO_HOUSE:
   label: "Afro House"
   synonyms:
+    - "Afro House"
     - "afro house"
+    - "Afro Tech"
+    - "afro tech"
+    - "afro tech house"
     - "afro-house"
     - "afrohouse"
-    - "afro tech"
-    - "afro-tech"
-    - "afro tech house"
-    - "tribal afro"
     - "organic house"
+    - "Organic House"
+    - "tribal house"
+    - "tribal afro"
+    - "tribal afro house"
+    - "afro deep"
+    - "afro deep house"
 
 AFROBEATS:
   label: "Afrobeats"
   synonyms:
+    - "Afrobeats"
     - "afrobeats"
     - "afrobeat"
+    - "afro beat"
     - "afro beats"
-    - "naija pop"
-    - "afropop"
     - "afro pop"
-    - "afrofusion"
-    - "afro dance"
+    - "Afro Pop"
+    - "afropop"
+    - "naija"
+    - "naija pop"
+    - "naija afrobeats"
 
 TECH_HOUSE:
   label: "Tech House"
   synonyms:
+    - "Tech House"
     - "tech house"
     - "tech-house"
     - "techhouse"
-    - "tribal house"
-    - "minimal house"
-    - "rolling house"
+    - "minimal tech house"
+    - "minimal tech-house"
+    - "minimal tech"
 
 MELODIC_TECHNO:
   label: "Melodic Techno"
   synonyms:
+    - "Melodic Techno"
     - "melodic techno"
     - "melodic-techno"
     - "melodictechno"
+    - "Melodic House & Techno"
     - "melodic house & techno"
     - "melodic house and techno"
+    - "melodic house"
 
 TECHNO:
   label: "Techno"
   synonyms:
+    - "Techno"
     - "techno"
-    - "minimal techno"
-    - "minimal-techno"
     - "deep techno"
+    - "minimal techno"
     - "raw techno"
     - "peak time techno"
     - "peaktime techno"
+    - "hardgroove techno"
+    - "detroit techno"
+    - "acid techno"
+    - "industrial techno"
 
 HARD_TECHNO:
   label: "Hard Techno"
   synonyms:
+    - "Hard Techno"
     - "hard techno"
+    - "hard-techno"
     - "hardtechno"
-    - "industrial techno"
     - "schranz"
+    - "rave techno"
+    - "industrial hard techno"
 
 HARDCORE:
-  label: "Hardcore / Happy Hardcore"
+  label: "Hardcore"
   synonyms:
+    - "Hardcore"
     - "hardcore"
-    - "happy hardcore"
-    - "gabber"
-    - "uk hardcore"
     - "hardcore techno"
+    - "gabber"
+    - "gabba"
+    - "happy hardcore"
+    - "uk hardcore"
+    - "hardstyle"
+    - "hard dance"
 
 HOUSE:
   label: "House"
   synonyms:
+    - "House"
     - "house"
     - "club house"
+    - "Club House"
+    - "club-house"
     - "dance house"
     - "vocal house"
+    - "Vocal House"
     - "piano house"
-    - "funky house"
-    - "soulful house"
+    - "Piano House"
+    - "slap house"
+    - "Slap House"
+    - "tropical house"
+    - "Tropical House"
     - "us house"
+
+PROGRESSIVE_HOUSE:
+  label: "Progressive House"
+  synonyms:
+    - "Progressive House"
+    - "progressive house"
+    - "Prog House"
+    - "prog house"
+    - "Prog-House"
+    - "prog-house"
 
 DEEP_HOUSE:
   label: "Deep House"
   synonyms:
+    - "Deep House"
     - "deep house"
     - "deep-house"
     - "deephouse"
-    - "soulful house"
-    - "lounge house"
-    - "chill house"
-    - "smooth house"
     - "deep tech house"
+    - "deep tech"
+    - "chill house"
+    - "lounge house"
+    - "smooth house"
+    - "soulful house"
 
 ELECTRO_SWING:
   label: "Electro Swing"
   synonyms:
+    - "Electro Swing"
     - "electro swing"
+    - "electro-swing"
     - "electroswing"
+    - "swing house"
+    - "swing electro"
+
+BALKAN:
+  label: "Balkan"
+  synonyms:
+    - "Balkan"
+    - "balkan"
+    - "Balkan Beats"
+    - "balkan beats"
+    - "Balkan music"
+    - "balkan music"
+    - "Balkan Party"
+    - "balkan party"
+    - "balkan brass"
 
 TRANCE:
   label: "Trance"
   synonyms:
+    - "Trance"
     - "trance"
-    - "progressive trance"
     - "uplifting trance"
+    - "Uplifting Trance"
     - "vocal trance"
+    - "Vocal Trance"
+    - "progressive trance"
+    - "Progressive Trance"
+    - "euphoric trance"
+    - "classic trance"
+    - "anthem trance"
+
+PSYTRANCE:
+  label: "Psytrance"
+  synonyms:
+    - "Psytrance"
+    - "psytrance"
+    - "psy-trance"
+    - "Psy-Trance"
+    - "psychedelic trance"
+    - "Psychedelic Trance"
+    - "goa"
+    - "Goa"
+    - "goa trance"
+    - "Goa Trance"
+    - "full on"
+    - "full-on"
+    - "fullon"
+    - "forest psy"
+    - "dark psy"
+    - "darkpsy"
 
 DNB:
   label: "Drum & Bass"
   synonyms:
-    - "dnb"
-    - "drum and bass"
+    - "Drum & Bass"
     - "drum & bass"
+    - "Drum and Bass"
+    - "drum and bass"
+    - "DnB"
+    - "dnb"
+    - "drum'n'bass"
     - "drum n bass"
     - "jungle"
-
-# ============ RAP / URBAN / POP ============
+    - "Jungle"
+    - "neurofunk"
+    - "liquid dnb"
+    - "liquid drum and bass"
 
 HIP_HOP:
-  label: "Hip-Hop / Rap"
+  label: "Hip-Hop"
   synonyms:
+    - "Hip Hop"
     - "hip hop"
+    - "Hip-Hop"
     - "hip-hop"
     - "hiphop"
+    - "Rap"
     - "rap"
-    - "rap music"
     - "trap"
-    - "drill"
+    - "Trap"
     - "trap rap"
+    - "drill"
+    - "gangsta rap"
+    - "boom bap"
+    - "old school hip hop"
 
 RNB:
   label: "R&B"
   synonyms:
-    - "rnb"
+    - "R&B"
     - "r&b"
-    - "r'n'b"
+    - "RnB"
+    - "rnb"
     - "r and b"
+    - "r'n'b"
     - "rhythm and blues"
     - "contemporary r&b"
+    - "slow jam"
+    - "slow jams"
 
 LATIN:
   label: "Latin"
   synonyms:
+    - "Latin"
     - "latin"
     - "latin pop"
+    - "Latin Pop"
+    - "latino"
+    - "latino pop"
+    - "latin urban"
+    - "latino urban"
+    - "bachata"
+    - "Bachata"
+    - "salsa"
+    - "Salsa"
+    - "salsa cubana"
+    - "merengue"
+
+KUDURO:
+  label: "Kuduro"
+  synonyms:
+    - "Kuduro"
+    - "kuduro"
+    - "afro kuduro"
+
+REGGAETON:
+  label: "Reggaeton"
+  synonyms:
+    - "Reggaeton"
     - "reggaeton"
     - "reggaetón"
-    - "bachata"
-    - "salsa"
     - "dembow"
-    - "latin urban"
+    - "Dembow"
+    - "Moombahton"
+    - "moombahton"
+    - "MOOMBAHTON"
+
+BREAKBEAT:
+  label: "Breakbeat"
+  synonyms:
+    - "Breakbeat"
+    - "breakbeat"
+    - "breakbeats"
+    - "breaks"
+    - "breaks mix"
+    - "nu skool breaks"
+    - "nuskool breaks"
+    - "Big Beat"
+    - "big beat"
 
 POP:
   label: "Pop"
   synonyms:
+    - "Pop"
     - "pop"
     - "dance pop"
+    - "Dance Pop"
     - "electro pop"
+    - "Electro Pop"
     - "mainstream pop"
+    - "chart pop"
+    - "radio pop"
+    - "Teen Pop"
 
-EURO_DANCE:
-  label: "Euro Dance"
+DANCE:
+  label: "Dance"
   synonyms:
-    - "euro dance"
+    - "Dance"
+    - "dance"
+    - "dance music"
+    - "club"
+    - "club music"
     - "eurodance"
-    - "euro-dance"
-    - "europop"
-    - "euro pop"
-    - "90s dance"
-
-# ============ ROCK / BAND MUSIC ============
+    - "Eurodance"
 
 ROCK:
   label: "Rock"
   synonyms:
+    - "Rock"
     - "rock"
-    - "classic rock"
-    - "hard rock"
+    - "rock music"
     - "pop rock"
-    - "punk rock"
+    - "Pop Rock"
+    - "hard rock"
+    - "Hard Rock"
+    - "classic rock"
+    - "Classic Rock"
 
 ALTERNATIVE_ROCK:
   label: "Alternative Rock"
   synonyms:
+    - "Alternative Rock"
     - "alternative rock"
-    - "alternative"
     - "alt rock"
     - "alt-rock"
-    - "alternative music"
+    - "modern rock"
+    - "college rock"
 
 INDIE_ROCK:
   label: "Indie Rock"
   synonyms:
+    - "Indie Rock"
     - "indie rock"
     - "indie-rock"
     - "indie"
+    - "Indie"
     - "indie pop"
-    - "indiepop"
+    - "Indie Pop"
     - "indie alternative"
+    - "indiepop"
 
 ROCK_N_ROLL:
   label: "Rock 'n' Roll"
   synonyms:
-    - "rock and roll"
+    - "Rock & Roll"
+    - "rock & roll"
+    - "rock n roll"
+    - "rock 'n' roll"
     - "rock'n'roll"
-    - "rocknroll"
-    - "rockabilly"
+    - "rock and roll"
 
 NEW_WAVE:
   label: "New Wave"
   synonyms:
+    - "New Wave"
     - "new wave"
-    - "new-wave"
-    - "newwave"
-    - "synthpop"
-    - "synth pop"
-    - "synth-pop"
-    - "80s new wave"
+    - "post-punk"
     - "post punk"
-    - "coldwave"
-    - "dark wave"
-
-# ============ DISCO / FUNK / SOUL / BLUES / SWING ============
+    - "new wave pop"
+    - "synth pop"
+    - "synthpop"
+    - "new romantic"
+    - "new romantics"
 
 DISCO:
   label: "Disco"
   synonyms:
+    - "Disco"
     - "disco"
-    - "boogie disco"
     - "classic disco"
     - "70s disco"
+    - "80s disco"
+    - "disco 70s"
+    - "disco 80s"
 
 NU_DISCO:
   label: "Nu Disco"
   synonyms:
+    - "Nu Disco"
     - "nu disco"
     - "nu-disco"
     - "nudisco"
     - "disco house"
-    - "indie dance"
     - "modern disco"
     - "disco edit"
-    - "funky edit"
     - "edit"
+    - "funky edit"
+    - "indie dance"
+    - "Indie Dance"
 
 FUNK:
   label: "Funk"
   synonyms:
+    - "Funk"
     - "funk"
     - "funky"
-    - "boogie"
+    - "funky music"
     - "p-funk"
+    - "g-funk"
+    - "funky soul"
 
 SOUL:
   label: "Soul"
   synonyms:
+    - "Soul"
     - "soul"
+    - "neo-soul"
+    - "neosoul"
     - "motown"
     - "northern soul"
-    - "neo soul"
-    - "neosoul"
 
 BLUES:
   label: "Blues"
   synonyms:
+    - "Blues"
     - "blues"
     - "electric blues"
-    - "chicago blues"
     - "delta blues"
+    - "chicago blues"
 
 SWING:
   label: "Swing"
   synonyms:
+    - "Swing"
     - "swing"
     - "big band"
     - "big-band"
     - "bigband"
-
-# ============ REGGAE / CARIBBEAN ============
+    - "jazz swing"
+    - "vocal swing"
 
 REGGAE:
   label: "Reggae"
   synonyms:
+    - "Reggae"
     - "reggae"
     - "roots reggae"
+    - "roots"
     - "dub"
     - "ska"
     - "rocksteady"
@@ -297,6 +461,9 @@ REGGAE:
 DANCEHALL:
   label: "Dancehall"
   synonyms:
+    - "Dancehall"
     - "dancehall"
-    - "ragga"
     - "bashment"
+    - "ragga"
+    - "dancehall reggae"
+    - "jamaican dancehall"

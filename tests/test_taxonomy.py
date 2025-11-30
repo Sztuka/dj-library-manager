@@ -13,14 +13,19 @@ def test_normalize_label_basic():
     assert normalize_label("MIXES/") == "MIXES"  # rstrip('/')
 
 def test_build_ready_buckets_dedup():
-    club = ["house", "HOUSE", "tech house"]
-    openf = ["rnb", "RNB", "funk"]
+    from djlib.genre_canonical import CanonicalGenreResolver
+    resolver = CanonicalGenreResolver()
+    # Map raw genres to canonical labels
+    club_raw = ["house", "HOUSE", "tech house"]
+    openf_raw = ["rnb", "RNB", "funk"]
+    club = [resolver.resolve(g)[1] if resolver.resolve(g) else g for g in club_raw]
+    openf = [resolver.resolve(g)[1] if resolver.resolve(g) else g for g in openf_raw]
     out = build_ready_buckets(club, openf, mixes=True)
-    # deduplikacja po kluczu kanonicznym, ale zachowujemy pierwszy wariant stylistyczny
+    # deduplicate by canonical key, keep first stylistic variant
     assert out == [
-        "CLUB/house",
-        "CLUB/tech house",
-        "OPEN FORMAT/rnb",
-        "OPEN FORMAT/funk",
+        "CLUB/House",
+        "CLUB/Tech House",
+        "OPEN FORMAT/R&B",
+        "OPEN FORMAT/Funk",
         "MIXES",
     ]

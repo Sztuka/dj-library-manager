@@ -13,9 +13,10 @@ See djlib/legacy/README.md for migration guide.
 """
 
 from __future__ import annotations
+
 from typing import Dict, Tuple, Optional, List
-import re
 import warnings
+from djlib.genre_canonical import CanonicalGenreResolver
 
 # Issue deprecation warning
 warnings.warn(
@@ -24,24 +25,27 @@ warnings.warn(
     stacklevel=2
 )
 
-CLUB_GENRES = {
-    "house","tech house","tech-house","techhouse",
-    "techno","melodic techno","melodic-techno","melodictechno",
-    "dnb","drum and bass","drum & bass","drum n bass",
-    "trance","afro house","afro-house","afrohouse",
-    "electroswing","electro swing",
+
+# Canonical genre resolver instance
+resolver = CanonicalGenreResolver()
+
+# Define canonical club genres (keys from genres.yml)
+CLUB_GENRE_KEYS = {
+    "HOUSE", "TECH_HOUSE", "MELODIC_TECHNO", "TECHNO", "HARD_TECHNO", "HARDCORE",
+    "AFRO_HOUSE", "ELECTRO_SWING", "TRANCE", "PSYTRANCE", "DNB"
 }
 
+# Vibe map using canonical keys
 VIBE_MAP = [
-    ({"rnb","r&b"},                                             "OPEN FORMAT/RNB"),
-    ({"hip hop","hip-hop","rap","trap"},                       "OPEN FORMAT/HIP-HOP"),
-    ({"latin","reggaeton","reggaetón","bachata","salsa"},       "OPEN FORMAT/LATIN REGGAETON"),
-    ({"rock and roll","rock'n'roll","rocknroll","rockabilly"},  "OPEN FORMAT/ROCKNROLL"),
-    ({"rock","classic rock","hard rock"},                       "OPEN FORMAT/ROCK CLASSICS"),
-    ({"funk","motown","boogie"},                                "OPEN FORMAT/FUNK"),
-    ({"soul","northern soul"},                                   "OPEN FORMAT/SOUL"),
-    ({"disco"},                                                  "OPEN FORMAT/DISCO"),
-    ({"pop","dance pop"},                                        "OPEN FORMAT/POP"),
+    ({"RNB"}, "OPEN FORMAT/RNB"),
+    ({"HIP_HOP"}, "OPEN FORMAT/HIP-HOP"),
+    ({"LATIN", "REGGAETON", "KUDURO"}, "OPEN FORMAT/LATIN REGGAETON"),
+    ({"ROCK_N_ROLL"}, "OPEN FORMAT/ROCKNROLL"),
+    ({"ROCK", "ALTERNATIVE_ROCK", "INDIE_ROCK"}, "OPEN FORMAT/ROCK CLASSICS"),
+    ({"FUNK"}, "OPEN FORMAT/FUNK"),
+    ({"SOUL"}, "OPEN FORMAT/SOUL"),
+    ({"DISCO", "NU_DISCO"}, "OPEN FORMAT/DISCO"),
+    ({"POP", "DANCE"}, "OPEN FORMAT/POP"),
 ]
 
 
@@ -54,15 +58,7 @@ def _has_any(text: str, tokens: set[str]) -> bool:
     t = _norm(text)
     return any(tok in t for tok in tokens)
 
-def _clean_genre(g: str) -> str:
-    s = _norm(g).replace("_"," ").replace("-"," ").replace("  "," ")
-    # ujednolicenia podstawowe
-    s = s.replace("drum and bass","dnb").replace("drum & bass","dnb").replace("drum n bass","dnb")
-    s = s.replace("electro swing","electroswing")
-    s = s.replace("afro-house","afro house")
-    s = s.replace("tech-house","tech house")
-    s = s.replace("melodic techno","melodic techno")
-    return s
+
 
 def _is_clubish_version(title: str, version_info: str) -> bool:
     if not version_info:
@@ -79,44 +75,50 @@ def _parse_bpm(bpm: str) -> Optional[float]:
     except Exception:
         return None
 
+
 def decide_bucket(row: Dict[str,str]) -> Tuple[Optional[str], float, str]:
     """
-    Zwraca: (target_subfolder | None, confidence(0..1), reason)
+    Returns: (target_subfolder | None, confidence(0..1), reason)
     """
     artist = row.get("artist_canonical") or row.get("artist") or ""
     title  = row.get("title_canonical")  or row.get("title")  or ""
     version = row.get("version_info","") or row.get("version_suggest","") or ""
-    genre  = _clean_genre(row.get("genre",""))
+    raw_genre = row.get("genre","")
     era    = (row.get("era") or "").strip()
     bpmv   = _parse_bpm(row.get("bpm","")) or 0.0
     keyc   = (row.get("key_camelot") or "").strip().upper()
 
-    # 1) CLUB: gatunek/wersja klubowa/BPM
-    is_club_genre = any(g in genre for g in CLUB_GENRES)
+    # Resolve genre using canonical resolver
+    resolved = resolver.resolve(raw_genre)
+    genre_key = resolved[0] if resolved else None
+    genre_label = resolved[1] if resolved else (raw_genre or "")
+
+    # 1) CLUB: canonical genre, club version, or BPM
+    is_club_genre = genre_key in CLUB_GENRE_KEYS
     title_mixed = row.get("title") or title
     is_club_version = _is_clubish_version(title_mixed, version)
-    if is_club_genre or is_club_version or (bpmv >= 122 and any(x in genre for x in {"house","tech","trance","dnb"})):
-        # mapowanie do konkretnego kubła
-        if "tech house" in genre:       return ("CLUB/TECH HOUSE", 0.95, "genre=tech house")
-        if "melodic techno" in genre:   return ("CLUB/MELODIC TECHNO", 0.95, "genre=melodic techno")
-        if "techno" in genre:           return ("CLUB/TECHNO", 0.9, "genre=techno")
-        if "dnb" in genre:              return ("CLUB/DNB", 0.95, "genre=dnb")
-        if "trance" in genre:           return ("CLUB/TRANCE", 0.9, "genre=trance")
-        if "afro house" in genre:       return ("CLUB/AFRO HOUSE", 0.9, "genre=afro house")
-        if "electroswing" in genre:     return ("CLUB/ELECTRO SWING", 0.9, "genre=electroswing")
-        if "house" in genre or is_club_version or bpmv >= 122:
+    if is_club_genre or is_club_version or (bpmv >= 122 and genre_key in {"HOUSE", "TECH_HOUSE", "TRANCE", "DNB"}):
+        # Map to specific club bucket
+        if genre_key == "TECH_HOUSE":       return ("CLUB/TECH HOUSE", 0.95, "genre=tech house")
+        if genre_key == "MELODIC_TECHNO":   return ("CLUB/MELODIC TECHNO", 0.95, "genre=melodic techno")
+        if genre_key == "TECHNO":           return ("CLUB/TECHNO", 0.9, "genre=techno")
+        if genre_key == "DNB":              return ("CLUB/DNB", 0.95, "genre=dnb")
+        if genre_key == "TRANCE":           return ("CLUB/TRANCE", 0.9, "genre=trance")
+        if genre_key == "AFRO_HOUSE":       return ("CLUB/AFRO HOUSE", 0.9, "genre=afro house")
+        if genre_key == "ELECTRO_SWING":    return ("CLUB/ELECTRO SWING", 0.9, "genre=electro swing")
+        if genre_key == "HOUSE" or is_club_version or bpmv >= 122:
             return ("CLUB/HOUSE", 0.8, f"fallback clubish (bpm={bpmv:.0f}, remix={is_club_version})")
 
-    # 2) OPEN FORMAT / dekada
+    # 2) OPEN FORMAT / decade
     if era in {"70s","80s","90s","2000s","2010s"}:
         return (f"OPEN FORMAT/{era}", 0.9, f"era={era}")
 
-    # 3) OPEN FORMAT / vibe
+    # 3) OPEN FORMAT / vibe (canonical keys)
     for keys, bucket in VIBE_MAP:
-        if any(k in genre for k in keys):
-            return (bucket, 0.75, f"vibe via genre={genre or 'n/a'}")
+        if genre_key in keys:
+            return (bucket, 0.75, f"vibe via genre={genre_label or 'n/a'}")
 
     # default - POP is new generic pop bucket
-    if genre:
-        return ("OPEN FORMAT/POP", 0.6, f"default pop (genre={genre})")
+    if genre_key:
+        return ("OPEN FORMAT/POP", 0.6, f"default pop (genre={genre_label})")
     return (None, 0.0, "undecided")

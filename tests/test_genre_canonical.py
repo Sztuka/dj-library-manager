@@ -78,6 +78,26 @@ def test_resolve_multiple(resolver):
     assert ("MELODIC_TECHNO", "Melodic Techno") in results
 
 
+def test_resolve_multigenre_priority(resolver):
+    """Complex multi-genre strings map to the most specific canonical genre."""
+    assert resolver.resolve("Melodic House & Techno")[0] == "MELODIC_TECHNO"
+    assert resolver.resolve("Funky House, Dance")[0] == "HOUSE"
+    assert resolver.resolve("Tech House, Deep House, House")[0] == "TECH_HOUSE"
+    assert resolver.resolve("Pop, Dance")[0] == "POP"
+
+
+def test_afrobeats_variants(resolver):
+    """Afrobeats / Afrobeat variants resolve to AFROBEATS."""
+    assert resolver.resolve("Afrobeats")[0] == "AFROBEATS"
+    assert resolver.resolve("Afrobeat")[0] == "AFROBEATS"
+
+
+def test_garbage_genres_are_ignored(resolver):
+    """Garbage labels should not resolve to any canonical genre."""
+    for raw in ["Top 40", "<Onbekend>", "http://example.com/whatever"]:
+        assert resolver.resolve(raw) is None
+
+
 def test_genre_separation_from_paths(resolver):
     """Test that genre resolution is independent of folder structure."""
     # Old system: genre determined folder path (CLUB/AFRO HOUSE/...)

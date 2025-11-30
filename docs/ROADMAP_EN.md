@@ -59,6 +59,7 @@ scripts/
 **Purpose:** Ensure library.csv is in sync with Rekordbox/Traktor databases
 
 **Steps:**
+
 1. Compare library.csv with Rekordbox DB and Traktor collection.nml
 2. Identify missing tracks (in library.csv but not in DJ software)
 3. Add missing tracks to Rekordbox (via `pyrekordbox.add_content()`)
@@ -75,6 +76,7 @@ scripts/
 **Purpose:** Quality control for new tracks
 
 **Steps:**
+
 1. **Rekordbox Preparation** — Analyze files in Rekordbox (BPM/Key detection)
 2. **Scan UNSORTED**:
    - Read Rekordbox DB → extract rekordbox_id
@@ -94,6 +96,7 @@ scripts/
 **Purpose:** Fetch metadata from online sources
 
 **Sources:**
+
 - **Beatport** (NEW): EDM-focused metadata with JWT auto-refresh
   - 100+ precise subgenres (progressive house, melodic techno, afro house)
   - High-resolution artwork (1400x1400px)
@@ -104,6 +107,7 @@ scripts/
 - SoundCloud (optional, with health check)
 
 **Features:**
+
 - Multi-source genre resolution with weights: Beatport 10.0 > Last.fm 6.0 > MB 3.0 > SoundCloud 2.0
 - Per-source columns: `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud`
 - Popularity metrics: `pop_playcount`, `pop_listeners`
@@ -116,6 +120,7 @@ scripts/
 **Manual step:** Edit `data/unsorted.xlsx`
 
 **Actions:**
+
 - Review and validate metadata proposals
 - Select genre from dropdown (30 canonical genres from genres.yml)
 - Select destination: library/reject/archive/mixes
@@ -128,6 +133,7 @@ scripts/
 **Purpose:** Move files and sync with DJ software
 
 **Steps:**
+
 1. Clean spam tags (musicdjs.club, chomikuj.pl) while preserving DJ software data
 2. ALWAYS clears album tags (compilations not useful for DJs)
 3. Move only `done = TRUE` tracks based on `destination` column
@@ -147,6 +153,7 @@ scripts/
 **Purpose:** Extract audio features for ML training and future playlists
 
 **Analysis:**
+
 - Only analyzes approved tracks in LIBRARY (not rejected)
 - `detect_bpm_essentia(path) -> bpm, conf, corrected_factor`
 - `detect_key_essentia(path) -> key_camelot, strength`
@@ -164,6 +171,7 @@ scripts/
 **Purpose:** Generate training dataset for ML models
 
 **Features:**
+
 - Combine library.csv with Essentia features
 - Export to `data/training_dataset_full.csv`
 - Columns: `tag_bpm`, `tag_key_camelot`, `ess_bpm`, `ess_key_camelot`, `ess_energy`, `ess_danceability`, etc.

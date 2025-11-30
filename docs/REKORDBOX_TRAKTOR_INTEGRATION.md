@@ -14,7 +14,7 @@ The DJ Library Manager integrates with Rekordbox and Traktor as **external sourc
 1. **Auto-sync by default** - WORKFLOW 0, 1, and 4 automatically synchronize DJ software
 2. **Backup always** - Automatic backups before any write operation
 3. **Full integration** - Read IDs, write new tracks, update paths for moved tracks
-4. **Custom tags** - DJLIB_* tags ensure permanent track identification
+4. **Custom tags** - DJLIB\_\* tags ensure permanent track identification
 
 ---
 
@@ -31,11 +31,13 @@ The DJ Library Manager integrates with Rekordbox and Traktor as **external sourc
    - See `djlib/rekordbox_status.py`
 
 2. **Metadata extraction** (`scan`)
+
    - Reads analysis results from Rekordbox 6 SQLite DB
    - Location: `~/Library/Pioneer/rekordbox/master.db`
    - Uses SQLCipher decryption
 
 3. **Read track IDs** (`get_rekordbox_track_ids()`)
+
    - Returns {Path: rekordbox_id} mapping from DB
    - Used in WORKFLOW 1 (scan) for auto-tagging
 
@@ -70,6 +72,7 @@ add_tracks_to_rekordbox(library_csv="library.csv", dry_run=False)
 **Fully implemented:**
 
 1. **Read track IDs** (`get_traktor_track_ids()`)
+
    - Parses `collection.nml` XML
    - Returns {Path: traktor_audio_id} mapping
    - Used in WORKFLOW 1 (scan) for auto-tagging
@@ -104,6 +107,7 @@ add_tracks_to_traktor(library_csv="library.csv", dry_run=False)
 **Purpose:** Ensure library.csv is in sync with Rekordbox/Traktor
 
 **Actions:**
+
 1. Compare library.csv with Rekordbox DB and Traktor collection.nml
 2. Identify missing tracks
 3. Add missing tracks to both DJ software
@@ -115,6 +119,7 @@ add_tracks_to_traktor(library_csv="library.csv", dry_run=False)
 **Command:** `python -m djlib.cli scan --strict`
 
 **Auto-sync actions:**
+
 1. Read Rekordbox DB → extract rekordbox_id
 2. Read Traktor collection.nml → extract traktor_id
 3. Tag all files with DJLIB_TRACK_ID + rekordbox_id + traktor_id
@@ -125,11 +130,12 @@ add_tracks_to_traktor(library_csv="library.csv", dry_run=False)
 **Command:** `python -m djlib.cli apply`
 
 **Auto-sync actions:**
+
 1. Move approved tracks to LIBRARY
 2. Add new tracks to Rekordbox (via `pyrekordbox.add_content()`)
 3. Add new tracks to Traktor (via XML manipulation)
 4. Update paths for moved tracks in Traktor
-5. Tag all files with updated DJLIB_* tags
+5. Tag all files with updated DJLIB\_\* tags
 
 ---
 
@@ -142,6 +148,7 @@ add_tracks_to_traktor(library_csv="library.csv", dry_run=False)
 **Purpose:** Read DJ software databases to get track ID mappings
 
 **Rekordbox:**
+
 ```python
 from djlib.external_sync import get_rekordbox_track_ids
 
@@ -150,6 +157,7 @@ rekordbox_map = get_rekordbox_track_ids()
 ```
 
 **Traktor:**
+
 ```python
 from djlib.external_sync import get_traktor_track_ids
 
@@ -166,6 +174,7 @@ traktor_map = get_traktor_track_ids()
 **Implemented via:** Custom DJLIB tags in `djlib/djlib_tags.py`
 
 **Tags written to files:**
+
 - `DJLIB_TRACK_ID` - Permanent UUID5 (path + metadata)
 - `DJLIB_REKORDBOX_ID` - Rekordbox DB primary key
 - `DJLIB_TRAKTOR_ID` - Traktor AUDIO_ID
@@ -183,6 +192,7 @@ traktor_map = get_traktor_track_ids()
 **Implemented via:** `add_tracks_to_rekordbox()` and `add_tracks_to_traktor()`
 
 **Rekordbox write:**
+
 ```python
 from djlib.external_sync import add_tracks_to_rekordbox
 
@@ -191,6 +201,7 @@ add_tracks_to_rekordbox(library_csv="library.csv", dry_run=False)
 ```
 
 **Traktor write:**
+
 ```python
 from djlib.external_sync import add_tracks_to_traktor
 
@@ -199,6 +210,7 @@ add_tracks_to_traktor(library_csv="library.csv", dry_run=False)
 ```
 
 **Safety features:**
+
 - Automatic backups (Rekordbox DB copy, Traktor `collection.nml.backup`)
 - Dry-run mode for preview
 - Error handling with detailed logging

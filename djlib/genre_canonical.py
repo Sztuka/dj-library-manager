@@ -25,8 +25,9 @@ class GenreDefinition:
     
     @staticmethod
     def _normalize(text: str) -> str:
-        """Normalize text for matching: lowercase, no special chars."""
-        return re.sub(r'[^a-z0-9\s]', '', text.lower()).strip()
+        """Normalize text for matching: lowercase, punctuation to spaces, single spacing."""
+        cleaned = re.sub(r'[^a-z0-9\s]', ' ', (text or '').lower())
+        return re.sub(r'\s+', ' ', cleaned).strip()
     
     def matches(self, raw_genre: str) -> bool:
         """Check if raw genre string matches this definition."""
@@ -37,12 +38,13 @@ class GenreDefinition:
         # Check exact match
         if normalized in self.synonyms:
             return True
-        
-        # Check if any synonym is contained in the raw genre
+
+        # Check if any synonym appears as a whole-word phrase inside the raw
+        # genre (avoid partial substring matches like "dub" vs "dubstep").
         for syn in self.synonyms:
-            if syn in normalized or normalized in syn:
+            if re.search(rf"\b{re.escape(syn)}\b", normalized):
                 return True
-        
+
         return False
 
 
