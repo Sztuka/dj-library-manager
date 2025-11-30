@@ -190,10 +190,12 @@ dj-library-manager/
 
 ### Genre Classification
 
-**Canonical genres** defined in `genres.yml` (single source of truth):
+**Canonical genres** are defined in `genres.yml` (**single source of truth for all genre mapping, normalization, and classification**):
 
-- Each genre has a `key` (e.g., `AFRO_HOUSE`), `label` (e.g., "Afro House"), and `synonyms`
-- Resolver matches raw genre strings → canonical key + label
+- Each genre has a `key` (e.g., `AFRO_HOUSE`), `label` (e.g., "Afro House"), and `synonyms`.
+- The canonical genre resolver (`djlib/genre_canonical.py`) matches raw genre strings to canonical key + label, referencing only `genres.yml`.
+- All genre dropdowns, ML training, and metadata enrichment use canonical genres from `genres.yml`.
+- No hardcoded genre lists or manual normalization exist anywhere in the codebase; everything is deterministic and references the canonical genre file.
 - Stored in `library.csv` as:
   - `genre`: User-selected label (e.g., "Afro House")
   - `genre_canonical`: Normalized key (e.g., "AFRO_HOUSE")
@@ -507,26 +509,26 @@ Artist - Title (Mix) [6A 120] (3).mp3
 WORKFLOW 0: Sync DJ Libraries & Tags (optional)
   ↓ Compare library.csv with Rekordbox/Traktor
   ↓ Add missing tracks, update paths, add custom tags
-  
+
 WORKFLOW 1: Scan UNSORTED
   ↓ Read Rekordbox/Traktor DBs → get rekordbox_id/traktor_id
   ↓ Tag files with DJLIB_TRACK_ID + external IDs
   ↓ Generate unsorted.xlsx
-  
+
 WORKFLOW 2: Enrich Online
   ↓ MusicBrainz/Last.fm/Beatport/SoundCloud metadata
-  
+
 WORKFLOW 3: Manual Curation (Excel)
   ↓ Edit metadata, select destination, mark done=TRUE
-  
+
 WORKFLOW 4: Export (Apply)
   ↓ Move files to LIBRARY/REJECT/ARCHIVE
   ↓ AUTO-SYNC with Rekordbox/Traktor (add new + update paths)
-  
+
 WORKFLOW 5: Analyze Audio (Essentia)
   ↓ Extract 50+ features for ML training
   ↓ Only analyzes approved tracks in LIBRARY
-  
+
 WORKFLOW 6: ML Dataset Export
   ↓ Export training data with audio features
 ```

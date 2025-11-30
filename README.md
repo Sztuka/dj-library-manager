@@ -1,3 +1,13 @@
+**Canonical Genre System:**
+- See `djlib/genre_canonical.py` for genre resolver logic.
+- See `genres.yml` for canonical genre definitions and synonyms.
+- All genre dropdowns, normalization, and ML training reference these files only.
+### Genre Normalization Architecture
+
+**All genre mapping, normalization, and classification is canonical and sourced from `genres.yml` via `djlib/genre_canonical.py`.**
+- No hardcoded genre lists or manual normalization.
+- All modules (resolver, placement, ML, curation) reference the canonical genre file.
+- Legacy taxonomy and bucket-based genre lists are deprecated.
 # DJ Library Manager
 
 **Automated DJ library organization with Rekordbox integration, metadata enrichment, and audio analysis.**
@@ -8,14 +18,15 @@ Smart library workflow for DJs that:
 
 - ✅ **Scans UNSORTED folder** → validates Rekordbox analysis → generates `data/unsorted.xlsx` staging area
 - ✅ **Extracts audio features** with Essentia (BPM, key, energy, spectral features) → SQLite cache for ML training
-- ✅ **Multi-source metadata enrichment** (Beatport, MusicBrainz, Last.fm, SoundCloud) → canonical genre resolution (30 genres)
-- ✅ **Manual curation workflow** via Excel → edit metadata, select destination (library/reject/archive/mixes), mark `done = TRUE`
+- ✅ **Multi-source metadata enrichment** (Beatport, MusicBrainz, Last.fm, SoundCloud) → canonical genre resolution (**all genre mapping is sourced from `genres.yml` via the canonical resolver; no hardcoded lists**)
+- ✅ **Manual curation workflow** via Excel → edit metadata, select destination (library/reject/archive/mixes), mark `done = TRUE` (**genre dropdown is always canonical, from `genres.yml`**)
 - ✅ **Cleans spam metadata** → removes piracy tags + **ALWAYS clears album tags** (compilations not useful for DJs)
 - ✅ **Safe file operations** → moves approved tracks to organized structure with undo support
 - ✅ **DJ software integration** → import Rekordbox/Traktor snapshots, create path maps for future sync
 - ✅ **ML dataset export** → combines Rekordbox tags + Essentia features for training genre/context models
 
 **Core philosophy:** This is a **library cleaner** with genre-focused organization. Destination folders (library/reject/archive) are pure logistics, not musical categories. Smart playlists are future enhancements.
+**Core philosophy:** This is a **library cleaner** with genre-focused organization. **Genre normalization is always canonical, using `genres.yml` and the resolver.** Destination folders (library/reject/archive) are pure logistics, not musical categories. Smart playlists are future enhancements.
 
 ## 🚀 Quick Start
 
@@ -109,7 +120,7 @@ python -m djlib.cli enrich-online
 
 - Open `unsorted.xlsx`
 - Review and edit: `artist`, `title`, `version_info`, `genre`
-- Select `genre` from dropdown (canonical genres from `genres.yml`)
+- Select `genre` from dropdown (**canonical genres from `genres.yml`—this is the single source of truth for all genre mapping and normalization**)
 - Set `status`: `accept` / `reject` / `review`
 - Set `destination`: `library` (main collection) / `reject` / `archive`
 - Mark ready tracks: `done = TRUE`
@@ -409,7 +420,7 @@ track_id,file_path,
 tag_bpm,tag_key_camelot,          # From Rekordbox (source of truth)
 ess_bpm,ess_key_camelot,ess_energy, # From Essentia (algorithmic)
 ess_spectral_centroid,ess_spectral_rolloff,...  # 50+ features
-genre_label                       # Training label (canonical genre from genres.yml)
+genre_label                       # Training label (**always canonical, from genres.yml**)
 ```
 
 **Use cases:**
