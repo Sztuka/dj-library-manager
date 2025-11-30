@@ -1473,8 +1473,6 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     WORKFLOW 0: Sync library.csv with DJ software databases.
     Ensures all approved tracks are in Rekordbox + Traktor with custom tags.
     """
-    from djlib.external_sync import sync_dj_libraries_after_export
-    
     dry_run = not args.write
     
     print("\n" + "=" * 60)
@@ -1482,45 +1480,195 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     if dry_run:
         print("         (DRY-RUN MODE)")
     else:
-        print("         ⚠️  WRITE MODE - WILL MODIFY DJ SOFTWARE DBs!")
+        print("         ⚠️  WRITE MODE - WILL MODIFY FILES!")
     print("=" * 60)
     print()
     print("This workflow:")
-    print("  1. Compares library.csv with Rekordbox/Traktor databases")
-    print("  2. Adds missing tracks to both DJ software")
-    print("  3. Updates paths for moved tracks")
-    print("  4. Adds custom DJLIB tags where missing")
+    print("  1. Imports snapshots from Rekordbox + Traktor")
+    print("  2. Merges into library.csv (removes duplicates)")
+    print("  3. Adds DJLIB custom tags to ALL library files")
+    print("     - DJLIB_TRACK_ID (our internal UUID)")
+    print("     - DJLIB_REKORDBOX_ID (Rekordbox DB ID)")
+    print("     - DJLIB_TRAKTOR_ID (Traktor AUDIO_ID)")
+    print("     - DJLIB_ORIGINAL_PATH (reference path)")
+    print()
+    print("💡 Run this ONCE to prepare your library for tracking")
+    print()
+    
+    # Step 1: Import snapshots from DJ software
+    print("=" * 60)
+    print("STEP 1: IMPORT DJ SOFTWARE SNAPSHOTS")
+    print("=" * 60)
     print()
     
     try:
-        result = sync_dj_libraries_after_export(
-            CSV_PATH,
-            dry_run=dry_run
+        # Import Rekordbox
+        from djlib.external_sync import import_rekordbox_snapshot, import_traktor_snapshot
+        import pandas as pd
+        
+        rekordbox_snapshot_path = Path("LOGS/external_snapshots/rekordbox_snapshot.csv")
+        rekordbox_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Import WITHOUT tagging (we'll tag later after merge)
+        rekordbox_count = import_rekordbox_snapshot(
+            rekordbox_snapshot_path,
+            tag_files=False,  # Don't tag yet
+            workers=1
         )
+        print(f"✅ Imported {rekordbox_count} tracks from Rekordbox")
         
-        print()
-        print("=" * 60)
-        print("✅ SYNC COMPLETE")
-        print("=" * 60)
+        # Import Traktor
+        traktor_snapshot_path = Path("LOGS/external_snapshots/traktor_snapshot.csv")
         
-        if result.get('rekordbox_added', 0) > 0:
-            print(f"\n✅ Rekordbox: Added {result['rekordbox_added']} new tracks")
-        if result.get('rekordbox_updated', 0) > 0:
-            print(f"🔄 Rekordbox: Updated {result['rekordbox_updated']} track paths")
+        # Auto-detect Traktor collection.nml
+        collection_nml_path = None
+        docs = Path.home() / "Documents" / "Native Instruments"
+        if docs.exists():
+            for traktor_dir in docs.glob("Traktor*"):
+                nml = traktor_dir / "collection.nml"
+                if nml.exists():
+                    collection_nml_path = nml
+                    break
         
-        if result.get('traktor_added', 0) > 0:
-            print(f"\n✅ Traktor: Added {result['traktor_added']} new tracks")
-        if result.get('traktor_updated', 0) > 0:
-            print(f"🔄 Traktor: Updated {result['traktor_updated']} track paths")
+        traktor_count = 0
+        if collection_nml_path and collection_nml_path.exists():
+            # Import WITHOUT tagging (we'll tag later after merge)
+            traktor_count = import_traktor_snapshot(
+                collection_nml_path,
+                traktor_snapshot_path,
+                tag_files=False,  # Don't tag yet
+                workers=1
+            )
+            print(f"✅ Imported {traktor_count} tracks from Traktor")
+        else:
+            print("⚠️  Traktor collection.nml not found - skipping Traktor import")
         
-        if dry_run:
-            print("\n💡 Run with --write to apply changes")
-        print()
-        
+        # Merge snapshots into library.csv
+        if rekordbox_snapshot_path.exists() or traktor_snapshot_path.exists():
+            dfs = []
+            if rekordbox_snapshot_path.exists():
+                dfs.append(pd.read_csv(rekordbox_snapshot_path))
+            if traktor_snapshot_path.exists():
+                dfs.append(pd.read_csv(traktor_snapshot_path))
+            
+            df = pd.concat(dfs, ignore_index=True)
+            
+            # Filter out Apple Music streaming tracks (not local files)
+            before_filter = len(df)
+            df = df[~df['old_full_path'].str.startswith('apple-music:', na=False)]
+            apple_music_filtered = before_filter - len(df)
+            
+            # Remove duplicates - keep first occurrence (Rekordbox takes precedence)
+            df = df.drop_duplicates(subset=['old_full_path'], keep='first')
+            
+            CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(CSV_PATH, index=False)
+            print(f"✅ Merged {len(df)} unique tracks into library.csv")
+            if apple_music_filtered > 0:
+                print(f"   (Filtered out {apple_music_filtered} Apple Music streaming tracks)")
+            print(f"   (Removed {rekordbox_count + traktor_count - apple_music_filtered - len(df)} duplicates)")
+        else:
+            if not CSV_PATH.exists():
+                raise FileNotFoundError("No snapshots imported and library.csv doesn't exist")
+            print(f"⚠️  Using existing library.csv")
+    
     except Exception as e:
-        print(f"\n❌ Sync failed: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"⚠️  Snapshot import failed: {e}")
+        if not CSV_PATH.exists():
+            raise FileNotFoundError(f"Cannot proceed without library.csv: {CSV_PATH}")
+        print(f"   Continuing with existing library.csv...")
+    
+    # Step 2: Add DJLIB tags to all unique library files (ONE TIME)
+    print()
+    print("=" * 60)
+    print("STEP 2: ADD DJLIB TAGS TO LIBRARY FILES")
+    print("=" * 60)
+    print()
+    
+    from djlib.csvdb import load_records
+    from djlib.djlib_tags import write_djlib_tags
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
+    library_rows = load_records(CSV_PATH)
+    print(f"📋 Loaded {len(library_rows)} unique tracks from library.csv")
+    
+    if dry_run:
+        print("   (DRY-RUN mode - skipping actual file tagging)")
+    else:
+        tags_written = 0
+        tags_skipped = 0
+        tags_errors = 0
+        
+        def tag_file(row):
+            """Tag a single file with DJLIB metadata."""
+            file_path_str = row.get('old_full_path', '') or row.get('file_path', '')
+            if not file_path_str:
+                return 'skip', None
+            
+            file_path = Path(file_path_str)
+            if not file_path.exists():
+                return 'skip', file_path.name
+            
+            track_id = row.get('track_id', '')
+            if not track_id:
+                return 'skip', file_path.name
+            
+            try:
+                # Write all DJLIB tags including external IDs
+                write_djlib_tags(
+                    file_path,
+                    track_id=track_id,
+                    rekordbox_id=row.get('external_track_id') if row.get('external_source') == 'rekordbox' else None,
+                    traktor_id=row.get('external_track_id') if row.get('external_source') == 'traktor' else None,
+                    original_path=file_path_str
+                )
+                return 'ok', file_path.name
+            except Exception as e:
+                return 'error', (file_path.name, str(e))
+        
+        print(f"📝 Tagging {len(library_rows)} files with DJLIB_TRACK_ID (parallel, 4 workers)...")
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(tag_file, row): row for row in library_rows}
+            
+            for future in as_completed(futures):
+                status, result = future.result()
+                
+                if status == 'ok':
+                    tags_written += 1
+                    if tags_written % 20 == 0:
+                        print(f"  ✓ {tags_written}/{len(library_rows)} tagged...")
+                elif status == 'skip':
+                    tags_skipped += 1
+                elif status == 'error':
+                    tags_errors += 1
+                    filename, error = result
+                    if tags_errors <= 3:  # Show first 3 errors
+                        print(f"  ⚠️  Failed: {filename}: {error}")
+        
+        print()
+        print(f"✅ Tags written: {tags_written}")
+        print(f"⏭️  Skipped (file not found): {tags_skipped}")
+        if tags_errors > 0:
+            print(f"❌ Errors: {tags_errors}")
+    
+    # Done!
+    print()
+    print("=" * 60)
+    print("✅ WORKFLOW 0 COMPLETE")
+    print("=" * 60)
+    print()
+    print("Summary:")
+    print(f"  • Imported snapshots from Rekordbox + Traktor")
+    print(f"  • Created library.csv with {len(library_rows)} tracks")
+    if not dry_run:
+        print(f"  • Tagged {tags_written} files with DJLIB metadata")
+    else:
+        print(f"  • DRY-RUN: No files were modified")
+    print()
+    print("💡 Your library is now ready for tracking!")
+    print("   Files have DJLIB_TRACK_ID, DJLIB_REKORDBOX_ID, DJLIB_TRAKTOR_ID tags")
+    print()
 
 
 def cmd_create_path_map(args: argparse.Namespace) -> None:
@@ -1830,9 +1978,6 @@ def build_parser() -> argparse.ArgumentParser:
     arb = sp.add_parser("add-to-rekordbox", help="Add tracks from unsorted.xlsx to Rekordbox database")
     arb.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
     arb.set_defaults(func=cmd_add_to_rekordbox)
-    
-    str_parser = sp.add_parser("sync-traktor-paths", help="Sync paths to Traktor collection.nml (Phase 3 - NOT IMPLEMENTED)")
-    str_parser.set_defaults(func=cmd_sync_traktor)
     
     # ========== END EXTERNAL INTEGRATION ==========
     

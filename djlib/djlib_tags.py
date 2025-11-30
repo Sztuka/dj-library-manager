@@ -31,6 +31,7 @@ from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 from mutagen.id3._frames import TXXX
 from mutagen.mp4 import MP4
+from mutagen.wave import WAVE
 
 
 def generate_track_id(filepath: Path, artist: str = "", title: str = "") -> str:
@@ -101,6 +102,10 @@ def write_djlib_tags(
     # Handle M4A/MP4 (iTunes-style)
     elif filepath.suffix.lower() in ('.m4a', '.m4p', '.mp4'):
         _write_mp4_tags(filepath, track_id, rekordbox_id, traktor_id, original_path, snapshot_date)
+    
+    # Handle WAV (ID3 tags in RIFF)
+    elif filepath.suffix.lower() == '.wav':
+        _write_wav_tags(filepath, track_id, rekordbox_id, traktor_id, original_path, snapshot_date)
     
     else:
         raise ValueError(f"Unsupported audio format: {filepath.suffix}")
@@ -190,6 +195,40 @@ def _write_mp4_tags(
         audio['----:com.apple.iTunes:DJLIB_ORIGINAL_PATH'] = original_path.encode('utf-8')
     
     audio.save()
+
+
+def _write_wav_tags(
+    filepath: Path,
+    track_id: str,
+    rekordbox_id: Optional[str],
+    traktor_id: Optional[str],
+    original_path: Optional[str],
+    snapshot_date: str,
+) -> None:
+    """Write ID3 tags to WAV file (stored in RIFF INFO chunk)."""
+    try:
+        audio = WAVE(str(filepath))
+        
+        # Add ID3 tags if they don't exist
+        if audio.tags is None:
+            audio.add_tags()
+        
+        # Write custom TXXX frames (same as MP3)
+        audio.tags.add(TXXX(encoding=3, desc='DJLIB_TRACK_ID', text=track_id))
+        audio.tags.add(TXXX(encoding=3, desc='DJLIB_SNAPSHOT_DATE', text=snapshot_date))
+        
+        if rekordbox_id:
+            audio.tags.add(TXXX(encoding=3, desc='DJLIB_REKORDBOX_ID', text=rekordbox_id))
+        
+        if traktor_id:
+            audio.tags.add(TXXX(encoding=3, desc='DJLIB_TRAKTOR_ID', text=traktor_id))
+        
+        if original_path:
+            audio.tags.add(TXXX(encoding=3, desc='DJLIB_ORIGINAL_PATH', text=original_path))
+        
+        audio.save()
+    except Exception as e:
+        raise ValueError(f"Failed to write WAV tags: {e}")
 
 
 def read_djlib_tags(filepath: Path) -> Dict[str, str]:
