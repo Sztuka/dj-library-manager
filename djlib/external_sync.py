@@ -17,13 +17,16 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyrekordbox import Rekordbox6Database
 
 try:
     from pyrekordbox import Rekordbox6Database
     PYREKORDBOX_AVAILABLE = True
 except ImportError:
-    Rekordbox6Database = None  # type: ignore
+    Rekordbox6Database = None  # type: ignore[assignment,misc]
     PYREKORDBOX_AVAILABLE = False
 
 from djlib.djlib_tags import (
@@ -52,7 +55,8 @@ def get_rekordbox_track_ids() -> Dict[Path, str]:
         return {}
     
     try:
-        db = Rekordbox6Database(rekordbox_db_path)  # type: ignore
+        assert Rekordbox6Database is not None, "pyrekordbox not available"
+        db = Rekordbox6Database(rekordbox_db_path)
         mapping: Dict[Path, str] = {}
         
         for content in db.get_content():
@@ -203,6 +207,7 @@ def import_rekordbox_snapshot(
     print(f"📖 Reading Rekordbox database: {rekordbox_db_path}")
     
     # Open database (read-only)
+    assert Rekordbox6Database is not None, "pyrekordbox not available"
     db = Rekordbox6Database(rekordbox_db_path)
     
     # Get all tracks - first pass to collect track data
@@ -210,7 +215,7 @@ def import_rekordbox_snapshot(
     snapshot_date = datetime.now(timezone.utc).isoformat()
     tracks_to_tag: List[Dict[str, Any]] = []
     
-    for content in db.get_content():
+    for content in db.get_content():  # type: ignore
         # Extract file path
         # NOTE: FolderPath in Rekordbox DB is actually the full file path, not just folder
         full_path = getattr(content, 'FolderPath', '').strip()

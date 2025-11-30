@@ -26,9 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
-from mutagen import File as MutFile
+from mutagen._file import File as MutFile
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3, TXXX
+from mutagen.id3 import ID3
+from mutagen.id3._frames import TXXX
 from mutagen.mp4 import MP4
 
 

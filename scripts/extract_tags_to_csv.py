@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 import traceback
 
-from mutagen import File
+from mutagen._file import File
 
 DEFAULT_ROOT = Path.home() / 'Desktop' / 'MUSIC'
 DEFAULT_OUTPUT = Path('data/OLD_LIBRARY_SOURCE.csv')

@@ -1,13 +1,17 @@
 **Canonical Genre System:**
+
 - See `djlib/genre_canonical.py` for genre resolver logic.
 - See `genres.yml` for canonical genre definitions and synonyms.
 - All genre dropdowns, normalization, and ML training reference these files only.
+
 ### Genre Normalization Architecture
 
 **All genre mapping, normalization, and classification is canonical and sourced from `genres.yml` via `djlib/genre_canonical.py`.**
+
 - No hardcoded genre lists or manual normalization.
 - All modules (resolver, placement, ML, curation) reference the canonical genre file.
 - Legacy taxonomy and bucket-based genre lists are deprecated.
+
 # DJ Library Manager
 
 **Automated DJ library organization with Rekordbox integration, metadata enrichment, and audio analysis.**
