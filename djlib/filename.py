@@ -12,6 +12,20 @@ def merge_title_and_version(title: str, version_info: str) -> str:
     tokens = _normalize_version_tokens(version_info)
     if not tokens:
         return base
+
+    stripped, embedded = split_title_and_version(base)
+    if embedded:
+        embedded_tokens = _normalize_version_tokens(embedded)
+        if embedded_tokens == tokens:
+            base = stripped or base
+
+    first_token = tokens[0] if tokens else ""
+    if first_token:
+        pattern = re.compile(rf"\s*[-–—]\s*{re.escape(first_token)}\s*$", re.IGNORECASE)
+        cleaned, count = pattern.subn("", base)
+        if count:
+            base = cleaned.strip() or base
+
     suffix = " ".join(f"({tok})" for tok in tokens)
     return (f"{base} {suffix}").strip()
 
@@ -87,37 +101,37 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     cleaned = re.sub(r"\((?:https?://|www\.|[^)]*\.(?:com|net|org|ru|pl|de|uk|fr|it|es|cz|sk|nl|be|info|biz|xyz|site|club|music|fm|to|ua|co|io|me)\b)[^)]*\)", "", cleaned, flags=re.IGNORECASE)
     # usuń prefiksy numerów ścieżek na początku (01-, 01., [01], (01) itp.)
     cleaned = re.sub(r"^\s*(?:\[\s*\d{1,3}\s*\]|\(\s*\d{1,3}\s*\)|\d{1,3})[\s\._\-]+", "", cleaned)
-    # usuń podwójne spacje i spacje wokół myślników
-    cleaned = re.sub(r"\s*-[\-–—]\s*", " - ", cleaned)  # normalizuj łącznik
+    # normalizuj spacje wokół myślników, nie ruszając zapisów typu "AC-DC"
+    cleaned = re.sub(r"-\s+", " - ", cleaned)
+    cleaned = re.sub(r"\s+-", " - ", cleaned)
+    cleaned = re.sub(r"\s*[–—]\s*", " - ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
+    dash_pattern = r"\s+-\s+" if " - " in cleaned else r"\s*-\s*"
+
     # 2) próba dopasowania z wieloma nawiasami: Artist - Title (V1) (V2) ...
-    m_multi = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*(\(.+\))\s*$", cleaned)
+    m_multi = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*(\(.+\))\s*$", cleaned)
     if m_multi:
         a, t, tail = m_multi.groups()
         # wyciągnij wszystkie grupy nawiasów
         parts = re.findall(r"\(([^)]+)\)", tail)
         version_combined = ", ".join(p.strip() for p in parts if p.strip())
         return a.strip(), t.strip(), version_combined.strip()
-    
+
     # 2b) próba dopasowania: Artist - Title - Version (bez nawiasów, 3 segmenty)
-    m_three = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*-\s*(.+?)\s*$", cleaned)
+    m_three = re.match(rf"^\s*(.+?){dash_pattern}(.+?){dash_pattern}(.+?)\s*$", cleaned)
     if m_three:
-        a, middle, last = m_three.groups()
-        a = a.strip()
-        middle = middle.strip()
-        last = last.strip()
-        
-        # Heuristic: if middle looks like track number (e.g., "04", "1", "12"), 
+        a, middle, last = (g.strip() for g in m_three.groups())
+
+        # Heuristic: if middle looks like track number (e.g., "04", "1", "12"),
         # treat last as title, ignore middle
         if re.match(r"^\d{1,3}$", middle):
             return a, last, ""
-        
-        # Otherwise: middle is title, last is version
+
         return a, middle, last
-    
+
     # 3) próba dopasowania: Artist - Title
-    m2 = re.match(r"^\s*(.+?)\s*-\s*(.+?)\s*$", cleaned)
+    m2 = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*$", cleaned)
     if m2:
         a, t = (m2.group(1).strip(), m2.group(2).strip())
         # 3a) heurystyka: jeśli tytuł kończy się znanym określeniem wersji – wydziel je
@@ -135,9 +149,10 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         if found:
             # wytnij wersję z końca tytułu
             base = t[: len(t) - len(found)].rstrip()
-            # usuń separatory typu '-'/'–' na końcu jeśli zostały
+            # usuń separatory typu "-"/"–" na końcu jeśli zostały
             base = re.sub(r"[\s\-–—]+$", "", base).strip()
             return a, base or t, found.title()
         return a, t, ""
+
     # 4) fallback – użyj wyczyszczonej nazwy jako tytułu
     return "", cleaned.strip(), ""

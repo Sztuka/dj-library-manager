@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, READY_TO_PLAY_DIR, REVIEW_QUEUE_DIR, LOGS_DIR, CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
+    INBOX_DIR, LOGS_DIR, CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
 )
 from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
@@ -1559,14 +1559,26 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             apple_music_filtered = before_filter - len(df)
             
             # Remove duplicates - keep first occurrence (Rekordbox takes precedence)
-            df = df.drop_duplicates(subset=['old_full_path'], keep='first')
+            df['old_full_path'] = df['old_full_path'].fillna('').astype(str)
+            df['old_full_path_norm'] = df['old_full_path'].str.strip().map(
+                lambda p: os.path.normpath(p) if p else ''
+            )
+            source_priority = {'rekordbox': 0, 'traktor': 1}
+            df['__source_priority'] = df['external_source'].fillna('').str.lower().map(
+                lambda s: source_priority.get(s, 2)
+            )
+            df = df.sort_values('__source_priority')
+            before_dedup = len(df)
+            df = df.drop_duplicates(subset=['old_full_path_norm'], keep='first')
+            duplicates_removed = before_dedup - len(df)
+            df = df.drop(columns=['__source_priority', 'old_full_path_norm'])
             
             CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(CSV_PATH, index=False)
             print(f"✅ Merged {len(df)} unique tracks into library.csv")
             if apple_music_filtered > 0:
                 print(f"   (Filtered out {apple_music_filtered} Apple Music streaming tracks)")
-            print(f"   (Removed {rekordbox_count + traktor_count - apple_music_filtered - len(df)} duplicates)")
+            print(f"   (Removed {duplicates_removed} duplicates across Rekordbox/Traktor)")
         else:
             if not CSV_PATH.exists():
                 raise FileNotFoundError("No snapshots imported and library.csv doesn't exist")

@@ -3,43 +3,26 @@ from pathlib import Path
 import shutil
 from datetime import datetime, timezone
 
-# Legacy taxonomy support (deprecated)
-try:
-    from djlib.taxonomy import target_to_path, ensure_taxonomy_folders
-    _LEGACY_TAXONOMY_AVAILABLE = True
-except ImportError:
-    _LEGACY_TAXONOMY_AVAILABLE = False
-    target_to_path = None  # type: ignore
-    ensure_taxonomy_folders = None  # type: ignore
-
-# New logistics-only path building
-from djlib.logistics import build_library_path, build_reject_path, build_archive_path
+# Logistics-only path building
+from djlib.logistics import get_destination_path
 
 
 def resolve_target_path(target: str) -> Path | None:
-    """Resolve target path. Supports both new logistics model and legacy taxonomy.
+    """Resolve target path using logistics destinations only.
     
-    New model (recommended):
-        - "library" → LIBRARY/{Artist}/
-        - "reject" → REJECT/
-        - "archive" → ARCHIVE/{Artist}/
-        
-    Legacy model (deprecated):
-        - "READY TO PLAY/CLUB/AFRO HOUSE" → old taxonomy-based path
+    Supported destinations:
+        - "library" → Music Library root (artist subfolders)
+        - "reject" → DJ Reject folder
+        - "archive" → DJ Archive folder
+        - "mixes" → MIXES subfolder (flat structure)
+    
+    Returns:
+        Path to destination directory, or None if target is invalid
     """
     target_lower = (target or "").lower().strip()
     
-    # New logistics model
-    if target_lower in ("library", "reject", "archive"):
-        from djlib.logistics import get_destination_path
+    if target_lower in ("library", "reject", "archive", "mixes"):
         p = get_destination_path(target_lower)  # type: ignore[arg-type]
-        if p:
-            p.mkdir(parents=True, exist_ok=True)
-        return p
-    
-    # Legacy taxonomy path (backward compatibility)
-    if _LEGACY_TAXONOMY_AVAILABLE and target_to_path:
-        p = target_to_path(target)
         if p:
             p.mkdir(parents=True, exist_ok=True)
         return p

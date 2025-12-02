@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import csv
 import shutil
+import tempfile
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, TYPE_CHECKING
+
+from xsdata.formats.dataclass.serializers import XmlSerializer
 
 if TYPE_CHECKING:
     from pyrekordbox import Rekordbox6Database
@@ -28,6 +31,29 @@ try:
 except ImportError:
     Rekordbox6Database = None  # type: ignore[assignment,misc]
     PYREKORDBOX_AVAILABLE = False
+
+
+try:
+    from traktor_nml_utils import TraktorCollection
+    from traktor_nml_utils.models.collection import (
+        Entrytype,
+        Infotype,
+        Locationtype,
+        ModificationInfotype,
+        MusicalKeytype,
+        Tempotype,
+    )
+
+    TRAKTOR_UTILS_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    TraktorCollection = None  # type: ignore[assignment]
+    Entrytype = None  # type: ignore[assignment]
+    Infotype = None  # type: ignore[assignment]
+    Locationtype = None  # type: ignore[assignment]
+    ModificationInfotype = None  # type: ignore[assignment]
+    MusicalKeytype = None  # type: ignore[assignment]
+    Tempotype = None  # type: ignore[assignment]
+    TRAKTOR_UTILS_AVAILABLE = False
 
 from djlib.djlib_tags import (
     generate_track_id,
@@ -753,9 +779,25 @@ def add_tracks_to_rekordbox(
             # Check if track already exists
             if rekordbox_id:
                 if update_existing:
-                    # Update existing track path
+                    # Update existing track path and make sure the GUI "File Name" column matches
                     try:
-                        db.update_content_path(int(rekordbox_id), str(file_path))
+                        rb_id_int = int(rekordbox_id)
+                    except (TypeError, ValueError):
+                        print(f"⚠️  Invalid Rekordbox ID '{rekordbox_id}' for {file_path.name}")
+                        continue
+
+                    try:
+                        content = db.get_content(ID=rb_id_int)
+                        if content is None:
+                            raise RuntimeError(f"Rekordbox ID {rb_id_int} not found")
+
+                        # update_content_path also refreshes ANLZ metadata; delay commit until we touch FileNameL
+                        db.update_content_path(content, str(file_path), commit=False)
+
+                        file_name_only = file_path.name
+                        if getattr(content, "FileNameL", None) != file_name_only:
+                            content.FileNameL = file_name_only
+
                         updated_count += 1
                     except Exception as e:
                         print(f"⚠️  Failed to update {file_path.name}: {e}")
@@ -783,6 +825,139 @@ def add_tracks_to_rekordbox(
     return (added_count, updated_count)
 
 
+
+TRAKTOR_BACKUP_TAG = "djlib-backup"
+
+
+def _format_traktor_dir(directory: Path) -> str:
+    """Translate a filesystem path to Traktor's DIR encoding."""
+    resolved = directory.expanduser().resolve()
+    parts = [part for part in resolved.parts if part not in ('/', '')]
+    drive = resolved.drive.rstrip(':\\/') if resolved.drive else ''
+    if drive and (not parts or parts[0] != drive):
+        parts.insert(0, drive)
+    if not parts:
+        return '/:'
+    formatted = '/:' + '/:'.join(parts)
+    if not formatted.endswith('/:'):
+        formatted += '/:'
+    return formatted
+
+
+def _guess_traktor_volume(file_path: Path) -> tuple[str, str]:
+    """Best-effort guess of Traktor VOLUME/VOLUMEID attributes."""
+    resolved = file_path.expanduser().resolve()
+    parts = [part for part in resolved.parts if part not in ('/', '')]
+    if len(parts) >= 2 and parts[0] == 'Volumes':
+        return (parts[1], '')
+    if resolved.drive:
+        return (resolved.drive.rstrip(':\\/'), '')
+    return ('Macintosh HD', '')
+
+
+def _backup_traktor_collection(collection_path: Path) -> Path:
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    backup_name = f"{collection_path.name}.{TRAKTOR_BACKUP_TAG}-{timestamp}"
+    backup_path = collection_path.with_name(backup_name)
+    shutil.copy2(collection_path, backup_path)
+    print(f"📦 Backup created: {backup_path}")
+    return backup_path
+
+
+def _safe_save_traktor_collection(collection_path: Path, nml_obj: Any) -> None:
+    serializer = XmlSerializer()
+    serialized = serializer.render(nml_obj)
+    serialized = '\n'.join(line.lstrip() for line in serialized.splitlines())
+    with tempfile.NamedTemporaryFile(
+        'w',
+        dir=str(collection_path.parent),
+        prefix=f".{collection_path.name}.tmp-",
+        delete=False,
+        encoding='utf-8',
+    ) as tmp:
+        tmp.write(serialized)
+        temp_path = Path(tmp.name)
+    temp_path.replace(collection_path)
+
+
+def _apply_entry_update(
+    entry: Entrytype,
+    *,
+    dir_attr: str,
+    file_name: str,
+    volume: str,
+    volume_id: str,
+    modified_date: str,
+    modified_time: int,
+) -> bool:
+    if entry.location is None:
+        entry.location = Locationtype(dir=dir_attr, file=file_name, volume=volume, volumeid=volume_id)
+        entry.modified_date = modified_date
+        entry.modified_time = modified_time
+        return True
+    location = entry.location
+    changed = False
+    if location.dir != dir_attr:
+        location.dir = dir_attr
+        changed = True
+    if location.file != file_name:
+        location.file = file_name
+        changed = True
+    if volume and location.volume != volume:
+        location.volume = volume
+        changed = True
+    if location.volumeid != volume_id:
+        location.volumeid = volume_id
+        changed = True
+    if changed:
+        entry.modified_date = modified_date
+        entry.modified_time = modified_time
+    return changed
+
+
+def _build_traktor_entry(
+    track: dict[str, Any],
+    *,
+    file_path: Path,
+    dir_attr: str,
+    volume: str,
+    volume_id: str,
+    traktor_id: str,
+    modified_date: str,
+    modified_time: int,
+) -> Entrytype:
+    info = Infotype(
+        import_date=modified_date,
+        comment=track.get('comment'),
+        genre=track.get('genre'),
+    )
+    tempo = None
+    bpm_value = track.get('bpm')
+    if bpm_value is not None:
+        try:
+            bpm_float = float(bpm_value)
+        except (TypeError, ValueError):
+            bpm_float = None
+        if bpm_float is not None:
+            tempo = Tempotype(bpm=bpm_float, bpm_quality=100.0)
+    musical_key = None
+    key_value = track.get('key') or track.get('key_camelot')
+    if key_value is not None:
+        musical_key = MusicalKeytype(value_attribute=str(key_value))
+    return Entrytype(
+        location=Locationtype(dir=dir_attr, file=file_path.name, volume=volume, volumeid=volume_id),
+        modification_info=ModificationInfotype(author_type='user'),
+        info=info,
+        tempo=tempo,
+        musical_key=musical_key,
+        modified_date=modified_date,
+        modified_time=modified_time,
+        audio_id=traktor_id,
+        title=track.get('title', ''),
+        artist=track.get('artist', ''),
+    )
+
+
 def add_tracks_to_traktor(
     collection_nml_path: Path,
     tracks: List[Dict[str, Any]],
@@ -791,136 +966,106 @@ def add_tracks_to_traktor(
 ) -> Tuple[int, int]:
     """
     Add new tracks to Traktor collection.nml and update paths for existing tracks.
-    
+
     ⚠️ DANGER ZONE: This MODIFIES Traktor collection.nml!
-    
+
     Args:
         collection_nml_path: Path to collection.nml
         tracks: List of track dicts with keys: file_path, artist, title, bpm, key, traktor_id
         dry_run: If True (default), don't write changes. If False, apply.
         update_existing: If True, update paths for tracks already in collection
-    
+
     Returns:
         Tuple[int, int]: (added_count, updated_count)
     """
+    if not TRAKTOR_UTILS_AVAILABLE:  # pragma: no cover - safety guard
+        raise RuntimeError(
+            "traktor-nml-utils is required for Traktor sync. Install via 'pip install traktor-nml-utils'."
+        )
     if not collection_nml_path.exists():
         raise FileNotFoundError(f"Traktor collection.nml not found: {collection_nml_path}")
-    
-    # Backup original file
-    if not dry_run:
-        backup_path = collection_nml_path.with_suffix('.nml.backup')
-        shutil.copy2(collection_nml_path, backup_path)
-        print(f"📦 Backup created: {backup_path}")
-    
-    # Parse XML
-    tree = ET.parse(collection_nml_path)
-    root = tree.getroot()
-    
-    # Find COLLECTION element
-    collection = root.find(".//COLLECTION")
-    if collection is None:
+
+    collection = TraktorCollection(collection_nml_path)
+    collection_root = collection.nml.collection
+    if collection_root is None:
         raise ValueError("Invalid Traktor collection.nml: no COLLECTION element found")
-    
-    # Build mapping of existing entries by AUDIO_ID
-    existing_entries: Dict[str, ET.Element] = {}
-    for entry in collection.findall("ENTRY"):
-        audio_id = entry.get("AUDIO_ID", "")
-        if audio_id:
-            existing_entries[audio_id] = entry
-    
-    # Add new tracks and update existing
+
+    now = datetime.now()
+    modified_date = now.strftime("%Y/%m/%d")
+    modified_time = now.hour * 3600 + now.minute * 60 + now.second
+
+    existing_entries: Dict[str, Entrytype] = {
+        entry.audio_id: entry
+        for entry in collection_root.entry
+        if entry.audio_id
+    }
+
     added_count = 0
     updated_count = 0
-    
+
     for track in tracks:
-        file_path = Path(track['file_path'])
-        traktor_id = track.get('traktor_id', '')
-        
-        # Skip if file doesn't exist
+        file_path = Path(track['file_path']).expanduser()
         if not file_path.exists():
             continue
-        
-        # Convert path to Traktor format (/:Users/:path)
-        full_path = str(file_path.resolve())
-        dir_path = str(file_path.parent).replace('/', '/:') + '/:'
-        file_name = file_path.name
-        
-        # Check if track already exists
-        if traktor_id and traktor_id in existing_entries:
-            if update_existing:
-                # Update existing entry's path
-                entry = existing_entries[traktor_id]
-                location = entry.find("LOCATION")
-                if location is not None:
-                    old_dir = location.get("DIR", "")
-                    old_file = location.get("FILE", "")
-                    if old_dir != dir_path or old_file != file_name:
-                        location.set("DIR", dir_path)
-                        location.set("FILE", file_name)
-                        entry.set("MODIFIED_DATE", datetime.now().strftime("%Y/%m/%d"))
-                        updated_count += 1
-            continue  # Skip adding (already exists)
-        
-        # Create new ENTRY element
-        entry = ET.Element("ENTRY")
-        entry.set("MODIFIED_DATE", datetime.now().strftime("%Y/%m/%d"))
-        entry.set("MODIFIED_TIME", "0")  # Traktor uses seconds since midnight
-        entry.set("AUDIO_ID", traktor_id if traktor_id else generate_track_id(file_path, track.get('artist', ''), track.get('title', '')))
-        entry.set("TITLE", track.get('title', ''))
-        entry.set("ARTIST", track.get('artist', ''))
-        
-        # Add LOCATION sub-element
-        location = ET.SubElement(entry, "LOCATION")
-        location.set("DIR", dir_path)
-        location.set("FILE", file_name)
-        location.set("VOLUME", "Macintosh HD")  # macOS default
-        location.set("VOLUMEID", "")
-        
-        # Add ALBUM, MODIFICATION_INFO, INFO, TEMPO, LOUDNESS, MUSICAL_KEY, etc.
-        album = ET.SubElement(entry, "ALBUM")
-        album.set("TITLE", "")
-        
-        modification_info = ET.SubElement(entry, "MODIFICATION_INFO")
-        modification_info.set("AUTHOR_TYPE", "user")
-        
-        info = ET.SubElement(entry, "INFO")
-        info.set("BITRATE", "320000")  # Default
-        info.set("GENRE", "")
-        info.set("COMMENT", "")
-        info.set("PLAYTIME", "300")  # Default 5 minutes
-        info.set("PLAYTIME_FLOAT", "300.000")
-        info.set("IMPORT_DATE", datetime.now().strftime("%Y/%m/%d"))
-        info.set("RELEASE_DATE", "")
-        info.set("FLAGS", "12")
-        
-        # BPM
-        if track.get('bpm'):
-            tempo = ET.SubElement(entry, "TEMPO")
-            tempo.set("BPM", str(track['bpm']))
-            tempo.set("BPM_QUALITY", "100")  # 100 = user-confirmed
-        
-        # Key
-        if track.get('key'):
-            musical_key = ET.SubElement(entry, "MUSICAL_KEY")
-            musical_key.set("VALUE", str(track['key']))
-        
-        # Add to collection
-        collection.append(entry)
+
+        traktor_id = track.get('traktor_id') or track.get('track_id')
+        if not traktor_id:
+            traktor_id = generate_track_id(file_path, track.get('artist', ''), track.get('title', ''))
+
+        dir_attr = _format_traktor_dir(file_path.parent)
+        volume, volume_id = _guess_traktor_volume(file_path)
+
+        if traktor_id in existing_entries:
+            if not update_existing:
+                continue
+            entry = existing_entries[traktor_id]
+            if _apply_entry_update(
+                entry,
+                dir_attr=dir_attr,
+                file_name=file_path.name,
+                volume=volume,
+                volume_id=volume_id,
+                modified_date=modified_date,
+                modified_time=modified_time,
+            ):
+                updated_count += 1
+            continue
+
+        entry = _build_traktor_entry(
+            track,
+            file_path=file_path,
+            dir_attr=dir_attr,
+            volume=volume,
+            volume_id=volume_id,
+            traktor_id=traktor_id,
+            modified_date=modified_date,
+            modified_time=modified_time,
+        )
+        collection_root.entry.append(entry)
+        existing_entries[traktor_id] = entry
         added_count += 1
-    
-    # Write changes
-    if not dry_run and (added_count > 0 or updated_count > 0):
-        tree.write(collection_nml_path, encoding='utf-8', xml_declaration=True)
-        if added_count > 0:
-            print(f"✅ Added {added_count} new tracks to Traktor collection")
-        if updated_count > 0:
-            print(f"🔄 Updated {updated_count} existing track paths in Traktor")
-    else:
-        if added_count > 0:
+
+    collection_root.entries = len(collection_root.entry)
+
+    if dry_run:
+        if added_count:
             print(f"🔍 DRY-RUN: Would add {added_count} new tracks to Traktor collection")
-        if updated_count > 0:
+        if updated_count:
             print(f"🔍 DRY-RUN: Would update {updated_count} existing track paths")
-    
+        return (added_count, updated_count)
+
+    if added_count == 0 and updated_count == 0:
+        print("ℹ️  No Traktor changes detected")
+        return (0, 0)
+
+    _backup_traktor_collection(collection_nml_path)
+    _safe_save_traktor_collection(collection_nml_path, collection.nml)
+
+    if added_count > 0:
+        print(f"✅ Added {added_count} new tracks to Traktor collection")
+    if updated_count > 0:
+        print(f"🔄 Updated {updated_count} existing track paths in Traktor")
+
     return (added_count, updated_count)
 
 

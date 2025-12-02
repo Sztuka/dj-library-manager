@@ -9,6 +9,17 @@ import re
 import unicodedata
 from djlib.metadata import mb_client
 
+# Compiled regexes for feature normalization (performance optimization)
+_FEAT_FROM_ARTIST = re.compile(
+    r"(?i)^(?P<main>.+?)\s+(?:feat\.?|ft\.?|featuring)\s+(?P<feat>.+)$"
+)
+_FEAT_IN_BRACKETS = re.compile(
+    r"(?i)\((?:feat\.?|ft\.?|featuring)\s+(?P<feat>[^)]+)\)"
+)
+_FEAT_INLINE = re.compile(
+    r"(?i)\s+(?:feat\.?|ft\.?|featuring)\s+(?P<feat>.+)$"
+)
+
 MB_ENDPOINT = "https://musicbrainz.org/ws/2/recording"
 MB_UA = "DJLibraryManager/0.1 (+https://github.com/Sztuka/dj-library-manager)"
 
@@ -45,6 +56,97 @@ BAD_UPPERWORDS = {
     "UNKNOWN",
     "UNSPECIFIED",
 }
+
+
+def _normalize_features(artist: str, title: str) -> Tuple[str, str]:
+    """
+    Normalize featuring information between artist and title fields.
+    
+    Rules:
+    - Extract all feat/ft/featuring from artist and move to title
+    - Extract all feat/ft/featuring from title (both bracketed and inline)
+    - Normalize all variations to "feat." (with dot)
+    - Collect all featuring artists and deduplicate (case-insensitive)
+    - Append to title as "(feat. Artist1, Artist2, ...)"
+    - Preserve & collaborations in artist (e.g., "Bob & Alice" stays in artist)
+    
+    Args:
+        artist: Artist name (may contain feat info)
+        title: Track title (may contain feat info)
+    
+    Returns:
+        Tuple of (cleaned_artist, cleaned_title) with normalized featuring info
+    """
+    if not artist and not title:
+        return "", ""
+    
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    
+    # Collect all featuring artists from both fields
+    feat_artists: list[str] = []
+    
+    # 1. Extract feat from artist (trailing only)
+    m = _FEAT_FROM_ARTIST.match(artist)
+    if m:
+        artist = m.group("main").strip()
+        feat_from_artist = m.group("feat").strip()
+        if feat_from_artist:
+            feat_artists.append(feat_from_artist)
+    
+    # 2. Extract feat from title (bracketed format first)
+    title_cleaned = title
+    m = _FEAT_IN_BRACKETS.search(title_cleaned)
+    if m:
+        feat_from_title = m.group("feat").strip()
+        if feat_from_title:
+            feat_artists.append(feat_from_title)
+        # Remove the bracketed feat segment
+        title_cleaned = _FEAT_IN_BRACKETS.sub("", title_cleaned).strip()
+    else:
+        # If no bracketed feat, try inline at the end
+        m = _FEAT_INLINE.search(title_cleaned)
+        if m:
+            feat_from_title = m.group("feat").strip()
+            if feat_from_title:
+                feat_artists.append(feat_from_title)
+            # Remove the inline feat segment
+            title_cleaned = _FEAT_INLINE.sub("", title_cleaned).strip()
+    
+    # Clean up title: remove trailing dashes/spaces
+    title_cleaned = re.sub(r"[\s\-–—]+$", "", title_cleaned).strip()
+    
+    # 3. Process collected featuring artists
+    if feat_artists:
+        # Parse multiple artists from each segment (split by &, comma, "and")
+        all_feat = []
+        for segment in feat_artists:
+            # Split by common separators: & or comma
+            parts = re.split(r'\s*[&,]\s*|\s+and\s+', segment, flags=re.IGNORECASE)
+            for part in parts:
+                part = part.strip()
+                if part:
+                    all_feat.append(part)
+        
+        # Deduplicate case-insensitively while preserving first occurrence casing
+        seen_lower = set()
+        unique_feat = []
+        for feat in all_feat:
+            feat_lower = feat.lower()
+            if feat_lower not in seen_lower:
+                seen_lower.add(feat_lower)
+                unique_feat.append(feat)
+        
+        # Clean up featuring artist names (normalize whitespace)
+        unique_feat = [re.sub(r"\s+", " ", f).strip() for f in unique_feat]
+        unique_feat = [f for f in unique_feat if f]  # Remove empty strings
+        
+        # Append to title in canonical format (without parentheses)
+        if unique_feat:
+            feat_str = ", ".join(unique_feat)
+            title_cleaned = f"{title_cleaned} feat. {feat_str}"
+    
+    return artist, title_cleaned
 
 
 def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, str]:
@@ -216,6 +318,9 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
     # Apply title case normalization for all-lowercase or all-uppercase
     if title and (title.islower() or title.isupper()):
         title = title.title()
+    
+    # Normalize featuring information (extract from artist, consolidate in title)
+    artist, title = _normalize_features(artist, title)
 
     return artist.strip(), title.strip(), version.strip()
 

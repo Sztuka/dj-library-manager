@@ -15,3 +15,4 @@ scikit-learn>=1.3.0  # ML dla bucket assigner
 openpyxl>=3.1.2   # eksport/import XLSX z dropdownami (data validation)
 playwright        # headless browser for Beatport/SoundCloud token refresh
 keyring           # secure credential storage (Beatport email/password)
+traktor-nml-utils>=3.1.0  # bezpieczny zapis/parsowanie Traktor collection.nml

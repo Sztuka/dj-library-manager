@@ -131,10 +131,13 @@ def test_feat_vs_separators():
     """Artist names with feat/vs/& should be handled correctly."""
     fake_path = Path("/tmp/test.mp3")
     
-    artist, _, _ = derive_local_metadata(fake_path, {"artist": "artist one feat. artist two"})
-    assert artist == "Artist One feat. Artist Two", f"Expected title-cased with separator, got '{artist}'"
+    # feat should now move to title
+    artist, title, _ = derive_local_metadata(fake_path, {"artist": "artist one feat. artist two", "title": "Track"})
+    assert artist == "Artist One", f"Expected 'Artist One' (feat moved to title), got '{artist}'"
+    assert "feat. Artist Two" in title, f"Expected feat in title, got '{title}'"
     
-    artist, _, _ = derive_local_metadata(fake_path, {"artist": "ARTIST A VS ARTIST B"})
+    # vs separator should preserve both in artist
+    artist, _, _ = derive_local_metadata(fake_path, {"artist": "ARTIST A VS ARTIST B", "title": "Track"})
     assert artist == "Artist A vs Artist B", f"Expected title-cased with separator, got '{artist}'"
 
 

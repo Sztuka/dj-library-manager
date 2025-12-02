@@ -13,16 +13,11 @@ def test_scan_and_apply_dryrun(tmp_path, monkeypatch):
     inbox = tmp_path / "INBOX"
     lib.mkdir(); inbox.mkdir()
 
-    # Podstawowy config + tax
+    # Basic config (no taxonomy needed - using logistics-only model)
     (tmp_path / "config.yml").write_text(yaml.safe_dump({
         "LIB_ROOT": str(lib),
         "INBOX_UNSORTED": str(inbox),
         "CSV_PATH": str(tmp_path / "library.csv"),
-    }, allow_unicode=True, sort_keys=False), "utf-8")
-
-    (tmp_path / "taxonomy.yml").write_text(yaml.safe_dump({
-        "ready_buckets": ["CLUB/HOUSE", "MIXES"],
-        "review_buckets": ["UNDECIDED", "NEEDS EDIT"],
     }, allow_unicode=True, sort_keys=False), "utf-8")
 
     # Udaj plik audio (pusta atrapa – skan powinien go zobaczyć jako plik)

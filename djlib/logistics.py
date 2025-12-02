@@ -7,10 +7,61 @@ Folders are purely organizational, not expressions of musical "sets" or "vibes".
 from __future__ import annotations
 from pathlib import Path
 from typing import Literal
+import re
 from djlib.config import load_config
 
 # Valid destination types
 DestinationType = Literal["library", "reject", "archive", "mixes"]
+
+
+def sanitize_dir_segment(name: str) -> str:
+    """Sanitize a string for use as a directory name on disk.
+    
+    This function ensures that directory names don't contain characters that
+    would be interpreted as path separators or cause filesystem issues,
+    while preserving the original name in metadata/tags/XLSX.
+    
+    Rules:
+    - Special case: "AC/DC" variants → "AC-DC"
+    - Replace invalid path chars '<>:"/\\|?*' with "-"
+    - Collapse multiple whitespace to single space
+    - Strip leading/trailing whitespace
+    - Return "_" if result is empty
+    
+    Args:
+        name: Artist name or other directory segment
+        
+    Returns:
+        Safe directory name for filesystem use
+        
+    Examples:
+        >>> sanitize_dir_segment("AC/DC")
+        'AC-DC'
+        >>> sanitize_dir_segment("Artist / Name")
+        'Artist - Name'
+        >>> sanitize_dir_segment("Normal Artist")
+        'Normal Artist'
+    """
+    if not name:
+        return "_"
+    
+    # Special case: AC/DC variants (case-insensitive, spaces ignored)
+    normalized = re.sub(r'[\s]+', '', name.lower())
+    if normalized in ('ac/dc', 'ac-dc', 'acdc'):
+        return "AC-DC"
+    
+    # Replace invalid path characters with dash
+    # Invalid chars: < > : " / \ | ? *
+    result = re.sub(r'[<>:"/\\|?*]+', '-', name)
+    
+    # Collapse multiple whitespace (spaces, tabs, newlines) into single space
+    result = re.sub(r'\s+', ' ', result)
+    
+    # Strip leading/trailing whitespace
+    result = result.strip()
+    
+    # Return fallback if empty
+    return result if result else "_"
 
 
 def get_destination_path(dest_type: DestinationType) -> Path:
@@ -52,6 +103,9 @@ def build_library_path(artist: str, filename: str) -> Path:
     Structure: {LIB_ROOT}/{Artist}/{filename}
     Example: ~/Music Library/Âme/Âme - Rej (Solomun Remix) [1A 123].flac
     
+    Note: Artist name is sanitized for filesystem safety (e.g., "AC/DC" → "AC-DC")
+    but the original artist name is preserved in tags and metadata.
+    
     Args:
         artist: Artist name (used for folder grouping)
         filename: Final filename (built by filename.build_final_filename)
@@ -60,7 +114,8 @@ def build_library_path(artist: str, filename: str) -> Path:
         Full path to destination file
     """
     library_dir = get_destination_path("library")
-    artist_folder = artist.strip() or "Unknown Artist"
+    artist_clean = artist.strip() or "Unknown Artist"
+    artist_folder = sanitize_dir_segment(artist_clean)
     return library_dir / artist_folder / filename
 
 
@@ -86,6 +141,9 @@ def build_archive_path(artist: str, filename: str) -> Path:
     Structure: {ARCHIVE_ROOT}/{Artist}/{filename}
     Example: ~/DJ Archive/Old Artist/track.flac
     
+    Note: Artist name is sanitized for filesystem safety (e.g., "AC/DC" → "AC-DC")
+    but the original artist name is preserved in tags and metadata.
+    
     Args:
         artist: Artist name
         filename: Final filename
@@ -94,7 +152,8 @@ def build_archive_path(artist: str, filename: str) -> Path:
         Full path to destination file
     """
     archive_dir = get_destination_path("archive")
-    artist_folder = artist.strip() or "Unknown Artist"
+    artist_clean = artist.strip() or "Unknown Artist"
+    artist_folder = sanitize_dir_segment(artist_clean)
     return archive_dir / artist_folder / filename
 
 

@@ -46,6 +46,7 @@ except ImportError:
 
 # Import key conversion utility
 from djlib.tags import _to_camelot
+from djlib.djlib_tags import read_djlib_tags
 
 
 # Default Rekordbox DB paths on macOS
@@ -253,43 +254,88 @@ def was_analyzed_from_db(path: Path, db_path: Optional[Path] = None) -> Optional
         return None
 
 
-def was_analyzed(path: Path, *, use_db: bool = True, strict: bool = False) -> bool:
+def was_analyzed_from_snapshot(path: Path, snapshot_csv: Path) -> bool:
+    """
+    Check if track is in snapshot CSV using DJLIB_TRACK_ID from file tags.
+    
+    This allows matching files even after they've been moved, since track_id
+    is embedded in the audio file tags and persists across file operations.
+    
+    Args:
+        path: Path to audio file
+        snapshot_csv: Path to library.csv (merged snapshot)
+        
+    Returns:
+        True if file has DJLIB_TRACK_ID tag and that ID exists in snapshot
+    """
+    if not snapshot_csv.exists():
+        return False
+    
+    # Read DJLIB_TRACK_ID from file tags
+    djlib_tags = read_djlib_tags(path)
+    track_id = djlib_tags.get('track_id', '')
+    
+    if not track_id:
+        return False
+    
+    # Check if track_id exists in snapshot CSV
+    try:
+        import pandas as pd
+        df = pd.read_csv(snapshot_csv)
+        return track_id in df['track_id'].values
+    except Exception:
+        return False
+
+
+def was_analyzed(path: Path, *, use_db: bool = True, strict: bool = False, snapshot_csv: Path = None) -> bool:
     """
     High-level analysis check, used by the scan/unsorted generation step.
     
     Strategy:
-    1. Check Rekordbox DB first (most authoritative):
+    1. Check snapshot CSV first (using DJLIB_TRACK_ID from file tags):
+       - Works after file moves (ID travels with file)
+       - Most reliable for post-import workflow
+    2. Check Rekordbox DB (using file path):
        - Confirms file was analyzed IN REKORDBOX specifically
-       - Not Traktor/Serato/other tools
        - Only works if file path unchanged since analysis
-    2. If not in DB, check tags as fallback (less authoritative):
+    3. If not in DB, check tags as fallback (less authoritative):
        - Could be from any DJ software
        - Works after file moves
        - Better than blocking workflow entirely
     
-    This prioritizes Rekordbox-specific analysis while maintaining
-    workflow flexibility for edge cases.
+    This prioritizes snapshot-based matching (survives moves) while maintaining
+    backward compatibility with direct DB checks.
 
     Args:
         path: Path to audio file
         use_db: Whether to attempt DB lookup (default True)
-        strict: If True, ONLY accept DB results (reject tag-only files)
+        strict: If True, ONLY accept DB/snapshot results (reject tag-only files)
                 Use strict=True to enforce Rekordbox analysis only
+        snapshot_csv: Optional path to library.csv (auto-detected if None)
         
     Returns:
         True if file was analyzed in Rekordbox (or has tags if not strict)
     """
-    # Try Rekordbox DB first - most authoritative
+    # 1. Try snapshot CSV first (most reliable after imports)
+    if snapshot_csv is None:
+        from pathlib import Path
+        snapshot_csv = Path('library.csv')
+    
+    if snapshot_csv.exists():
+        if was_analyzed_from_snapshot(path, snapshot_csv):
+            return True
+    
+    # 2. Try Rekordbox DB - most authoritative for un-moved files
     if use_db:
         db_result = was_analyzed_from_db(path)
         if db_result is not None:
             return db_result
     
-    # If strict mode, reject tag-only files (require DB confirmation)
+    # 3. If strict mode, reject tag-only files (require DB/snapshot confirmation)
     if strict:
         return False
     
-    # Fall back to tags (could be from other DJ software)
+    # 4. Fall back to tags (could be from other DJ software)
     return was_analyzed_from_tags(path)
 
 

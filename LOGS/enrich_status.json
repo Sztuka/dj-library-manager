@@ -1,21 +1,21 @@
 {
-  "started_at": "2025-11-28T16:10:44+00:00Z",
-  "completed_at": "2025-11-28T16:14:45+00:00Z",
-  "rows_total": 35,
-  "rows_processed": 35,
-  "updated": 35,
+  "started_at": "2025-11-30T14:40:33+00:00Z",
+  "completed_at": "2025-11-30T14:44:47+00:00Z",
+  "rows_total": 40,
+  "rows_processed": 40,
+  "updated": 40,
   "state": "done",
   "last_file": "/Users/sztuka/Music Unsorted/krzysztof krawczyk - Parostatek.mp3",
   "soundcloud": {
     "client_id_status": "ok",
     "decision": "active",
     "prompt_shown": false,
-    "attempted_requests": 61,
-    "timestamp": "2025-11-28T16:10:44+00:00Z"
+    "attempted_requests": 70,
+    "timestamp": "2025-11-30T14:40:33+00:00Z"
   },
   "sources_counts": {
-    "musicbrainz": 26,
-    "lastfm": 32,
-    "soundcloud": 29
+    "musicbrainz": 30,
+    "lastfm": 36,
+    "soundcloud": 35
   }
 }

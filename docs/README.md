@@ -132,8 +132,6 @@ python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 | Architektura               | Moduły, wagi źródeł, parser wersji, testy | `docs/ARCHITECTURE.md`          |
 | Roadmap                    | Stan realizacji, backlog, priorytety      | `docs/ROADMAP_essentia_plan.md` |
 | Instalacja                 | Essentia, fpcalc, zależności              | `docs/INSTALL.md`               |
-| Taksonomia                 | Definicja bucketów                        | `taxonomy.yml`                  |
-| Mapowanie tagów → bucket   | Reguły konwersji tagów na targety         | `taxonomy_map.yml`              |
 | Reguły auto-decide         | Proste zasady przypisań                   | `rules.yml`                     |
 
 ## CLI Cheat‑Sheet
@@ -146,7 +144,6 @@ python -m djlib.cli enrich-online --force-genres --skip-soundcloud
 | `python -m djlib.cli apply`                      | Export `done=TRUE` → biblioteka              | `--dry-run`                            |
 | `python -m djlib.cli undo`                       | Cofnięcie ostatnich przenosin                | –                                      |
 | `python -m djlib.cli dupes`                      | Raport duplikatów                            | –                                      |
-| `python -m djlib.cli detect-taxonomy`            | Odtworzenie taxonomy z folderów              | –                                      |
 | `python -m djlib.cli sync-audio-metrics`         | Przepisanie BPM/Key/Energy do arkusza        | `--write-tags`, `--force`              |
 | `python -m djlib.cli ml-export-training-dataset` | Zbiór treningowy (Essentia + library labels) | `--out`, `--require-both-labels`       |
 

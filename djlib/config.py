@@ -304,10 +304,6 @@ INBOX_DIR = _CONFIG.inbox_dir
 # Logistics directories are now separate root paths (configured in config.yml)
 # No longer subfolders of LIB_ROOT
 
-# Legacy bucket directories (deprecated, kept for backward compatibility)
-READY_TO_PLAY_DIR = LIB_ROOT / "READY TO PLAY"
-REVIEW_QUEUE_DIR  = LIB_ROOT / "REVIEW QUEUE"
-
 # LOGS_DIR - computed from config file at runtime, default is ./LOGS in repo
 def _get_logs_dir() -> Path:
     """Get LOGS_DIR from config file, avoiding circular dependency."""
@@ -349,13 +345,18 @@ def ensure_base_dirs() -> None:
     cfg = load_config()
     lib = Path(cfg["LIB_ROOT"])
     inbox = Path(cfg["INBOX_UNSORTED"])
-    reject = Path(cfg.get("REJECT_ROOT", str(lib.parent / "Music Rejected")))
-    archive = Path(cfg.get("ARCHIVE_ROOT", str(lib.parent / "Music Archive")))
+    library_dir = Path(cfg.get("LIBRARY_DIR", str(lib / "LIBRARY")))
+    reject = Path(cfg.get("REJECT_ROOT", str(lib / "REJECT")))
+    archive = Path(cfg.get("ARCHIVE_ROOT", str(lib / "ARCHIVE")))
     mixes = Path(cfg.get("MIXES_ROOT", str(lib / "MIXES")))
     logs = Path(cfg.get("LOGS_DIR", "./LOGS")).resolve()
     
-    # Create separate root folders (no LIBRARY/ subfolder in LIB_ROOT)
-    for p in [lib, inbox, reject, archive, mixes, logs]:
+    # Ensure top-level roots first
+    for p in [lib, inbox, logs]:
+        p.mkdir(parents=True, exist_ok=True)
+
+    # New logistics layout – create subfolders under LIB_ROOT
+    for p in [library_dir, reject, archive, mixes]:
         p.mkdir(parents=True, exist_ok=True)
     
     # Legacy bucket directories (create if they exist for backward compatibility)

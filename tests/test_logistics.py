@@ -1,7 +1,13 @@
 """Tests for the new logistics-only path building system."""
 from pathlib import Path
 import pytest
-from djlib.logistics import build_library_path, build_reject_path, build_archive_path, build_mixes_path
+from djlib.logistics import (
+    build_library_path, 
+    build_reject_path, 
+    build_archive_path, 
+    build_mixes_path,
+    sanitize_dir_segment
+)
 
 
 def test_build_library_path_basic():
@@ -20,14 +26,20 @@ def test_build_library_path_special_chars():
     assert path.parent.name == "Beyoncé"
     
     path = build_library_path("AC/DC", "track.mp3")
-    assert "AC/DC" in str(path)
+    assert "AC-DC" in str(path)
+    assert path.parent.name == "AC-DC"
+    
+    # Other slashes should also be sanitized
+    path = build_library_path("Artist / Name", "track.mp3")
+    assert path.parent.name == "Artist - Name"
 
 
 def test_build_library_path_normalization():
     """Test that artist names are stripped of leading/trailing whitespace."""
     path = build_library_path("  The   Weeknd  ", "track.mp3")
-    # Leading/trailing whitespace is stripped, but internal spaces remain
-    assert "The   Weeknd" in str(path)
+    # Leading/trailing whitespace is stripped, and multiple spaces are collapsed
+    assert "The Weeknd" in str(path)
+    assert path.parent.name == "The Weeknd"
 
 
 def test_build_reject_path():
@@ -35,7 +47,7 @@ def test_build_reject_path():
     path = build_reject_path("duplicate_track.mp3")
     assert path.name == "duplicate_track.mp3"
     # Reject is now outside library (separate root)
-    assert "DJ Reject" in str(path) or "REJECT" in str(path)
+    assert "Reject" in str(path)
 
 
 def test_build_archive_path():
@@ -44,7 +56,7 @@ def test_build_archive_path():
     assert path.name == "old_track.mp3"
     assert path.parent.name == "Old Artist"
     # Archive is now outside library (separate root)
-    assert "DJ Archive" in str(path) or "ARCHIVE" in str(path)
+    assert "Archive" in str(path)
 
 
 def test_build_mixes_path():

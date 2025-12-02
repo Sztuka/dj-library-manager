@@ -13,7 +13,6 @@ from djlib.tags import read_tags
 from djlib.filename import parse_from_filename
 from djlib.enrich import suggest_metadata
 from djlib.metadata.genre_resolver import resolve as resolve_genres
-from djlib.genre import external_genre_votes, load_taxonomy_map, suggest_bucket_from_votes
 try:
     from djlib.bucketing.rules import RulesBucketAssigner
     rules_assigner = RulesBucketAssigner()
@@ -46,9 +45,6 @@ def main() -> int:
     inbox = Path(INBOX_DIR)
     out_path = Path(LIB_ROOT) / "preview_inbox.csv"
     files = [p for p in sorted(inbox.iterdir()) if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
-
-    # load taxonomy mapping for bucket suggest
-    tag_map = load_taxonomy_map()
 
     cols = [
         # original
@@ -201,15 +197,6 @@ def main() -> int:
                     bucket, bucket_conf = rules_assigner.predict(track_data)
                 except Exception as e:
                     print(f"Bucket assignment failed for {p.name}: {e}")
-            else:
-                # Fallback to old method
-                try:
-                    votes = external_genre_votes(sugg_artist or parsed_artist, sugg_title or parsed_title)
-                    if votes:
-                        b, conf, _ = suggest_bucket_from_votes(votes, tag_map)
-                        bucket, bucket_conf = b, conf
-                except Exception:
-                    pass
 
             row = {
                 "filename": p.name,
