@@ -10,7 +10,7 @@
 
 1. [System Overview](#system-overview)
 2. [File and Folder Structure](#file-and-folder-structure)
-3. [Taxonomy and Naming Conventions](#taxonomy-and-naming-conventions)
+3. [Folder Organization and Genre System](#folder-organization-and-genre-system)
 4. [CSV Data Structure](#csv-data-structure)
 5. [File Naming Format](#file-naming-format)
 6. [Modules and Components](#modules-and-components)
@@ -40,7 +40,7 @@ DJ Library Manager is a **library cleaner first**, not a set builder. The system
 3. **Playlists are the right place** for context-based organization (cocktail vs club vs pool party)
 4. **ML predictions** should drive search/filtering, not folder placement
 
-### Core Features:
+### Core Features
 
 - **Rekordbox Integration**: DB-first validation of analyzed tracks (BPM/Key from Rekordbox)
 - **Strict Mode**: Enforce Rekordbox analysis in UNSORTED folder for quality control
@@ -59,110 +59,109 @@ DJ Library Manager is a **library cleaner first**, not a set builder. The system
 
 ## File and Folder Structure
 
-### Project Structure:
+### Project Structure
 
-```
 dj-library-manager/
-├── djlib/              # Main application module
-│   ├── config.py       # Path and settings configuration
-│   ├── csvdb.py        # CSV database operations (includes rekordbox_id, traktor_id)
-│   ├── tags.py         # Audio tag reading/writing
-│   ├── tag_cleaner.py  # ID3 spam tag removal (preserves DJ software data)
-│   ├── djlib_tags.py   # Custom DJLIB_* tags (track_id, rekordbox_id, traktor_id)
-│   ├── external_sync.py # DJ software integration (Rekordbox/Traktor sync)
-│   ├── rekordbox_status.py  # Rekordbox DB integration
-│   ├── fingerprint.py  # Audio fingerprint and file hash
-│   ├── filename.py     # File naming generation
-│   ├── mover.py        # File moving operations
-│   ├── placement.py    # Automatic bucket decisions
-│   ├── enrich.py       # Online metadata enrichment
-│   ├── extern.py       # External integrations (Last.fm)
-│   ├── unsorted.py     # UNSORTED folder management
-│   ├── legacy/         # DEPRECATED modules (not actively used)
-│   │   ├── buckets.py      # Old bucket validation
-│   │   ├── classify.py     # Old AI guessing buckets
-│   │   ├── genre.py        # Old genre resolution
-│   │   └── taxonomy.py     # Old taxonomy management
-│   ├── audio/          # Local audio analysis
-│   │   ├── cache.py    # Audio metrics cache (SQLite)
-│   │   ├── features.py # Audio feature extraction
-│   │   └── essentia_backend.py # Essentia analysis backend
-│   ├── metadata/       # Metadata API clients
-│   │   ├── genre_resolver.py   # Main genre resolver (source weights)
-│   │   ├── beatport.py         # Beatport client (JWT auto-refresh)
-│   │   ├── mb_client.py        # MusicBrainz client
-│   │   ├── lastfm.py           # Last.fm client
-│   │   ├── soundcloud.py       # SoundCloud client + health check
-│   │   └── coverart.py         # Album artwork fetching (3-source fallback)
-│   ├── bucketing/      # Auto-bucketing modules (FUTURE - for playlists)
-│   │   ├── base.py     # Base interfaces
-│   │   ├── rules.py    # Deterministic rules (v0)
-│   │   └── simple_ml.py # ML classifier (v0.1)
-│   └── ml/             # ML training dataset export
-│       ├── export_dataset.py  # Training dataset generation
-│       └── models.py   # Model evaluation utilities
-├── scripts/            # CLI scripts
-├── docs/               # Documentation
-├── genres.yml          # Canonical genre definitions with synonyms (ACTIVE)
-├── rules.yml           # Auto-decide rules (legacy)
-├── taxonomy.yml        # Bucket definitions (DEPRECATED - see djlib/legacy/)
-├── taxonomy_map.yml    # Tag → bucket mapping (DEPRECATED - genres.yml is canonical)
-└── config.local.yml    # Local configuration (gitignored)
-```
-
-### Library Structure (LIB_ROOT):
+├── djlib/ # Main application module
+│ ├── config.py # Path and settings configuration
+│ ├── csvdb.py # CSV database operations (includes rekordbox*id, traktor_id)
+│ ├── tags.py # Audio tag reading/writing
+│ ├── tag_cleaner.py # ID3 spam tag removal (preserves DJ software data)
+│ ├── djlib_tags.py # Custom DJLIB*\* tags (track_id, rekordbox_id, traktor_id)
+│ ├── external_sync.py # DJ software integration (Rekordbox/Traktor sync)
+│ ├── rekordbox_status.py # Rekordbox DB integration
+│ ├── fingerprint.py # Audio fingerprint and file hash
+│ ├── filename.py # File naming generation
+│ ├── mover.py # File moving operations
+│ ├── placement.py # Automatic bucket decisions
+│ ├── enrich.py # Online metadata enrichment
+│ ├── extern.py # External integrations (Last.fm)
+│ ├── unsorted.py # UNSORTED folder management
+│ ├── legacy/ # DEPRECATED modules (not actively used)
+│ │ └── classify.py # Old classification heuristics (reference only)
+│ ├── audio/ # Local audio analysis
+│ │ ├── cache.py # Audio metrics cache (SQLite)
+│ │ ├── features.py # Audio feature extraction
+│ │ └── essentia_backend.py # Essentia analysis backend
+│ ├── metadata/ # Metadata API clients
+│ │ ├── genre_resolver.py # Main genre resolver (source weights)
+│ │ ├── beatport.py # Beatport client (JWT auto-refresh)
+│ │ ├── mb_client.py # MusicBrainz client
+│ │ ├── lastfm.py # Last.fm client
+│ │ ├── soundcloud.py # SoundCloud client + health check
+│ │ └── coverart.py # Album artwork fetching (3-source fallback)
+│ ├── bucketing/ # Auto-bucketing modules (FUTURE - for playlists)
+│ │ ├── base.py # Base interfaces
+│ │ ├── rules.py # Deterministic rules (v0)
+│ │ └── simple_ml.py # ML classifier (v0.1)
+│ └── ml/ # ML training dataset export
+│ ├── export_dataset.py # Training dataset generation
+│ └── models.py # Model evaluation utilities
+├── scripts/ # CLI scripts
+├── docs/ # Documentation
+├── genres.yml # Canonical genre definitions with synonyms (ACTIVE)
+├── rules.yml # Auto-decide rules (legacy)
+└── config.local.yml # Local configuration (gitignored)
 
 ```
+
+### Library Structure (LIB_ROOT)
+
+```
+
 ~/Music_Library/
-├── UNSORTED/                 # Scanned by scan command (strict mode)
-├── Artist 1/                 # Main collection (organized by artist)
-│   ├── Artist 1 - Track A (Remix) [5A 123].flac
-│   └── Artist 1 - Track B [2B 128].mp3
+├── UNSORTED/ # Scanned by scan command (strict mode)
+├── Artist 1/ # Main collection (organized by artist)
+│ ├── Artist 1 - Track A (Remix) [5A 123].flac
+│ └── Artist 1 - Track B [2B 128].mp3
 ├── Artist 2/
-│   └── Artist 2 - Track C [8A 120].flac
-├── MIXES/                    # DJ mixes (flat structure)
-│   └── DJ Mix Name [128].mp3
+│ └── Artist 2 - Track C [8A 120].flac
+├── MIXES/ # DJ mixes (flat structure)
+│ └── DJ Mix Name [128].mp3
 └── ...
 
-~/Music Rejected/             # Separate folder (flat structure)
+~/Music Rejected/ # Separate folder (flat structure)
 ├── track-1.mp3
 ├── track-2.flac
 └── ...
 
-~/Music Archive/              # Separate folder (organized by artist)
+~/Music Archive/ # Separate folder (organized by artist)
 ├── Artist A/
-│   └── Artist A - Old Track [1A 110].mp3
+│ └── Artist A - Old Track [1A 110].mp3
 └── ...
 
-./LOGS/                       # Operation logs (in repo)
-├── enrich_status.json        # Enrichment status
+./LOGS/ # Operation logs (in repo)
+├── enrich_status.json # Enrichment status
 ├── fingerprint_status.json
-├── audio_analysis.sqlite     # Essentia feature cache
-├── moves-{timestamp}.csv     # Move logs (with undo support)
-└── dupes.csv                 # Duplicate reports
+├── audio_analysis.sqlite # Essentia feature cache
+├── moves-{timestamp}.csv # Move logs (with undo support)
+└── dupes.csv # Duplicate reports
 
 ./data/
-├── unsorted.xlsx             # Staging spreadsheet (Excel workflow)
-├── library.csv               # Main database (track metadata + paths)
+├── unsorted.xlsx # Staging spreadsheet (Excel workflow)
+├── library.csv # Main database (track metadata + paths)
 └── training_dataset_full.csv # ML training export
+
 ```
 
 **Legacy folders** (deprecated, may exist in old installations):
 
 ```
+
 ~/Music_Library/
-├── READY TO PLAY/            # Old bucket structure (DEPRECATED)
-│   ├── CLUB/                 # Use main library folders for new tracks
-│   └── OPEN FORMAT/
-└── REVIEW QUEUE/             # Old review structure (DEPRECATED)
-    └── UNDECIDED/
+├── READY TO PLAY/ # Old bucket structure (DEPRECATED)
+│ ├── CLUB/ # Use main library folders for new tracks
+│ └── OPEN FORMAT/
+└── REVIEW QUEUE/ # Old review structure (DEPRECATED)
+└── UNDECIDED/
+
 ```
 
 **Note:** Bucketing system (READY TO PLAY/CLUB/etc.) was removed in November 2025 refactor. Folders are now simple logistics: Main Library (organized by artist), Reject (flat), Archive (organized). Playlist generation and smart sets will be future features built on top of this clean structure.
 
 ---
 
-## Folder Organization Philosophy
+## Folder Organization and Genre System
 
 ### New Model (November 2025)
 
@@ -224,22 +223,7 @@ See `genres.yml` for complete list and synonyms.
 
 **Important:** Concepts like "singalong", "party", "wedding" are **bucket/usage concepts** (organizational categories), **not canonical genres**. They belong in folder structure or playlists, not in the genre field.
 
-### Legacy Taxonomy (Deprecated)
-
-**Old model (pre-November 2025):**
-
-- Buckets like `READY TO PLAY/CLUB/AFRO HOUSE`
-- target_subfolder determined folder placement
-- Required taxonomy.yml + taxonomy_map.yml configuration
-
-**Current model:**
-
-- Simple logistics folders: Main Library (by artist), Reject (flat), Archive (by artist), Mixes (flat)
-- Canonical genres in genres.yml (30 genres with synonyms)
-- destination column: library/reject/archive/mixes
-- Bucketing/playlists = future feature
-
-**Status:** Legacy modules in `djlib/legacy/`, kept for backward compatibility only.
+**Note:** The bucket-based taxonomy system (`READY TO PLAY/CLUB/...`) was removed in December 2025. All references to `taxonomy.yml` and `taxonomy_map.yml` are now obsolete.
 
 ---
 
@@ -262,9 +246,9 @@ Main staging database in Excel format. Columns defined in `djlib/csvdb.py::FIELD
 | `file_hash`             | SHA-256 file hash                       | `a1b2c3...`                             |
 | `fingerprint`           | Audio fingerprint (Chromaprint)         | `AQAA...`                               |
 | `is_duplicate`          | Duplicate flag (by fingerprint)         | `TRUE`, `FALSE`                         |
-| `bucket_suggest`        | AI-suggested bucket                     | `READY TO PLAY/CLUB/HOUSE`              |
-| `bucket_suggest_reason` | Suggestion rationale                    | `genre=house; conf=0.95`                |
-| `target_bucket`         | User's final decision                   | `READY TO PLAY/CLUB/HOUSE`              |
+| `bucket_suggest`        | REMOVED (legacy AI bucket)              | N/A                                     |
+| `bucket_suggest_reason` | REMOVED (legacy rationale)              | N/A                                     |
+| `target_bucket`         | REMOVED (legacy final bucket)           | N/A                                     |
 | `done`                  | Approval flag (TRUE = ready to apply)   | `TRUE`, `FALSE`                         |
 | `notes`                 | User notes                              | Any text                                |
 | **Metadata proposals:** |                                         |                                         |
@@ -330,15 +314,19 @@ Main staging database in Excel format. Columns defined in `djlib/csvdb.py::FIELD
 ### Final Filename Format:
 
 ```
+
 {Artist} - {Title} ({VersionInfo}) [{Key} {BPM}]{ext}
+
 ```
 
 ### Examples:
 
 ```
+
 Daft Punk - Get Lucky (Radio Edit) [6A 120].mp3
 The Prodigy - Firestarter (Original Mix) [8B 145].flac
 Unknown Artist - Unknown Title (Original Mix) [?? ??].mp3
+
 ```
 
 ### Rules (from `djlib/filename.py`):
@@ -355,9 +343,11 @@ Unknown Artist - Unknown Title (Original Mix) [?? ??].mp3
 If file with same name exists, number is added:
 
 ```
+
 Artist - Title (Mix) [6A 120].mp3
 Artist - Title (Mix) [6A 120] (2).mp3
 Artist - Title (Mix) [6A 120] (3).mp3
+
 ```
 
 ---
@@ -506,32 +496,34 @@ Artist - Title (Mix) [6A 120] (3).mp3
 **Production Workflow (November 2025):**
 
 ```
+
 WORKFLOW 0: Sync DJ Libraries & Tags (optional)
-  ↓ Compare library.csv with Rekordbox/Traktor
-  ↓ Add missing tracks, update paths, add custom tags
+↓ Compare library.csv with Rekordbox/Traktor
+↓ Add missing tracks, update paths, add custom tags
 
 WORKFLOW 1: Scan UNSORTED
-  ↓ Read Rekordbox/Traktor DBs → get rekordbox_id/traktor_id
-  ↓ Tag files with DJLIB_TRACK_ID + external IDs
-  ↓ Generate unsorted.xlsx
+↓ Read Rekordbox/Traktor DBs → get rekordbox_id/traktor_id
+↓ Tag files with DJLIB_TRACK_ID + external IDs
+↓ Generate unsorted.xlsx
 
 WORKFLOW 2: Enrich Online
-  ↓ MusicBrainz/Last.fm/Beatport/SoundCloud metadata
+↓ MusicBrainz/Last.fm/Beatport/SoundCloud metadata
 
 WORKFLOW 3: Manual Curation (Excel)
-  ↓ Edit metadata, select destination, mark done=TRUE
+↓ Edit metadata, select destination, mark done=TRUE
 
 WORKFLOW 4: Export (Apply)
-  ↓ Move files to LIBRARY/REJECT/ARCHIVE
-  ↓ AUTO-SYNC with Rekordbox/Traktor (add new + update paths)
+↓ Move files to LIBRARY/REJECT/ARCHIVE
+↓ AUTO-SYNC with Rekordbox/Traktor (add new + update paths)
 
 WORKFLOW 5: Analyze Audio (Essentia)
-  ↓ Extract 50+ features for ML training
-  ↓ Only analyzes approved tracks in LIBRARY
+↓ Extract 50+ features for ML training
+↓ Only analyzes approved tracks in LIBRARY
 
 WORKFLOW 6: ML Dataset Export
-  ↓ Export training data with audio features
-```
+↓ Export training data with audio features
+
+````
 
 ---
 
@@ -590,7 +582,6 @@ WORKFLOW 6: ML Dataset Export
    - **SoundCloud probe** (optional, remix-aware): Fetch genre + tag_list, use `version` for query building
    - **Genre resolution**: Aggregate Beatport/MB/Last.fm/SoundCloud with weighted voting (Beatport 10.0 priority for EDM)
    - **Popularity hints**: Last.fm playcount/listeners
-   - **Bucket suggestion**: Map genres to buckets via `taxonomy_map.yml`
 2. Update `suggest_*` fields if better than existing
 
 **Priorities**:
@@ -734,7 +725,6 @@ WORKFLOW 6: ML Dataset Export
 - **Multi-Source Aggregation**: Combines data from 4 sources with weights: **Beatport 10.0** (gold standard for EDM, 100+ subgenres), Last.fm 6.0, MB 3.0, SoundCloud 2.0
 - **Output Format**: "Main Genre, Sub1, Sub2" (max 3)
 - **Confidence Threshold**: Base threshold for adding tag: >= 0.03; override existing: >= 0.08 (tunable with more sources)
-- **Taxonomy Mapping**: Tags → buckets via `taxonomy_map.yml`
 - **Auto-Refresh**: Beatport JWT (~1h, Playwright), SoundCloud client_id (~30d, Playwright) - transparent token renewal
 
 ### Name Conflict Resolution
@@ -742,15 +732,10 @@ WORKFLOW 6: ML Dataset Export
 - If file with same name exists: add number `(2)`, `(3)`, etc.
 - **Implementation**: `djlib/mover.py::move_with_rename()`
 
-### destination Validation (CURRENT)
+### destination Validation
 
 - Check if destination is valid: `library`, `reject`, `archive`, or `mixes`
 - **Implementation**: `djlib/unsorted.py::DESTINATION_CHOICES`
-
-### target_bucket Validation (LEGACY - deprecated)
-
-- Old bucketing system (pre-November 2025)
-- **Implementation**: `djlib/legacy/taxonomy.py::is_valid_target()`
 
 ---
 
@@ -785,8 +770,8 @@ import requests
 
 # Local imports
 from djlib.config import LIB_ROOT
-from djlib.taxonomy import allowed_targets
-```
+from djlib.logistics import get_destination_path
+````
 
 ### Error Handling:
 
@@ -843,7 +828,7 @@ pylast>=5.2           # Last.fm API
 
 ### Test Suites
 
-- **Unit tests**: Filename parsing, config, audio cache, taxonomy, basic placement logic
+- **Unit tests**: Filename parsing, config, audio cache, logistics, genre resolution
 - **Integration tests**: CLI commands (scan, enrich-online, apply, undo) on mini-fixtures
 
 ### Running Tests
@@ -876,16 +861,7 @@ pytest --cov=djlib --cov-report=term-missing
 
 ## Examples
 
-### Add New Bucket:
-
-```python
-from djlib.taxonomy import add_ready_bucket, ensure_taxonomy_dirs
-
-add_ready_bucket("CLUB/PROGRESSIVE HOUSE")
-ensure_taxonomy_dirs()  # Creates directories
-```
-
-### Check Genre Validity (CURRENT):
+### Check Genre Validity:
 
 ```python
 from djlib.metadata.genre_resolver import GENRES_YML_PATH
@@ -905,15 +881,6 @@ from djlib.unsorted import DESTINATION_CHOICES
 
 destination = "library"
 is_valid = destination in DESTINATION_CHOICES  # True
-```
-
-### Legacy Examples (deprecated, for backward compatibility only):
-
-```python
-from djlib.legacy.taxonomy import is_valid_target
-
-is_valid_target("READY TO PLAY/CLUB/HOUSE")  # Old system
-is_valid_target("READY TO PLAY/CLUB/UNKNOWN")  # Old system
 ```
 
 ---
@@ -944,12 +911,12 @@ is_valid_target("READY TO PLAY/CLUB/UNKNOWN")  # Old system
 - **Bucketing**: FUTURE feature for smart playlists (not folder organization)
 - **Legacy support**: target_subfolder still works for backward compatibility, but destination is preferred
 
-### Deprecated Features (kept for backward compatibility):
+### Removed Features (December 2025):
 
-- `djlib/legacy/`: buckets.py, classify.py, genre.py, taxonomy.py
-- `taxonomy.yml`, `taxonomy_map.yml`: Old bucketing configs
-- `target_subfolder`, `bucket_suggest`, `ai_guess_bucket`: Old CSV columns
-- `READY TO PLAY/`, `REVIEW QUEUE/`: Old folder structure
+- Taxonomy system completely removed: No more `taxonomy.yml`, `taxonomy_map.yml`, or bucket-based folders
+- Legacy modules deleted: `djlib/legacy/taxonomy.py`, `djlib/legacy/genre.py`, `djlib/legacy/buckets.py`
+- CSV columns deprecated: `target_subfolder`, `bucket_suggest`, `ai_guess_bucket` (use `destination` instead)
+- Folder structure simplified: Only `library`, `reject`, `archive`, `mixes` destinations
 
 ---
 

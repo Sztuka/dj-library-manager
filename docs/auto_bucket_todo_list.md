@@ -17,7 +17,7 @@
 
 ## Przyszłościowo (multi-user)
 
-- [ ] Rozdzielić: (A) predykcję tagów/genres (multi-label) vs. (B) mapowanie `genres → buckety` per-user (taxonomy_map.yml). [FUTURE]
+- [ ] Rozdzielić: (A) predykcję tagów/genres (multi-label) vs. (B) mapowanie `genres → user playlists` per-user config. [FUTURE]
 - [ ] Kalibracja confidence (isotonic/Platt) per-user. [FUTURE]
 - [ ] Feedback loop: CLI do zbierania poprawek i incremental retraining (z wersjonowaniem modelu). [FUTURE]
 
