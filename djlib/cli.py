@@ -606,7 +606,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
                 genre_str = ", ".join(genres)
                 current_genre = (r.get("genre_suggest") or "").strip()
-                if not current_genre or genre_res.confidence > 0.08:  # override existing only if significantly better
+                # Override existing genre if: force_genres flag, or no current genre, or significantly better confidence
+                if force_genres or not current_genre or genre_res.confidence > 0.08:
                     r["genre_suggest"] = genre_str
                     any_change = True
                     # Update meta_source to reflect all sources used
