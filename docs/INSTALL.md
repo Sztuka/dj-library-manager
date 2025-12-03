@@ -54,6 +54,7 @@ Backend modes:
    - See sections below for Homebrew/Conda/Docker
 
 4. **Start workflow**
+
    ```bash
    python -m djlib.cli scan --strict
    python -m djlib.cli enrich-online
@@ -119,14 +120,14 @@ If Homebrew/Conda paths are inconvenient, use Docker to run the streaming extrac
 docker build -t djlib-essentia:local -f docker/Dockerfile.essentia docker
 ```
 
-2. Enable Docker fallback for analyze‑audio and set the image name (in your shell):
+1. Enable Docker fallback for analyze‑audio and set the image name (in your shell):
 
 ```zsh
 export DJLIB_ESSENTIA_DOCKER=1
 export DJLIB_ESSENTIA_IMAGE=djlib-essentia:local
 ```
 
-3. Verify:
+1. Verify:
 
 ```zsh
 ./.venv/bin/python -m djlib.cli analyze-audio --check-env

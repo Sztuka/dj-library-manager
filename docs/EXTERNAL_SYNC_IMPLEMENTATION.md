@@ -307,7 +307,7 @@ python -m djlib.cli create-path-map \
 
 ## File Structure
 
-```
+```text
 djlib/
 ├── external_sync.py          # NEW: Phase 1 & 2 implementation
 ├── cli.py                    # UPDATED: Added 5 new commands

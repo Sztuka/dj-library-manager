@@ -165,7 +165,7 @@ python -m djlib.cli ml-export-training-dataset --out data/training_dataset.csv
 
 ## Data Flow Diagram
 
-```
+```text
 ┌──────────────┐
 │ UNSORTED/    │
 │ (new files)  │
@@ -255,8 +255,8 @@ def extract_features(file_path: Path) -> Dict[str, Any]:
     return features
 ```
 
-2. Update cache schema in `djlib/audio/cache.py` (add column)
-3. Features automatically available in `ml-export-training-dataset`
+1. Update cache schema in `djlib/audio/cache.py` (add column)
+1. Features automatically available in `ml-export-training-dataset`
 
 ### Training External Models
 
@@ -268,7 +268,7 @@ python -m djlib.cli ml-export-training-dataset \
     --require-both-labels  # Only tracks with genre+destination
 ```
 
-2. Train model (external, e.g., scikit-learn, PyTorch):
+1. Train model (external, e.g., scikit-learn, PyTorch):
 
 ```python
 import pandas as pd
@@ -282,7 +282,7 @@ model = RandomForestClassifier()
 model.fit(X, y)
 ```
 
-3. **(Future)** Store predictions in `library.csv` via new CLI command
+1. **(Future)** Store predictions in `library.csv` via new CLI command
 
 ---
 

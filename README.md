@@ -1,4 +1,8 @@
-**Canonical Genre System:**
+# DJ Library Manager
+
+**Automated DJ library organization with Rekordbox integration, metadata enrichment, and audio analysis.**
+
+## Canonical Genre System
 
 - See `djlib/genre_canonical.py` for genre resolver logic.
 - See `genres.yml` for canonical genre definitions and synonyms.
@@ -11,10 +15,6 @@
 - No hardcoded genre lists or manual normalization.
 - All modules (resolver, placement, ML, curation) reference the canonical genre file.
 - Legacy taxonomy and bucket-based genre lists are deprecated.
-
-# DJ Library Manager
-
-**Automated DJ library organization with Rekordbox integration, metadata enrichment, and audio analysis.**
 
 ## 🎯 What This Does
 
@@ -92,7 +92,7 @@ python -m djlib.cli sync-dj-libraries --write
 # 4. Adds custom DJLIB tags where missing
 ```
 
-**1. PREPARE FILES IN REKORDBOX**
+### 1. PREPARE FILES IN REKORDBOX
 
 ```bash
 # Import tracks to Rekordbox collection
@@ -120,7 +120,7 @@ python -m djlib.cli enrich-online
 # Adds: genres, release dates, popularity metrics
 ```
 
-**4. CURATE IN EXCEL**
+### 4. CURATE IN EXCEL
 
 - Open `unsorted.xlsx`
 - Review and edit: `artist`, `title`, `version_info`, `genre`
@@ -137,7 +137,7 @@ python -m djlib.cli enrich-online
 - **Archive** (`~/Music Archive/{Artist}/...`) - Archived tracks (separate from library, organized by artist)
 - **Mixes** (`~/Music Library/MIXES/...`) - DJ mixes (flat structure, no metadata requirements)
 
-**5. EXPORT APPROVED TRACKS**
+### 5. EXPORT APPROVED TRACKS
 
 ```bash
 python -m djlib.cli apply
@@ -223,7 +223,7 @@ All files are tagged with permanent IDs for reliable tracking:
 
 ### Data Flow
 
-```
+```text
 UNSORTED/
   ↓ scan --strict (check Rekordbox DB)
 unsorted.xlsx (staging area)
@@ -327,7 +327,7 @@ python -m djlib.cli analyze-audio --check-env
 **Removes piracy metadata:**
 
 - Publisher tags from file sharing sites (TPUB: musicdjs.club, chomikuj.pl)
-- Comment spam (COMM: www.p2pdl.com, www.mp3baza.pl, ulub.pl)
+- Comment spam (COMM: `www.p2pdl.com`, `www.mp3baza.pl`, ulub.pl)
 - Useless tags (MCDI, TPOS, SYLT, USLT, WCOM, WOAF, etc.)
 
 **Preserves critical DJ software data:**
@@ -345,7 +345,7 @@ python -m djlib.cli analyze-audio --check-env
 
 **Statistics in output:**
 
-```
+```text
 🧹 Czyszczenie spam tagów: cleaned=6, errors=0
 📀 Zapis tagów audio: ok=28, errors=0
 ```
@@ -411,7 +411,7 @@ BEATPORT_DEBUG=1 python -m djlib.cli enrich-online
 
 **Statistics in output:**
 
-```
+```text
 🎨 Okładki: added=15, skipped=8, failed=2
 ```
 
@@ -466,7 +466,7 @@ Use built-in tasks for common workflows:
 
 ## 📁 Project Structure
 
-```
+```text
 dj-library-manager/
 ├── djlib/                    # Core Python package
 │   ├── cli.py               # Command-line interface
@@ -532,7 +532,7 @@ soundcloud_client_id: YOUR_KEY
 
 **Critical:** Enable tag writing in Rekordbox:
 
-```
+```text
 Preferences → Advanced → Browse
 ☑ Write metadata to files
 Frequency: Every time

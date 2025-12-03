@@ -25,7 +25,6 @@
 
 - Last.fm API – track.getInfo: `playcount`, `listeners` (już wspieramy, wymaga API key w configu).
 - YouTube – liczba wyświetleń dla oficjalnego audio/clipu (opcjonalne; scraping/YouTube Data API v3).
-- (Mniej priorytetowe) Wikipedia/Chart archives (peak positions), Discogs (liczby „have/want”), TheAudioDB.
+- (Mniej priorytetowe) Wikipedia/Chart archives (peak positions), Discogs (liczby „have/want"), TheAudioDB.
 
 Heurystyka przykładowa: jeśli `year ∈ [1980..1989]` i `playcount` lub `listeners` > próg — preferuj `OPEN FORMAT/80s`; bardzo wysokie wartości → `OPEN FORMAT/PARTY DANCE`/`POLISH SINGALONG` (po filtrze języka/pochodzenia).
-<parameter name="filePath">/Users/sztuka/Projects/dj-library-manager/docs/auto_bucket_todo_list.md

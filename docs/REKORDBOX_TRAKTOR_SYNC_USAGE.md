@@ -93,7 +93,7 @@ python -m djlib.cli import-rekordbox \
 
 **Output:**
 
-```
+```text
 📖 Reading Rekordbox database: /Users/user/Library/Pioneer/rekordbox/master.db
 ✅ Exported 1247 tracks to: LOGS/external_snapshots/rekordbox_snapshot.csv
 📝 Tagged 1247 files with DJLIB_TRACK_ID
@@ -116,7 +116,7 @@ python -m djlib.cli import-traktor \
 
 **Output:**
 
-```
+```text
 📖 Reading Traktor collection: /Users/user/Documents/Native Instruments/Traktor 3.11.1/collection.nml
 ✅ Exported 823 tracks to: LOGS/external_snapshots/traktor_snapshot.csv
 📝 Tagged 823 files with DJLIB_TRACK_ID
@@ -138,7 +138,7 @@ python -m djlib.cli apply
 
 **Output from apply:**
 
-```
+```text
 MOVE: /Users/user/Music/UNSORTED/track.flac -> /Users/user/Music Library/Artist/Artist - Title (6A 128bpm).flac
 ...
 Przeniesiono 42 pozycji do biblioteki.
@@ -158,7 +158,7 @@ python -m djlib.cli create-path-map \
 
 **Output:**
 
-```
+```text
 📖 Loaded Rekordbox snapshot: 1247 tracks
 📖 Loaded Traktor snapshot: 823 tracks
 
@@ -182,7 +182,7 @@ def456,/Users/user/Music/UNSORTED/track2.mp3,/Users/user/Music Library/Artist2/T
 
 ### Step 4: (Future) Sync to DJ Software
 
-**⚠️ NOT YET IMPLEMENTED - Phase 3**
+#### ⚠️ NOT YET IMPLEMENTED - Phase 3
 
 When implemented, you'll be able to:
 
@@ -203,7 +203,7 @@ python -m djlib.cli sync-traktor-paths \
 
 ## Output File Locations
 
-```
+```text
 LOGS/
 ├── external_snapshots/
 │   ├── rekordbox_snapshot.csv         # Phase 1: Rekordbox collection
@@ -293,11 +293,13 @@ python -m djlib.cli import-rekordbox --tag-files
 1. Read track from Rekordbox DB: `/Music Library/Artist/Track.mp3` (ID: 12345)
 2. Generate `track_id`: `56cf9932-db70-5336-8d03-dc65e799f614`
 3. Write to audio file:
-   ```
+
+   ```text
    TXXX:DJLIB_TRACK_ID = 56cf9932-db70-5336-8d03-dc65e799f614
    TXXX:DJLIB_REKORDBOX_ID = 12345
    TXXX:DJLIB_ORIGINAL_PATH = /Music Library/Artist/Track.mp3
    ```
+
 4. Save snapshot CSV with `track_id` column
 
 ```bash

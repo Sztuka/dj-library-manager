@@ -56,7 +56,7 @@ if db_meta:
 
 **Example Output:**
 
-```
+```text
 Bruce Springsteen - Dancing In The Dark
   File tags:  bpm=???, key=???
   DB values:  bpm=112.57, key=1B  ← Extracted from Rekordbox
@@ -113,7 +113,7 @@ $ djlib scan
 
 ### ✅ Scenario 1: Normal Workflow
 
-```
+```text
 1. Import track to Rekordbox collection
 2. Analyze in Rekordbox → writes BPM/Key to DB + tags
 3. Run `scan` → checks tags → finds TBPM+TKEY → ✓ analyzed
@@ -125,7 +125,7 @@ $ djlib scan
 
 ### ⚠️ Scenario 2: Manual Edit Outside Rekordbox
 
-```
+```text
 1. Analyze in Rekordbox → BPM=120.0, Key=5A
 2. Open in Traktor → manually correct BPM to 119.5
 3. Traktor updates TBPM tag to 119.5
@@ -138,7 +138,7 @@ $ djlib scan
 
 ### ❌ Scenario 3: File Moved Before Tags Written
 
-```
+```text
 1. Import to Rekordbox at /UNSORTED/track.mp3
 2. Analyze → writes to DB, but tags not saved yet
 3. Move file to /Library/House/track.mp3 (outside Rekordbox)
@@ -154,7 +154,7 @@ $ djlib scan
 
 ### ⚠️ Scenario 4: Tags Modified Outside Rekordbox
 
-```
+```text
 1. Analyze in Rekordbox → TBPM=120, TKEY=5A
 2. Some tool deletes TBPM tag
 3. Run `scan` → checks tags → missing TBPM → checks DB → found → ✓ analyzed
@@ -170,7 +170,7 @@ $ djlib scan
 
 The module automatically discovers Rekordbox DB on macOS:
 
-```
+```text
 ~/Library/Pioneer/rekordbox/master.db
 ~/Library/Pioneer/rekordbox/datafile.edb
 ```
@@ -244,7 +244,7 @@ Print diagnostic information about Rekordbox DB.
 
 **Output:**
 
-```
+```text
 ✅ Rekordbox database found: /Users/.../master.db
    Tracks in database: 5694
 ```
@@ -287,15 +287,18 @@ If Rekordbox is running:
 ### "Track not detected as analyzed but I analyzed it"
 
 1. **Check if tags were written:**
+
    ```bash
    python -c "from mutagen.id3 import ID3; tags = ID3('track.mp3'); print(tags.get('TBPM'), tags.get('TKEY'))"
    ```
+
 2. **If tags missing, force Rekordbox to write them:**
 
    - Rekordbox → Right-click track → "Relocate"
    - Or: Settings → ensure "Write metadata to files" enabled
 
 3. **Check DB status:**
+
    ```bash
    python -m djlib.cli
    # Then in Python:

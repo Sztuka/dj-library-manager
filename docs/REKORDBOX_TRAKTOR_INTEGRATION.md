@@ -335,7 +335,7 @@ python -m djlib.cli sync-rekordbox-paths --path-map LOGS/path_maps/path_map_2025
 
 2. **Dry-run report:**
 
-   ```
+   ```text
    Would update 42 paths:
    ✓ Track ID 12345: /old/path.flac → /new/LIBRARY/Artist/file.flac
    ✓ Track ID 12346: /old/path2.mp3 → /new/LIBRARY/Artist2/file2.mp3
@@ -344,7 +344,7 @@ python -m djlib.cli sync-rekordbox-paths --path-map LOGS/path_maps/path_map_2025
 
 3. **Interactive confirmation:**
 
-   ```
+   ```text
    Backup created: master.db.backup_20251126_143022
 
    Ready to update 42 paths in Rekordbox database.
@@ -491,7 +491,7 @@ def sync_traktor_paths(collection_file: Path, path_map_file: Path, write: bool =
 
 ## Implementation Checklist
 
-**Phase 1: Import Snapshots (SAFE)**
+### Phase 1: Import Snapshots (SAFE)
 
 - [ ] `import-rekordbox` command stub
 - [ ] Rekordbox DB reader (reuse existing SQLCipher code)
@@ -501,14 +501,14 @@ def sync_traktor_paths(collection_file: Path, path_map_file: Path, write: bool =
 - [ ] CSV export format
 - [ ] Tests: snapshot integrity
 
-**Phase 2: Path Mapping (SAFE)**
+### Phase 2: Path Mapping (SAFE)
 
 - [ ] Enhance `apply` to cross-reference snapshots
 - [ ] `path_map` CSV format
 - [ ] Helper: `find_in_snapshot(source, old_path)`
 - [ ] Tests: path mapping logic
 
-**Phase 3: Path Sync (DANGEROUS)**
+### Phase 3: Path Sync (DANGEROUS)
 
 - [ ] `sync-rekordbox-paths` command stub
 - [ ] Backup/restore logic

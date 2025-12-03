@@ -10,7 +10,7 @@
 
 1. [System Overview](#system-overview)
 2. [File and Folder Structure](#file-and-folder-structure)
-3. [Folder Organization and Genre System](#folder-organization-and-genre-system)
+3. [Folder Organization Philosophy](#folder-organization-philosophy)
 4. [CSV Data Structure](#csv-data-structure)
 5. [File Naming Format](#file-naming-format)
 6. [Modules and Components](#modules-and-components)
@@ -61,6 +61,7 @@ DJ Library Manager is a **library cleaner first**, not a set builder. The system
 
 ### Project Structure
 
+```text
 dj-library-manager/
 ├── djlib/ # Main application module
 │ ├── config.py # Path and settings configuration
@@ -107,8 +108,7 @@ dj-library-manager/
 
 ### Library Structure (LIB_ROOT)
 
-```
-
+```text
 ~/Music_Library/
 ├── UNSORTED/ # Scanned by scan command (strict mode)
 ├── Artist 1/ # Main collection (organized by artist)
@@ -141,12 +141,11 @@ dj-library-manager/
 ├── unsorted.xlsx # Staging spreadsheet (Excel workflow)
 ├── library.csv # Main database (track metadata + paths)
 └── training_dataset_full.csv # ML training export
-
 ```
 
 **Legacy folders** (deprecated, may exist in old installations):
 
-```
+```text
 
 ~/Music_Library/
 ├── READY TO PLAY/ # Old bucket structure (DEPRECATED)
@@ -161,7 +160,7 @@ dj-library-manager/
 
 ---
 
-## Folder Organization and Genre System
+## Folder Organization Philosophy
 
 ### New Model (November 2025)
 
@@ -227,9 +226,9 @@ See `genres.yml` for complete list and synonyms.
 
 ---
 
-## File Naming Format
+## CSV Data Structure
 
-### Standard Format:
+### Standard Format
 
 Main staging database in Excel format. Columns defined in `djlib/csvdb.py::FIELDNAMES`:
 
@@ -275,7 +274,7 @@ Main staging database in Excel format. Columns defined in `djlib/csvdb.py::FIELD
 | `ess_danceability`      | Danceability score                      | `0.82`                                  |
 | `ess_*`                 | Other Essentia features (see ML docs)   | Various metrics                         |
 
-### Important Fields:
+### Important Fields
 
 **`destination`**:
 
@@ -311,25 +310,22 @@ Main staging database in Excel format. Columns defined in `djlib/csvdb.py::FIELD
 
 ## File Naming Format
 
-### Final Filename Format:
+### Final Filename Format
 
-```
-
+```text
 {Artist} - {Title} ({VersionInfo}) [{Key} {BPM}]{ext}
-
 ```
 
-### Examples:
+### Examples
 
-```
+```text
 
 Daft Punk - Get Lucky (Radio Edit) [6A 120].mp3
 The Prodigy - Firestarter (Original Mix) [8B 145].flac
 Unknown Artist - Unknown Title (Original Mix) [?? ??].mp3
-
 ```
 
-### Rules (from `djlib/filename.py`):
+### Rules (from djlib/filename.py)
 
 1. **VersionInfo**: If empty, set to `"Original Mix"`
 2. **Key**: If empty, set to `"??"`
@@ -338,12 +334,11 @@ Unknown Artist - Unknown Title (Original Mix) [?? ??].mp3
 5. **Title**: If empty, set to `"Unknown Title"`
 6. **Illegal characters**: `/\:*?"<>|` are replaced with `-`
 
-### Name Conflicts:
+### Name Conflicts
 
 If file with same name exists, number is added:
 
-```
-
+```text
 Artist - Title (Mix) [6A 120].mp3
 Artist - Title (Mix) [6A 120] (2).mp3
 Artist - Title (Mix) [6A 120] (3).mp3
@@ -495,8 +490,7 @@ Artist - Title (Mix) [6A 120] (3).mp3
 
 **Production Workflow (November 2025):**
 
-```
-
+```text
 WORKFLOW 0: Sync DJ Libraries & Tags (optional)
 ↓ Compare library.csv with Rekordbox/Traktor
 ↓ Add missing tracks, update paths, add custom tags
@@ -522,8 +516,7 @@ WORKFLOW 5: Analyze Audio (Essentia)
 
 WORKFLOW 6: ML Dataset Export
 ↓ Export training data with audio features
-
-````
+```
 
 ---
 
@@ -741,21 +734,21 @@ WORKFLOW 6: ML Dataset Export
 
 ## Coding Standards
 
-### Code Format:
+### Code Format
 
 - Python 3.10+
 - Type hints (with `from __future__ import annotations`)
 - `black` formatter (optional)
 - `ruff` linter (optional)
 
-### Naming Conventions:
+### Naming Conventions
 
 - **Functions**: snake_case (`load_records`, `target_to_path`)
 - **Classes**: PascalCase (`AppConfig`)
 - **Variables**: snake_case (`csv_path`, `dest_dir`)
 - **Constants**: UPPER_SNAKE_CASE (`FIELDNAMES`, `LIB_ROOT`)
 
-### Import Structure:
+### Import Structure
 
 ```python
 from __future__ import annotations
@@ -771,34 +764,34 @@ import requests
 # Local imports
 from djlib.config import LIB_ROOT
 from djlib.logistics import get_destination_path
-````
+```
 
-### Error Handling:
+### Error Handling
 
 - Check file existence before operations
 - Graceful degradation (e.g., no fingerprint → use hash)
 - Log errors to stdout (exceptions not silent)
 
-### Paths:
+### Paths
 
 - Always use `pathlib.Path` instead of strings
 - Resolve paths relative to `LIB_ROOT` set in config
 - `_expand()` function in `config.py` handles `~` and expands paths
 
-### CSV:
+### CSV
 
 - Always UTF-8 encoding
 - `newline=""` for cross-platform compatibility
 - Use `csv.DictReader/DictWriter` with `FIELDNAMES`
 
-### API Keys and Configuration:
+### API Keys and Configuration
 
 - **AcoustID**: `acoustid_api_key` in config (Application API key)
 - **Last.fm**: `lastfm_api_key` in config or env `LASTFM_API_KEY`
 - **SoundCloud**: `SOUNDCLOUD_CLIENT_ID` in env (optional, health check)
 - **MusicBrainz**: User-Agent in config (`app_name`, `app_version`, `contact`)
 
-### External Dependencies:
+### External Dependencies
 
 ```python
 # Core
@@ -816,7 +809,7 @@ musicbrainzngs>=0.7   # MusicBrainz API client
 pylast>=5.2           # Last.fm API
 ```
 
-### Caching:
+### Caching
 
 - HTTP requests cached in `djlib_http_cache.sqlite`
 - Rate limiting: 1 req/s for MusicBrainz
@@ -859,9 +852,9 @@ pytest --cov=djlib --cov-report=term-missing
 
 ---
 
-## Examples
+## Code Examples
 
-### Check Genre Validity:
+### Check Genre Validity
 
 ```python
 from djlib.metadata.genre_resolver import GENRES_YML_PATH
@@ -874,7 +867,7 @@ with open(GENRES_YML_PATH) as f:
 is_valid = "House" in valid_genres  # True
 ```
 
-### Check Destination Validity (CURRENT):
+### Check Destination Validity (CURRENT)
 
 ```python
 from djlib.unsorted import DESTINATION_CHOICES
@@ -887,7 +880,7 @@ is_valid = destination in DESTINATION_CHOICES  # True
 
 ## Notes for AI Agents
 
-### When Proposing Changes:
+### When Proposing Changes
 
 1. **Check genres.yml**: Always use genres from the canonical 30-genre list
 2. **Use destination column**: library/reject/archive/mixes (not target_subfolder)
@@ -896,14 +889,14 @@ is_valid = destination in DESTINATION_CHOICES  # True
 5. **Path handling**: Always use `pathlib.Path`, not strings
 6. **Backward compatibility**: Legacy fields (target_subfolder, bucket_suggest) kept for old data migration
 
-### When Adding New Genres:
+### When Adding New Genres
 
 1. Add to `genres.yml` with synonyms
 2. Update genre_resolver weights if needed
 3. Run validation tests to ensure synonym matching works
 4. Document in genres.yml with clear definition
 
-### Current System (November 2025):
+### Current System (November 2025)
 
 - **Folder structure**: Main Library/{Artist}/, Reject/ (flat), Archive/{Artist}/, Mixes/ (flat)
 - **Genre system**: 30 canonical genres in genres.yml with comprehensive synonyms
@@ -911,7 +904,7 @@ is_valid = destination in DESTINATION_CHOICES  # True
 - **Bucketing**: FUTURE feature for smart playlists (not folder organization)
 - **Legacy support**: target_subfolder still works for backward compatibility, but destination is preferred
 
-### Removed Features (December 2025):
+### Removed Features (December 2025)
 
 - Taxonomy system completely removed: No more `taxonomy.yml`, `taxonomy_map.yml`, or bucket-based folders
 - Legacy modules deleted: `djlib/legacy/taxonomy.py`, `djlib/legacy/genre.py`, `djlib/legacy/buckets.py`

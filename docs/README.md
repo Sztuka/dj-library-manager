@@ -41,51 +41,51 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 - `LOGS/scan_status.json` pokaże liczbę plików i ewentualne błędy (`missing_fpcalc`).
 - Jeśli pojawiły się duplikaty, kolumna `is_duplicate` ma `true` – takich wierszy zwykle nie oznaczamy `done`.
 
-2. **Zamknij alternatywne edytory**
+1. **Zamknij alternatywne edytory**
 
 - Upewnij się, że Excel/Numbers nie ma otwartej starej wersji arkusza; w przeciwnym razie `scan` nie zapisze nowych danych.
 
-3. **Otwórz `unsorted.xlsx`**
+1. **Otwórz `unsorted.xlsx`**
 
 - Pierwszy wiersz to nagłówki, kolumny techniczne są ukryte.
 - Włącz filtr (`A1` → Filtr) jeżeli chcesz szybciej filtrować po `destination`, `genre`, `status` lub `done`.
 
-4. **Korzystaj z dropdownów**
+1. **Korzystaj z dropdownów**
 
 - `genre` pobiera wartości z `genres.yml` – 30 kanonicznych gatunków; nie wpisuj nazw ręcznie.
 - `destination` akceptuje: `library`, `reject`, `archive`, `mixes`, lub puste.
 - `status` akceptuje: `accept`, `reject`, `review`, lub puste (informacyjne, nie kontroluje przenosin).
 - Kolumna `done` akceptuje tylko `TRUE/FALSE`; Excel pokazuje listę wyboru.
 
-5. **Uzupełnij metadane**
+1. **Uzupełnij metadane**
 
 - Kolumny `artist`, `title`, `version_info`, `year`, `genre`, `status`, `destination`, `must_play`, `occasion_tags`, `notes` są edytowalne.
 - Jeśli sugerowane wartości (`*_suggest`) są poprawne, możesz je skopiować: `artist_suggest → artist` itp.
 - `bpm` i `key_camelot` są kopiowane z tagów Rekordbox – popraw je ręcznie, jeśli trzeba.
 - **Album**: Zawsze czyszczony podczas exportu (kompilacje nie są przydatne dla DJów).
 
-6. **Weryfikuj sugestie**
+1. **Weryfikuj sugestie**
 
 - `genre_suggest` bazuje na fuzji Last.fm/MusicBrainz/Beatport – możesz zaakceptować lub zmienić ręcznie.
 - `pop_playcount`/`pop_listeners` pomagają priorytetyzować popularne utwory – możesz filtrować po tych kolumnach przed edycją.
 
-7. **Ustaw `done = TRUE` wyłącznie, gdy**
+1. **Ustaw `done = TRUE` wyłącznie, gdy**
 
 - plik ma wybraną destynację (`destination` = library/reject/archive/mixes), nazwy są poprawne, a metadane kompletne;
 - duplikaty (`is_duplicate = true`) zostały manualnie przeanalizowane – często zostają w stanie `FALSE` do decyzji.
 
-8. **Zapisz i zamknij arkusz przed `apply`**
+1. **Zapisz i zamknij arkusz przed `apply`**
 
 - `djlib.cli apply` blokuje się, gdy `unsorted.xlsx` jest otwarty w trybie wyłącznym (np. Excel na Windows).
 - Po zapisaniu warto zrobić kopię np. `unsorted-backup.xlsx` jeśli edytujesz większe partie.
 
-9. **Uruchom `python -m djlib.cli apply`**
+1. **Uruchom `python -m djlib.cli apply`**
 
 - Pliki z `done = TRUE` i poprawnym `destination` zostaną przeniesione do docelowych folderów, `library.csv` zostanie uzupełniony, a wiersze znikną z `unsorted.xlsx`.
 - Kolumna `status` jest tylko informacyjna – za przenosiny odpowiada `destination`.
 - Jeśli chcesz zobaczyć plan bez przenosin, dodaj `--dry-run`.
 
-10. **Cofnij się w razie błędu**
+1. **Cofnij się w razie błędu**
 
 - `python -m djlib.cli undo` wykorzystuje log `LOGS/moves-*.csv`, aby przywrócić poprzedni stan i usunąć wpisy z `library.csv`.
 
@@ -100,6 +100,7 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
 ## Pliki konfiguracyjne i klucze
 
 - **`config.yml`** (zapisywany przez wizard):
+
   ```yaml
   LIB_ROOT: /Volumes/Music/Library
   INBOX_UNSORTED: /Volumes/Music/INBOX_UNSORTED
@@ -107,6 +108,7 @@ Uwaga: jeśli system zgłasza komunikat o „quarantine”, aplikacja spróbuje 
   LASTFM_API_KEY: ...
   SOUNDCLOUD_CLIENT_ID: ...
   ```
+
   - Alternatywnie: ustaw w zmiennych środowiskowych (`LASTFM_API_KEY`, `SOUNDCLOUD_CLIENT_ID`).
 
 ## Enrichment (multi-source) i nowe kolumny CSV

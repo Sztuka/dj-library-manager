@@ -17,7 +17,7 @@ This document describes the roadmap for Rekordbox-first architecture with Essent
 
 ## 2) Module Architecture
 
-```
+```text
 djlib/
   rekordbox_status.py   # NEW: Rekordbox DB integration, strict mode validation
   unsorted.py           # NEW: UNSORTED folder management (Excel staging)
@@ -417,22 +417,22 @@ scripts/
 ### Phase A (BPM/Key/Energy + Preview) – PARTIAL DONE (some Energy still needs calibration)
 
 1. `djlib/audio/essentia_backend.py`: BPM/Key/Energy detectors + cache. (IN PROGRESS)
-2. Integration with `report_preview.py` (columns + quality indicators, no timing regressions). (PARTIAL DONE)
-3. CLI `analyze-audio` + logs.
+1. Integration with `report_preview.py` (columns + quality indicators, no timing regressions). (PARTIAL DONE)
+1. CLI `analyze-audio` + logs.
 
 ### Phase B (Bucket v0 — Rules)
 
-4. `bucketing/rules.py` + starter `rules.yml` (BPM ranges, energy, optionally styles from taxonomy_map).
-5. Add to Preview `bucket_suggest` + `bucket_confidence`. (PENDING)
+1. `bucketing/rules.py` + starter `rules.yml` (BPM ranges, energy, optionally styles from taxonomy_map).
+1. Add to Preview `bucket_suggest` + `bucket_confidence`. (PENDING)
 
 ### Phase C (Auto-Bucket v0.1 — ML)
 
-6. `bucketing/simple_ml.py` (RandomForest) — per appendix; features from audio.
-7. `assign_buckets.py` + `metrics.json` + tests. (PENDING)
+1. `bucketing/simple_ml.py` (RandomForest) — per appendix; features from audio.
+1. `assign_buckets.py` + `metrics.json` + tests. (PENDING)
 
 ### Phase D (Hybrid — Optional)
 
-8. `hybrid_model.py` (SBERT + features), compare with v0.1. (FUTURE)
+1. `hybrid_model.py` (SBERT + features), compare with v0.1. (FUTURE)
 
 ## 11) "Ready" Criteria (Definition of Done) – Updated
 

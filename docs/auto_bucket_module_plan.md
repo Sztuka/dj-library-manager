@@ -32,7 +32,7 @@ Automatic genre classification based purely on audio features (Essentia analysis
 
 ## Priority 2: Smart Playlist Generation (AFTER PRIORITY 1 - FUTURE)
 
-### Goal
+### Objective
 
 Natural language playlist generation: "4 hours for cocktail bar with light foot-tapping"
 
@@ -135,7 +135,7 @@ generate-playlist "smooth opening, warm, not too intense"
 
 ## 🔧 Wymagania techniczne (v0.1)
 
-```
+```text
 scikit-learn==1.3.0
 pandas>=1.5
 numpy>=1.24
@@ -143,17 +143,17 @@ numpy>=1.24
 
 ## Dependencies
 
-### Phase 1 (Genre Classifier):
+### Phase 1 (Genre Classifier)
 
-```
+```text
 scikit-learn>=1.3.0
 pandas>=2.0
 numpy>=1.24
 ```
 
-### Phase 2 (Smart Playlists, FUTURE):
+### Phase 2 (Smart Playlists, FUTURE)
 
-```
+```text
 openai>=1.0  # or anthropic, for LLM query parsing
 sentence-transformers>=2.2.2  # optional, for semantic search
 ```
