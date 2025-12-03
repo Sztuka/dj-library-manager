@@ -378,11 +378,14 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                 return online
         
         # Następnie spróbuj MusicBrainz search
-        online = lookup_musicbrainz(artist, title)
-        if online:
-            if version and not (online.get("version_suggest") or "").strip():
-                online = {**online, "version_suggest": version}
-            return online
+        # WAŻNE: dla remixów (gdy version istnieje) NIE używaj MusicBrainz early return,
+        # bo MB zwraca dane oryginalnego utworu bez uwzględnienia wersji.
+        # Zamiast tego przechodzimy dalej do genre_resolver, który używa version do
+        # znalezienia prawidłowych gatunków dla remixu (np. SoundCloud z wysoką wagą).
+        if not version:
+            online = lookup_musicbrainz(artist, title)
+            if online:
+                return online
         
         # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud/Beatport (resolver)
         # oraz wyciągnij rok i album z Last.fm/Beatport lub tagów pliku
@@ -700,6 +703,7 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
         "artist": row.get("artist", ""),
         "title": row.get("title", ""),
         "genre": row.get("genre", ""),
+        "version_info": row.get("version_suggest", ""),  # Pass version from row to avoid reparsing filename
     }
     
     return suggest_metadata(path, tags, enable_online=True)
