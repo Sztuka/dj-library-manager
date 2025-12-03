@@ -903,6 +903,164 @@ def add_tracks_to_rekordbox(
     return (added_count, updated_count)
 
 
+def sync_ratings_to_dj_software(
+    library_csv_path: Path,
+    dry_run: bool = True
+) -> Tuple[int, int]:
+    """
+    Sync ratings from library.csv to Rekordbox and Traktor.
+    
+    Logic:
+    - If track has rekordbox_id: update Rekordbox rating
+    - If track has traktor_id: update Traktor rating
+    - Converts star ratings (0-5) to native formats
+    
+    Args:
+        library_csv_path: Path to library.csv with unified ratings
+        dry_run: If True (default), don't write changes
+    
+    Returns:
+        Tuple[int, int]: (rekordbox_updates, traktor_updates)
+    """
+    import pandas as pd
+    
+    if not library_csv_path.exists():
+        raise FileNotFoundError(f"library.csv not found: {library_csv_path}")
+    
+    df = pd.read_csv(library_csv_path)
+    
+    # Filter tracks with ratings
+    df['rating'] = pd.to_numeric(df['rating'], errors='coerce').fillna(0)
+    df_with_rating = df[df['rating'] > 0].copy()
+    
+    rekordbox_updates = 0
+    traktor_updates = 0
+    
+    # Sync to Rekordbox
+    rb_tracks = df_with_rating[df_with_rating['rekordbox_id'].notna()].copy()
+    if len(rb_tracks) > 0:
+        rekordbox_updates = _sync_ratings_to_rekordbox(rb_tracks, dry_run)
+    
+    # Sync to Traktor
+    tr_tracks = df_with_rating[df_with_rating['traktor_id'].notna()].copy()
+    if len(tr_tracks) > 0:
+        traktor_updates = _sync_ratings_to_traktor(tr_tracks, dry_run)
+    
+    return (rekordbox_updates, traktor_updates)
+
+
+def _sync_ratings_to_rekordbox(df: Any, dry_run: bool) -> int:
+    """Sync ratings to Rekordbox database."""
+    if not PYREKORDBOX_AVAILABLE:
+        print("⚠️  pyrekordbox not available - skipping Rekordbox rating sync")
+        return 0
+    
+    rekordbox_db_path = Path.home() / "Library" / "Pioneer" / "rekordbox" / "master.db"
+    if not rekordbox_db_path.exists():
+        print(f"⚠️  Rekordbox database not found - skipping rating sync")
+        return 0
+    
+    if dry_run:
+        print(f"🔍 DRY-RUN: Would update {len(df)} Rekordbox ratings")
+        return len(df)
+    
+    # Backup database
+    import shutil
+    backup_path = rekordbox_db_path.with_suffix('.db.backup-rating')
+    shutil.copy2(rekordbox_db_path, backup_path)
+    print(f"📦 Rekordbox backup: {backup_path.name}")
+    
+    db = Rekordbox6Database(rekordbox_db_path)  # type: ignore
+    updated = 0
+    
+    try:
+        for _, row in df.iterrows():
+            try:
+                rb_id = int(row['rekordbox_id'])
+                stars = int(row['rating'])
+                rb_rating = stars_to_rekordbox_rating(stars)
+                
+                content = db.get_content(ID=rb_id)
+                if content is None:
+                    continue
+                
+                # Update rating if changed
+                current_rating = getattr(content, 'Rating', 0) or 0
+                if current_rating != rb_rating:
+                    content.Rating = rb_rating
+                    updated += 1
+                    
+            except Exception as e:
+                print(f"⚠️  Failed to update Rekordbox rating for ID {row.get('rekordbox_id')}: {e}")
+        
+        db.commit()
+        print(f"✅ Updated {updated} Rekordbox ratings")
+        
+    finally:
+        db.close()
+    
+    return updated
+
+
+def _sync_ratings_to_traktor(df: Any, dry_run: bool) -> int:
+    """Sync ratings to Traktor collection.nml."""
+    if not TRAKTOR_UTILS_AVAILABLE:
+        print("⚠️  traktor-nml-utils not available - skipping Traktor rating sync")
+        return 0
+    
+    collection_path = Path.home() / "Documents" / "Native Instruments"
+    # Find Traktor collection.nml (version may vary)
+    nml_files = list(collection_path.glob("Traktor*/collection.nml"))
+    if not nml_files:
+        print(f"⚠️  Traktor collection.nml not found - skipping rating sync")
+        return 0
+    
+    collection_nml_path = nml_files[0]
+    
+    if dry_run:
+        print(f"🔍 DRY-RUN: Would update {len(df)} Traktor ratings")
+        return len(df)
+    
+    # Backup collection.nml
+    _backup_traktor_collection(collection_nml_path)
+    
+    collection = TraktorCollection(collection_nml_path)
+    if not collection.nml.collection or not collection.nml.collection.entry:
+        print("⚠️  Invalid Traktor collection")
+        return 0
+    
+    # Build lookup: audio_id -> entry
+    entry_map = {entry.audio_id: entry for entry in collection.nml.collection.entry if entry.audio_id}
+    
+    updated = 0
+    for _, row in df.iterrows():
+        try:
+            traktor_id = row['traktor_id']
+            stars = int(row['rating'])
+            traktor_ranking = stars_to_traktor_rating(stars)
+            
+            entry = entry_map.get(traktor_id)
+            if not entry:
+                continue
+            
+            # Update ranking in INFO tag
+            if not entry.info:
+                entry.info = Infotype()
+            
+            current_ranking = entry.info.ranking or 0
+            if current_ranking != traktor_ranking:
+                entry.info.ranking = traktor_ranking
+                updated += 1
+                
+        except Exception as e:
+            print(f"⚠️  Failed to update Traktor rating for ID {row.get('traktor_id')}: {e}")
+    
+    if updated > 0:
+        _safe_save_traktor_collection(collection_nml_path, collection.nml)
+        print(f"✅ Updated {updated} Traktor ratings")
+    
+    return updated
+
 
 TRAKTOR_BACKUP_TAG = "djlib-backup"
 

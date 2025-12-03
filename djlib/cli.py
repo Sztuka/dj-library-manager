@@ -1763,6 +1763,29 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
         if tags_errors > 0:
             print(f"❌ Errors: {tags_errors}")
     
+    # Step 3: Sync ratings to DJ software
+    print()
+    print("=" * 60)
+    print("STEP 3: SYNC RATINGS TO DJ SOFTWARE")
+    print("=" * 60)
+    print()
+    
+    from djlib.external_sync import sync_ratings_to_dj_software
+    
+    try:
+        rb_updates, tr_updates = sync_ratings_to_dj_software(CSV_PATH, dry_run=dry_run)
+        
+        if dry_run:
+            print(f"🔍 DRY-RUN: Rating sync preview complete")
+        else:
+            if rb_updates > 0 or tr_updates > 0:
+                print(f"✅ Rating sync complete")
+            else:
+                print("ℹ️  No rating updates needed (all ratings already in sync)")
+    except Exception as e:
+        print(f"⚠️  Rating sync failed: {e}")
+        print("   (Continuing anyway - ratings can be synced manually later)")
+    
     # Done!
     print()
     print("=" * 60)
@@ -1774,6 +1797,8 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     print(f"  • Created library.csv with {len(library_rows)} tracks")
     if not dry_run:
         print(f"  • Tagged {tags_written} files with DJLIB metadata")
+        if rb_updates > 0 or tr_updates > 0:
+            print(f"  • Synced ratings: {rb_updates} Rekordbox, {tr_updates} Traktor")
     else:
         print(f"  • DRY-RUN: No files were modified")
     print()
