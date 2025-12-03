@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Tuple
-from djlib.filename import parse_from_filename
+from djlib.filename import parse_from_filename, split_title_and_version
 from djlib.tags import read_tags
 import json
 import os
@@ -288,6 +288,23 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
     artist = _sanitize_artist(tags.get("artist", ""))
     title = _sanitize_title(tags.get("title", ""))
     version = _sanitize_version(tags.get("version_info", ""))
+
+    # Split title field to extract version info (handles "Title - Mix/Edit/etc" patterns)
+    if title:
+        title_split, version_split = split_title_and_version(title)
+        if version_split:
+            # Merge version from title with existing version (title takes precedence)
+            title = title_split
+            if version:
+                # Combine both versions (from title split and from tag)
+                version_parts = []
+                for v in [version_split, version]:
+                    v = v.strip()
+                    if v and v not in version_parts:
+                        version_parts.append(v)
+                version = ", ".join(version_parts)
+            else:
+                version = version_split
 
     # Compare canonicalized versions to detect if tags look like filename
     stem_clean = _clean_stem(path.stem)

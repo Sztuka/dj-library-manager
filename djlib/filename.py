@@ -30,10 +30,25 @@ def merge_title_and_version(title: str, version_info: str) -> str:
     return (f"{base} {suffix}").strip()
 
 def split_title_and_version(full_title: str) -> tuple[str, str]:
+    """
+    Split title into base title and version info.
+    
+    Recognizes version info in:
+    1. Parentheses/brackets: "Title (Extended Mix)" → "Title", "Extended Mix"
+    2. Dash separator: "Title - Extended Mix" → "Title", "Extended Mix"
+    
+    For dash separator, only splits if right side ends with:
+    Mix, Edit, Version, Remix, Dub, VIP, Bootleg, Rework, Remaster, etc.
+    
+    Returns:
+        tuple[str, str]: (base_title, version_info)
+    """
     s = (full_title or "").strip()
     if not s:
         return "", ""
-    tokens: list[str] = []
+    
+    # First, extract all parentheses/brackets from the entire title
+    parenthesis_tokens: list[str] = []
     while True:
         # Match parentheses (), square brackets [], or curly braces {} at the end
         m = re.search(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]\s*$", s)
@@ -42,10 +57,29 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
         content = m.group(1).strip()
         if not content:
             break
-        tokens.append(content)
+        parenthesis_tokens.append(content)
         s = s[: m.start()].strip()
-    tokens.reverse()
-    return s.strip(), ", ".join(tokens)
+    parenthesis_tokens.reverse()
+    
+    # Now check for dash separator with version keywords in remaining text
+    # Pattern: "Title - Something Mix/Edit/Version/etc"
+    dash_match = re.search(
+        r'^(.+?)\s*[-–—]\s*(.+(?:Mix|Edit|Version|Remix|Dub|VIP|Bootleg|Rework|Remaster|Re-?work|Re-?master|Rub|Flip|Refix|Revamp))$',
+        s,
+        re.IGNORECASE
+    )
+    
+    if dash_match:
+        # Dash pattern matched - split on dash
+        base_title = dash_match.group(1).strip()
+        version_from_dash = dash_match.group(2).strip()
+        
+        # Combine dash version with parenthesis tokens
+        all_version_tokens = [version_from_dash] + parenthesis_tokens
+        return base_title, ", ".join(all_version_tokens)
+    else:
+        # No dash pattern - just use parenthesis tokens
+        return s.strip(), ", ".join(parenthesis_tokens)
 
 def build_final_filename(artist: str, title: str, version_info: str, key_camelot: str, bpm: str, ext: str) -> str:
     base_title = (title or "Unknown Title").strip()
