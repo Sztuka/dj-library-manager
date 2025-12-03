@@ -1587,7 +1587,31 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"⚠️  Snapshot import failed: {e}")
         if not CSV_PATH.exists():
-            raise FileNotFoundError(f"Cannot proceed without library.csv: {CSV_PATH}")
+            print()
+            print("=" * 60)
+            print("⚠️  library.csv NOT FOUND")
+            print("=" * 60)
+            print()
+            print(f"Expected location: {CSV_PATH}")
+            print()
+            print("This could mean:")
+            print("  • First-time setup (file never existed)")
+            print("  • File was deleted accidentally")
+            print("  • Wrong configuration (check config.yml)")
+            print()
+            response = input("Create new empty library.csv? [y/N]: ").strip().lower()
+            if response == 'y':
+                CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+                # Create with minimal required columns
+                import pandas as pd
+                from djlib.csvdb import FIELDNAMES
+                empty_df = pd.DataFrame(columns=FIELDNAMES)
+                empty_df.to_csv(CSV_PATH, index=False)
+                print(f"✅ Created new library.csv at {CSV_PATH}")
+                print("   Run 'scan' to populate it with tracks from UNSORTED/")
+            else:
+                print("❌ Cannot proceed without library.csv")
+                raise FileNotFoundError(f"library.csv not found: {CSV_PATH}")
         print(f"   Continuing with existing library.csv...")
     
     # Step 2: Add DJLIB tags to all unique library files (ONE TIME)
