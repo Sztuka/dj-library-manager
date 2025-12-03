@@ -17,7 +17,7 @@ _CLIENT_ID_CACHE_PATH = Path.home() / ".djlib" / "soundcloud_client_id.json"
 _CLIENT_ID_CACHE_DAYS = 30  # SoundCloud client_id typically valid for ~30 days
 
 _REMIX_KEYWORDS = (
-    "remix", "bootleg", "rework", "refix", "flip", "vip", "mashup", "re-edit", "re edit"
+    "remix", "bootleg", "rework", "refix", "flip", "vip", "mashup", "re-edit", "re edit", "edit"
 )
 _GENERIC_VERSION_WORDS = {
     "extended", "radio", "original", "mix", "edit", "version", "club", "dub", "instrumental",
