@@ -104,19 +104,25 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     """Resolve genres using Beatport -> Last.fm -> MB (+ optional SoundCloud) with scoring.
 
     Version info (remix names) helps SoundCloud queries disambiguate edits.
-    Weights (relative): Beatport=10, LFM=6, MB=3, SC=2. Returns main + up to 2 subs.
+    Weights (relative): Beatport=10, LFM=6, MB=3, SC=2 (base).
+    For remixes (version provided): SC and BP weights increased, LFM/MB decreased.
+    Returns main + up to 2 subs.
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
     if not artist and not title:
         return None
 
+    # Detect if this is a remix/edit (version info provided)
+    is_remix = bool(version and version.strip())
+    
     scores: Dict[str, float] = {}
     parts: List[Tuple[str, float, Dict[str, float]]] = []
 
     # Beatport (gold standard for EDM - highest weight)
+    # Increased weight for remixes (Beatport tracks specific remix releases)
     if not disable_beatport:
-        bp_w = 10.0
+        bp_w = 12.0 if is_remix else 10.0
         try:
             from djlib.metadata.beatport import search_track as bp_search
             bp_result = bp_search(artist, title, duration_s)
@@ -140,7 +146,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
             pass  # Beatport unavailable - continue with other sources
 
     # MusicBrainz
-    mb_w = 3.0
+    # Reduced weight for remixes (MB returns data for original track, not remix)
+    mb_w = 1.5 if is_remix else 3.0
     rec = mb_client.search_recording(artist, title, duration=duration_s)
     if rec:
         tags = mb_client.get_recording_genres(rec.recording_id, release_group_id=rec.release_group_id, artist_id=rec.artist_id)
@@ -160,7 +167,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
 
     # Last.fm (stronger influence to reflect community tags importance)
     # Zwiększona waga (podniesiona z 4.0 → 6.0) aby Last.fm częściej dominowało w wynikach przy szerokim zestawie tagów.
-    lfm_w = 6.0
+    # Reduced weight for remixes (LFM returns data for original track, not remix)
+    lfm_w = 3.0 if is_remix else 6.0
     tags_lfm = lastfm.top_tags(artist, title)
     if tags_lfm:
         local: Dict[str, float] = {}
@@ -180,9 +188,10 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         if local:
             parts.append(("lastfm", lfm_w, local))
 
-    # SoundCloud (light weight)
+    # SoundCloud (light weight for originals, higher for remixes)
+    # SoundCloud is most reliable for remix-specific genre tagging
     if not disable_soundcloud:
-        sc_w = 2.0  # moderate weight: between MB and Last.fm
+        sc_w = 15.0 if is_remix else 2.0  # significantly increased for remixes to override Last.fm
         sc = sc_track_tags(artist, title, version)
         if sc.get("tags"):
             local: Dict[str, float] = {}
