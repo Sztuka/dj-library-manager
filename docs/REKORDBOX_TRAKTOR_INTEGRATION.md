@@ -108,11 +108,13 @@ add_tracks_to_traktor(library_csv="library.csv", dry_run=False)
 
 **Actions:**
 
-1. Compare library.csv with Rekordbox DB and Traktor collection.nml
-2. Identify missing tracks
-3. Add missing tracks to both DJ software
-4. Update paths for moved tracks
-5. Add custom DJLIB tags where missing
+1. Import snapshots from Rekordbox + Traktor
+2. Merge into library.csv with deduplication
+3. Filter out unwanted tracks:
+   - Apple Music streaming tracks (not local files)
+   - Rekordbox sample tracks (artist = "rekordbox")
+   - Short tracks < 5 seconds (loops, samples, jingles)
+4. Add custom DJLIB tags to all library files for permanent tracking
 
 ### WORKFLOW 1: Scan UNSORTED (Auto-Sync)
 

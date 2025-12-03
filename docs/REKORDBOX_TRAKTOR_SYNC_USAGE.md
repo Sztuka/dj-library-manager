@@ -35,10 +35,13 @@ python -m djlib.cli sync-dj-libraries --write
 # Or use VS Code task: "WORKFLOW 0 — Sync DJ Libraries & Tags"
 
 # What this does:
-# 1. Compares library.csv with Rekordbox/Traktor
-# 2. Adds missing tracks to both DJ software
-# 3. Updates paths for moved tracks
-# 4. Adds custom DJLIB tags where missing
+# 1. Imports snapshots from Rekordbox + Traktor
+# 2. Merges into library.csv (removes duplicates)
+# 3. Filters out unwanted tracks:
+#    • Apple Music streaming tracks
+#    • Rekordbox sample tracks (artist = "rekordbox")
+#    • Short tracks < 5 seconds (loops/samples)
+# 4. Adds custom DJLIB tags to all library files
 ```
 
 ### WORKFLOW 1: Scan (✅ AUTOMATIC)

@@ -131,12 +131,13 @@ python -m djlib.cli sync-dj-libraries --write
 
 **What it does:**
 
-1. Compares `library.csv` with Rekordbox DB and Traktor collection.nml
-2. Identifies tracks missing from DJ software
-3. Identifies tracks with outdated paths (moved files)
-4. Adds new tracks to both Rekordbox and Traktor
-5. Updates paths for existing tracks
-6. Adds custom DJLIB tags where missing
+1. Imports snapshots from Rekordbox + Traktor
+2. Merges into library.csv with automatic deduplication
+3. **Filters out unwanted tracks:**
+   - Apple Music streaming tracks (not local files)
+   - Rekordbox sample tracks (artist = "rekordbox")
+   - Short tracks < 5 seconds (loops, samples, jingles)
+4. Adds custom DJLIB tags to all library files for permanent tracking
 
 **Features:**
 

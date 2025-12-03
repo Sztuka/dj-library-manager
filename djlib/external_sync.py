@@ -270,6 +270,7 @@ def import_rekordbox_snapshot(
             'key': getattr(content, 'KeyText', ''),
             'rating': str(getattr(content, 'Rating', '')),
             'color': str(getattr(content, 'ColorID', '')),
+            'duration_seconds': str(getattr(content, 'Length', 0)),  # Track length in seconds
             'date_added': str(getattr(content, 'DateCreated', '')),
             'last_played': str(getattr(content, 'LastPlayed', '')),
             'play_count': str(getattr(content, 'PlayCount', '')),

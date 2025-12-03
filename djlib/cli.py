@@ -1553,10 +1553,26 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             
             df = pd.concat(dfs, ignore_index=True)
             
-            # Filter out Apple Music streaming tracks (not local files)
+            # Filter out unwanted tracks
             before_filter = len(df)
+            
+            # 1. Apple Music streaming tracks (not local files)
             df = df[~df['old_full_path'].str.startswith('apple-music:', na=False)]
             apple_music_filtered = before_filter - len(df)
+            
+            # 2. Rekordbox sample tracks (artist = "rekordbox")
+            df = df[~(df['artist'].fillna('').str.lower() == 'rekordbox')]
+            rekordbox_samples_filtered = before_filter - apple_music_filtered - len(df)
+            
+            # 3. Short tracks (< 5 seconds) - likely loops/samples
+            if 'duration_seconds' in df.columns:
+                df['duration_seconds'] = pd.to_numeric(df['duration_seconds'], errors='coerce')
+                df = df[(df['duration_seconds'].isna()) | (df['duration_seconds'] >= 5)]
+                short_tracks_filtered = before_filter - apple_music_filtered - rekordbox_samples_filtered - len(df)
+            else:
+                short_tracks_filtered = 0
+            
+            total_filtered = before_filter - len(df)
             
             # Remove duplicates - keep first occurrence (Rekordbox takes precedence)
             df['old_full_path'] = df['old_full_path'].fillna('').astype(str)
@@ -1576,8 +1592,15 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(CSV_PATH, index=False)
             print(f"✅ Merged {len(df)} unique tracks into library.csv")
-            if apple_music_filtered > 0:
-                print(f"   (Filtered out {apple_music_filtered} Apple Music streaming tracks)")
+            if total_filtered > 0:
+                print(f"   (Filtered out {total_filtered} unwanted tracks:")
+                if apple_music_filtered > 0:
+                    print(f"    • {apple_music_filtered} Apple Music streaming tracks")
+                if rekordbox_samples_filtered > 0:
+                    print(f"    • {rekordbox_samples_filtered} Rekordbox sample tracks")
+                if short_tracks_filtered > 0:
+                    print(f"    • {short_tracks_filtered} short tracks (< 5 seconds)")
+                print("   )")
             print(f"   (Removed {duplicates_removed} duplicates across Rekordbox/Traktor)")
         else:
             if not CSV_PATH.exists():
