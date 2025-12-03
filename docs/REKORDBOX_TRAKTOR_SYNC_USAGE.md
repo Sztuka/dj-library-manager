@@ -5,6 +5,27 @@
 
 ---
 
+## Prerequisites: DJ Software Configuration
+
+**⚠️ IMPORTANT:** Before using any workflow, configure DJ software settings:
+
+**Rekordbox (Required):**
+
+- ✅ Preferences → Advanced → Browse → **"Write metadata to files"** (Every time)
+- ✅ Analysis → **"Advanced Analysis"** enabled
+- ✅ Key notation set to **"Camelot"** (1A-12B)
+
+**Traktor (Required):**
+
+- ✅ Preferences → File Management → **"Import track metadata from file tags"** ✓
+- ❌ Preferences → File Management → **"Update file tags when changing track metadata"** ✗ (UNCHECK!)
+
+**Why:** Prevents Traktor from overwriting BPM/Key analyzed by Rekordbox/Essentia. Traktor will use its own analysis during playback but won't modify file tags.
+
+See `docs/REKORDBOX_INTEGRATION.md` for detailed explanation.
+
+---
+
 ## Purpose & Scope
 
 ### What This Does

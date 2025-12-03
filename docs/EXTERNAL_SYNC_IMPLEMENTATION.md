@@ -117,6 +117,31 @@ python -m djlib.cli create-path-map \
 
 ## ✅ Phase 3: DJ Software Write Operations (COMPLETED)
 
+### Prerequisites: DJ Software Configuration
+
+**IMPORTANT:** Before running WORKFLOW 0 or WORKFLOW 4, ensure proper settings in both DJ software:
+
+**Rekordbox Settings (Required):**
+
+- ✅ Preferences → Advanced → Browse → **"Write metadata to files"** (Every time)
+- ✅ Analysis → **"Advanced Analysis"** enabled (better BPM/Key detection)
+- ✅ Key notation set to **"Camelot"** (1A-12B format)
+
+**Traktor Settings (Required):**
+
+- ✅ Preferences → File Management → **"Import track metadata from file tags"** ✓
+- ❌ Preferences → File Management → **"Update file tags when changing track metadata"** ✗ (UNCHECK!)
+- ❌ **"Update ID3 tags"** / **"Update other tags"** ✗ (UNCHECK!)
+
+**Why these settings matter:**
+
+- Rekordbox Advanced Analysis provides authoritative BPM/Key values
+- Traktor tag write protection prevents overwriting our curated metadata
+- When Traktor auto-analyzes during playback, it uses its own analysis in memory only
+- File tags remain untouched, enabling bidirectional sync without conflicts
+
+See `docs/REKORDBOX_INTEGRATION.md` for detailed explanation.
+
 ### WORKFLOW 0: Sync DJ Libraries & Tags
 
 **Command:**

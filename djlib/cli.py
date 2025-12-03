@@ -1547,9 +1547,19 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
         if rekordbox_snapshot_path.exists() or traktor_snapshot_path.exists():
             dfs = []
             if rekordbox_snapshot_path.exists():
-                dfs.append(pd.read_csv(rekordbox_snapshot_path))
+                rb_df = pd.read_csv(rekordbox_snapshot_path)
+                # Rename external_track_id to rekordbox_id for Rekordbox rows
+                if 'external_track_id' in rb_df.columns:
+                    rb_df['rekordbox_id'] = rb_df['external_track_id']
+                    rb_df['traktor_id'] = ''
+                dfs.append(rb_df)
             if traktor_snapshot_path.exists():
-                dfs.append(pd.read_csv(traktor_snapshot_path))
+                tr_df = pd.read_csv(traktor_snapshot_path)
+                # Rename external_track_id to traktor_id for Traktor rows
+                if 'external_track_id' in tr_df.columns:
+                    tr_df['traktor_id'] = tr_df['external_track_id']
+                    tr_df['rekordbox_id'] = ''
+                dfs.append(tr_df)
             
             df = pd.concat(dfs, ignore_index=True)
             
@@ -1574,20 +1584,51 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             
             total_filtered = before_filter - len(df)
             
-            # Remove duplicates - keep first occurrence (Rekordbox takes precedence)
+            # Merge duplicates intelligently - combine rekordbox_id + traktor_id for same files
             df['old_full_path'] = df['old_full_path'].fillna('').astype(str)
             df['old_full_path_norm'] = df['old_full_path'].str.strip().map(
                 lambda p: os.path.normpath(p) if p else ''
             )
-            source_priority = {'rekordbox': 0, 'traktor': 1}
-            df['__source_priority'] = df['external_source'].fillna('').str.lower().map(
-                lambda s: source_priority.get(s, 2)
-            )
-            df = df.sort_values('__source_priority')
-            before_dedup = len(df)
-            df = df.drop_duplicates(subset=['old_full_path_norm'], keep='first')
-            duplicates_removed = before_dedup - len(df)
-            df = df.drop(columns=['__source_priority', 'old_full_path_norm'])
+            
+            # Group by normalized path to merge IDs
+            before_merge = len(df)
+            merged_rows = []
+            
+            for path, group in df.groupby('old_full_path_norm'):
+                if path == '':  # Skip empty paths
+                    continue
+                
+                # Prefer Rekordbox data for metadata (BPM, key, etc) but keep both IDs
+                rb_rows = group[group['external_source'] == 'rekordbox']
+                tr_rows = group[group['external_source'] == 'traktor']
+                
+                if len(rb_rows) > 0:
+                    # Use Rekordbox as base (more complete metadata)
+                    base_row = rb_rows.iloc[0].copy()
+                else:
+                    # Use Traktor if no Rekordbox entry
+                    base_row = group.iloc[0].copy()
+                
+                # Merge IDs from both sources
+                rb_id = rb_rows.iloc[0]['rekordbox_id'] if len(rb_rows) > 0 else ''
+                tr_id = tr_rows.iloc[0]['traktor_id'] if len(tr_rows) > 0 else ''
+                
+                base_row['rekordbox_id'] = rb_id
+                base_row['traktor_id'] = tr_id
+                
+                # Set external_source based on what we have
+                if rb_id and tr_id:
+                    base_row['external_source'] = 'rekordbox+traktor'
+                elif rb_id:
+                    base_row['external_source'] = 'rekordbox'
+                elif tr_id:
+                    base_row['external_source'] = 'traktor'
+                
+                merged_rows.append(base_row)
+            
+            df = pd.DataFrame(merged_rows)
+            df = df.drop(columns=['old_full_path_norm'])
+            duplicates_merged = before_merge - len(df)
             
             CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(CSV_PATH, index=False)
@@ -1601,7 +1642,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 if short_tracks_filtered > 0:
                     print(f"    • {short_tracks_filtered} short tracks (< 5 seconds)")
                 print("   )")
-            print(f"   (Removed {duplicates_removed} duplicates across Rekordbox/Traktor)")
+            print(f"   (Merged {duplicates_merged} duplicates - combined Rekordbox + Traktor IDs)")
         else:
             if not CSV_PATH.exists():
                 raise FileNotFoundError("No snapshots imported and library.csv doesn't exist")

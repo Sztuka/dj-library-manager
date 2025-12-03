@@ -253,7 +253,7 @@ Print diagnostic information about Rekordbox DB.
 
 ### Rekordbox Settings
 
-Ensure these settings are enabled:
+**CRITICAL:** These settings are **required** for proper integration:
 
 1. **Preferences → Advanced → Browse**
 
@@ -261,9 +261,57 @@ Ensure these settings are enabled:
    - Frequency: "Every time"
 
 2. **Analysis Settings**
+
    - ☑ "Analyze tracks automatically"
    - ☑ "BPM"
    - ☑ "Key"
+   - ☑ **"Advanced Analysis"** - Uses improved algorithm for complex tracks
+
+3. **Key Notation**
+   - Set to **"Camelot"** format (1A-12B)
+   - Or ensure consistent notation across all workflows
+
+### Traktor Settings
+
+**CRITICAL:** These settings prevent conflicts between DJ software:
+
+1. **Preferences → File Management → Track Metadata**
+
+   - ☑ "Import track metadata from file tags"
+   - ☐ **UNCHECK** "Update file tags when changing track metadata"
+   - ☐ **UNCHECK** "Update ID3 tags" / "Update other tags"
+
+   **Why:** Prevents Traktor from overwriting BPM/Key analyzed by Rekordbox/Essentia
+
+2. **Only Allow Traktor Custom Tags**
+
+   - ☑ "Store cue points in file tags" (optional - these are Traktor-specific)
+   - ☑ "Store beatgrid in file tags" (optional - Traktor-specific)
+
+   **Why:** Traktor-specific tags don't conflict with standard BPM/Key tags
+
+3. **Analysis Behavior**
+
+   **Important:** When Traktor analyzes tracks during playback:
+
+   - It will use **its own BPM/Key analysis** in memory
+   - But will **NOT overwrite** file tags (if configured correctly above)
+   - This means: Rekordbox/Essentia BPM stays in tags, Traktor uses its own for mixing
+
+### Why These Settings Matter
+
+**Rekordbox Advanced Analysis:**
+
+- More accurate BPM detection for complex/variable tempo tracks
+- Better key detection algorithm
+- Essential for reliable metadata
+
+**Traktor Tag Write Protection:**
+
+- Prevents overwriting authoritative BPM/Key from Rekordbox
+- Traktor auto-analyzes during playback but keeps analysis in DB only
+- File tags remain untouched with our curated metadata
+- Enables bidirectional sync without data loss
 
 ### Graceful Degradation
 
