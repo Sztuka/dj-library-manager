@@ -59,16 +59,56 @@ def _focus_version_tokens(title: str, version: str) -> List[str]:
     return tokens
 
 
+def _extract_primary_remixer(version: str) -> str:
+    """Extract main remixer name from version string.
+    'Merchant vs Vidojean & Oliver Loenn City Boys Edit' -> 'Merchant'
+    'Audien Remix' -> 'Audien'
+    """
+    if not version:
+        return ""
+    # Split by common multi-artist separators and take first part
+    for sep in [" vs ", " vs. ", " x ", " X ", " & ", " and ", " feat. ", " feat ", " ft. ", " ft "]:
+        if sep in version:
+            version = version.split(sep)[0].strip()
+            break
+    # Remove common version keywords to get just the name
+    for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix"]:
+        version = re.sub(rf"\b{kw}\b", "", version, flags=re.IGNORECASE)
+    return version.strip()
+
+
 def _candidate_queries(artist: str, title: str, version: str) -> List[str]:
     base = f"{artist} {title}".strip()
     if not base:
         return []
     queries: List[str] = []
+    
+    # Extract primary remixer for shorter queries (avoid 403 on long queries)
+    primary_remixer = _extract_primary_remixer(version)
+    
+    # Strategy 1: artist + primary_remixer (short, often works best)
+    # e.g., "Bastille Merchant" finds "bastille - pompeii (merchant edit)"
+    if primary_remixer and artist:
+        queries.append(f"{artist} {primary_remixer}".strip())
+    
+    # Strategy 2: artist + title + primary_remixer
+    if primary_remixer:
+        queries.append(f"{base} {primary_remixer}".strip())
+    
+    # Strategy 3: full version tokens (may be long and cause 403)
     for tok in _focus_version_tokens(title, version):
-        queries.append(f"{base} {tok}".strip())
+        full_query = f"{base} {tok}".strip()
+        # Skip if query is too long (>100 chars often cause 403)
+        if len(full_query) <= 100:
+            queries.append(full_query)
+    
+    # Strategy 4: base query (finds original, useful fallback)
     queries.append(base)
+    
+    # Strategy 5: generic remix search
     if "remix" not in base.lower():
         queries.append(f"{base} remix")
+    
     # de-dup preserve order
     seen = set()
     return [q for q in queries if q and not (q in seen or seen.add(q))]
@@ -168,9 +208,13 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
 
     try:
         for q in queries:
-            time.sleep(0.4)
+            time.sleep(0.8)  # Increased delay to avoid rate limiting
             _SC_REQUESTS += 1
             r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+            if r.status_code == 403:
+                # Rate limit or client_id issue - wait longer and retry once
+                time.sleep(2.0)
+                r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
             if r.status_code != 200:
                 continue
             data = r.json() or {}
