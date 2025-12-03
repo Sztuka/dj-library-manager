@@ -253,10 +253,14 @@ def import_rekordbox_snapshot(
         file_path = Path(full_path)
         rekordbox_id = str(getattr(content, 'ID', ''))
         artist = getattr(content, 'ArtistName', '')
-        title = getattr(content, 'TrackTitle', '')
+        title = getattr(content, 'Title', '')  # Fixed: was TrackTitle
         
         # Generate our internal track_id
         track_id = generate_track_id(file_path, artist, title)
+        
+        # Extract BPM (stored as int * 100 in Rekordbox)
+        bpm_raw = getattr(content, 'BPM', None)
+        bpm_str = str(bpm_raw / 100.0) if bpm_raw else ''
         
         # Extract metadata
         track_data = {
@@ -266,14 +270,14 @@ def import_rekordbox_snapshot(
             'old_full_path': full_path,
             'artist': artist,
             'title': title,
-            'bpm': str(getattr(content, 'Tempo', '')),
-            'key': getattr(content, 'KeyText', ''),
+            'bpm': bpm_str,  # Fixed: was Tempo, now BPM/100
+            'key': getattr(content, 'KeyName', ''),  # Fixed: was KeyText
             'rating': str(getattr(content, 'Rating', '')),
             'color': str(getattr(content, 'ColorID', '')),
             'duration_seconds': str(getattr(content, 'Length', 0)),  # Track length in seconds
-            'date_added': str(getattr(content, 'DateCreated', '')),
+            'date_added': str(getattr(content, 'StockDate', '')),  # Fixed: was DateCreated (which is metadata date, not import date)
             'last_played': str(getattr(content, 'LastPlayed', '')),
-            'play_count': str(getattr(content, 'PlayCount', '')),
+            'play_count': str(getattr(content, 'DJPlayCount', '')),  # Fixed: was PlayCount
             'snapshot_date': snapshot_date,
         }
         
@@ -404,25 +408,26 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
     
     print(f"📖 Reading Traktor collection: {collection_nml_path}")
     
-    # Parse XML
-    tree = ET.parse(collection_nml_path)
-    root = tree.getroot()
+    # Use traktor-nml-utils API (not raw XML parsing)
+    collection = TraktorCollection(collection_nml_path)
+    if not collection.nml.collection or not collection.nml.collection.entry:
+        raise ValueError("Invalid Traktor collection.nml: no tracks found")
     
     tracks = []
     snapshot_date = datetime.now(timezone.utc).isoformat()
     tracks_to_tag: List[Dict[str, Any]] = []
     
-    # Find all ENTRY elements
-    for entry in root.findall(".//ENTRY"):
+    # Iterate through entries using traktor-nml-utils API
+    for entry in collection.nml.collection.entry:
         # Extract location
-        location = entry.find("LOCATION")
-        if location is None:
+        if not entry.location:
             continue
         
-        dir_path = location.get("DIR", "")
-        file_name = location.get("FILE", "")
+        location = entry.location
+        dir_path = location.dir or ""
+        file_name = location.file or ""
         
-        if not dir_path or not file_name:
+        if not file_name:
             continue
         
         # Reconstruct full path
@@ -434,35 +439,37 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
         while '//' in full_path:
             full_path = full_path.replace('//', '/')
         
-        # Extract metadata from INFO tag
-        info = entry.find("INFO")
-        if info is not None:
-            artist = info.get("ARTIST", "")
-            title = info.get("TITLE", "")
-        else:
-            artist = ""
-            title = ""
+        # Extract metadata using traktor-nml-utils API (not raw XML)
+        artist = entry.artist or ""
+        title = entry.title or ""
         
         # Extract tempo (BPM)
-        tempo = entry.find("TEMPO")
-        if tempo is not None:
-            bpm = tempo.get("BPM", "")
-        else:
-            bpm = ""
+        bpm = ""
+        if entry.tempo:
+            bpm = str(entry.tempo.bpm)
         
-        # Extract musical key
-        musical_key = entry.find("MUSICAL_KEY")
-        if musical_key is not None:
-            key = musical_key.get("VALUE", "")
-        else:
-            key = ""
+        # Extract musical key from INFO.KEY (text like "12B"), not MUSICAL_KEY.VALUE (numeric ID)
+        key = ""
+        if entry.info and entry.info.key:
+            key = entry.info.key
+        
+        # Extract playback stats from INFO tag
+        rating = ""
+        play_count = ""
+        last_played = ""
+        if entry.info:
+            if entry.info.ranking:
+                rating = str(entry.info.ranking)
+            if entry.info.playcount:
+                play_count = str(entry.info.playcount)
+            if entry.info.last_played:
+                last_played = str(entry.info.last_played)
         
         # Count cue points (indicates track usage)
-        cue_points = entry.findall(".//CUE_V2")
-        cue_count = len(cue_points)
+        cue_count = len(entry.cue_v2) if entry.cue_v2 else 0
         
-        # Get track ID - Traktor uses AUDIO_ID (not PRIMARYKEY)
-        traktor_id = entry.get("AUDIO_ID", "") or entry.get("PRIMARYKEY", "")
+        # Get track ID - Traktor uses AUDIO_ID
+        traktor_id = entry.audio_id or ""
         
         # Generate our internal track_id
         file_path_obj = Path(full_path)
@@ -476,7 +483,10 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
             'artist': artist,
             'title': title,
             'bpm': bpm,
-            'key': key,
+            'key': key,  # Fixed: now uses INFO.KEY (12B) not MUSICAL_KEY.VALUE (16)
+            'rating': rating,  # NEW: Traktor ranking (0-255)
+            'play_count': play_count,  # NEW: play count
+            'last_played': last_played,  # NEW: last played date
             'cue_count': str(cue_count),
             'snapshot_date': snapshot_date,
         }
@@ -927,11 +937,16 @@ def _build_traktor_entry(
     modified_date: str,
     modified_time: int,
 ) -> Entrytype:
+    # Build INFO tag with metadata
+    key_value = track.get('key') or track.get('key_camelot')
     info = Infotype(
         import_date=modified_date,
         comment=track.get('comment'),
         genre=track.get('genre'),
+        key=key_value,  # Store key as text (12B, 5A, etc) in INFO.KEY
     )
+    
+    # Build TEMPO tag with BPM
     tempo = None
     bpm_value = track.get('bpm')
     if bpm_value is not None:
@@ -941,16 +956,16 @@ def _build_traktor_entry(
             bpm_float = None
         if bpm_float is not None:
             tempo = Tempotype(bpm=bpm_float, bpm_quality=100.0)
-    musical_key = None
-    key_value = track.get('key') or track.get('key_camelot')
-    if key_value is not None:
-        musical_key = MusicalKeytype(value_attribute=str(key_value))
+    
+    # Note: We do NOT set musical_key.value_attribute (numeric ID)
+    # Traktor will auto-generate it from info.key text when needed
+    
     return Entrytype(
         location=Locationtype(dir=dir_attr, file=file_path.name, volume=volume, volumeid=volume_id),
         modification_info=ModificationInfotype(author_type='user'),
         info=info,
         tempo=tempo,
-        musical_key=musical_key,
+        musical_key=None,  # Let Traktor generate numeric ID from info.key
         modified_date=modified_date,
         modified_time=modified_time,
         audio_id=traktor_id,
