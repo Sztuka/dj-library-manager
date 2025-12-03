@@ -1678,9 +1678,10 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     tags_skipped += 1
                 elif status == 'error':
                     tags_errors += 1
-                    filename, error = result
-                    if tags_errors <= 3:  # Show first 3 errors
-                        print(f"  ⚠️  Failed: {filename}: {error}")
+                    if result:  # result is tuple (filename, error)
+                        filename, error = result
+                        if tags_errors <= 3:  # Show first 3 errors
+                            print(f"  ⚠️  Failed: {filename}: {error}")
         
         print()
         print(f"✅ Tags written: {tags_written}")
