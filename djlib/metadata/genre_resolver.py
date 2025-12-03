@@ -168,7 +168,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # Last.fm (stronger influence to reflect community tags importance)
     # Zwiększona waga (podniesiona z 4.0 → 6.0) aby Last.fm częściej dominowało w wynikach przy szerokim zestawie tagów.
     # Reduced weight for remixes (LFM returns data for original track, not remix)
-    lfm_w = 3.0 if is_remix else 6.0
+    # Further reduced 3.0 → 1.5 to prevent high-playcount indie/pop tags from dominating remix-specific genres
+    lfm_w = 1.5 if is_remix else 6.0
     tags_lfm = lastfm.top_tags(artist, title)
     if tags_lfm:
         local: Dict[str, float] = {}
