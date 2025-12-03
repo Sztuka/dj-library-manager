@@ -1605,6 +1605,16 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 if len(rb_rows) > 0:
                     # Use Rekordbox as base (more complete metadata)
                     base_row = rb_rows.iloc[0].copy()
+                    
+                    # Smart rating merge: prefer Rekordbox, but use Traktor if RB empty
+                    if len(tr_rows) > 0:
+                        rb_rating = float(base_row.get('rating', 0) or 0)
+                        tr_rating = float(tr_rows.iloc[0].get('rating', 0) or 0)
+                        
+                        if rb_rating == 0 and tr_rating > 0:
+                            # Rekordbox has no rating, use Traktor's
+                            base_row['rating'] = tr_rating
+                        # else: Rekordbox has rating (or both empty), keep Rekordbox
                 else:
                     # Use Traktor if no Rekordbox entry
                     base_row = group.iloc[0].copy()

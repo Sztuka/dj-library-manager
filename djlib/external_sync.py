@@ -63,6 +63,71 @@ from djlib.djlib_tags import (
 )
 
 
+# ============ RATING CONVERSION HELPERS ============
+
+def traktor_rating_to_stars(traktor_ranking: int) -> int:
+    """
+    Convert Traktor ranking (0-255) to star rating (0-5).
+    
+    Traktor scale: 0=unrated, 51=1★, 102=2★, 153=3★, 204=4★, 255=5★
+    
+    Args:
+        traktor_ranking: Traktor INFO.RANKING value (0-255)
+    
+    Returns:
+        Star rating 0-5
+    """
+    if traktor_ranking == 0:
+        return 0
+    # Round to nearest star: 0-25=0★, 26-76=1★, 77-127=2★, etc.
+    return min(5, max(0, round(traktor_ranking / 51.0)))
+
+
+def stars_to_traktor_rating(stars: int) -> int:
+    """
+    Convert star rating (0-5) to Traktor ranking (0-255).
+    
+    Args:
+        stars: Star rating 0-5
+    
+    Returns:
+        Traktor INFO.RANKING value (0-255)
+    """
+    if stars == 0:
+        return 0
+    return min(255, max(0, stars * 51))
+
+
+def rekordbox_rating_to_stars(rekordbox_rating: int) -> int:
+    """
+    Convert Rekordbox rating to star rating.
+    
+    Rekordbox already uses 0-5 scale, so this is identity function.
+    
+    Args:
+        rekordbox_rating: Rekordbox Rating field (0-5)
+    
+    Returns:
+        Star rating 0-5
+    """
+    return min(5, max(0, rekordbox_rating))
+
+
+def stars_to_rekordbox_rating(stars: int) -> int:
+    """
+    Convert star rating to Rekordbox rating.
+    
+    Rekordbox already uses 0-5 scale, so this is identity function.
+    
+    Args:
+        stars: Star rating 0-5
+    
+    Returns:
+        Rekordbox Rating value (0-5)
+    """
+    return min(5, max(0, stars))
+
+
 # ============ HELPER: GET DJ SOFTWARE TRACK IDS ============
 
 def get_rekordbox_track_ids() -> Dict[Path, str]:
@@ -459,7 +524,9 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
         last_played = ""
         if entry.info:
             if entry.info.ranking:
-                rating = str(entry.info.ranking)
+                # Convert Traktor ranking (0-255) to stars (0-5)
+                stars = traktor_rating_to_stars(entry.info.ranking)
+                rating = str(stars)
             if entry.info.playcount:
                 play_count = str(entry.info.playcount)
             if entry.info.last_played:
