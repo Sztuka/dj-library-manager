@@ -730,6 +730,15 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             r["artist"] = r["artist_suggest"]
         if not (r.get("title") or "").strip() and (r.get("title_suggest") or "").strip():
             r["title"] = r["title_suggest"]
+        
+        # Always copy year_suggest to year (overwrite if year_suggest has value)
+        year_suggest = (r.get("year_suggest") or "").strip()
+        if year_suggest:
+            current_year = (r.get("year") or "").strip()
+            if current_year != year_suggest:
+                r["year"] = year_suggest
+                any_change = True
+        
         processed += 1
         status_doc["rows_processed"] = processed
         status_doc["updated"] = changed
