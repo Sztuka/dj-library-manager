@@ -37,7 +37,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("artist_suggest", hidden=True, width=24, locked=True),
     ColumnSpec("title_suggest", hidden=True, width=24, locked=True),
     ColumnSpec("version_suggest", hidden=True, width=20, locked=True),
-    ColumnSpec("genre_suggest", hidden=True, width=24, locked=True),
+    ColumnSpec("genre_suggest", hidden=False, width=24, locked=True),
     ColumnSpec("album_suggest", hidden=False, width=32, locked=True),
     ColumnSpec("year_suggest", hidden=False, width=12, locked=True),
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
@@ -55,6 +55,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("version_info", width=42),
     ColumnSpec("year", width=10),
     ColumnSpec("genre", width=24),  # User-selected genre (dropdown from genres.yml)
+    ColumnSpec("genre_mapping_status", width=18, locked=True),  # "OK" or "UNMAPPED"
     ColumnSpec("status", width=12),  # accept / reject / review
     ColumnSpec("destination", width=14),  # library / reject / archive
     ColumnSpec("must_play", width=14),
@@ -231,6 +232,11 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
                 curr_key = (data.get("key_camelot", "") or "").strip()
                 if orig_key and curr_key and orig_key != curr_key:
                     use_red = True
+            elif spec.name == "genre_mapping_status":
+                # Highlight UNMAPPED in orange
+                if cell_value == "UNMAPPED":
+                    cell.fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+                    cell.font = Font(bold=True, color="000000")
             
             # Apply protection to locked columns
             if spec.locked:

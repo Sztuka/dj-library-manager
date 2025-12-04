@@ -735,7 +735,36 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         status_doc["updated"] = changed
         status_doc["last_file"] = str(p)
         _flush_status()
-    if changed:
+    
+    # Auto-map genre_suggest -> genre using genres.yml
+    from djlib.genre_mapper import map_genre
+    genre_mapped = 0
+    genre_unmapped = []
+    for r in rows:
+        genre_suggest = (r.get("genre_suggest") or "").strip()
+        if not genre_suggest:
+            continue
+        
+        current_genre = (r.get("genre") or "").strip()
+        mapped_genre = map_genre(genre_suggest)
+        
+        if mapped_genre:
+            # Override genre if: force_genres flag, or no current genre, or mapped differs from current
+            should_override = force_genres or not current_genre or current_genre != mapped_genre
+            if should_override:
+                r["genre"] = mapped_genre
+                r["genre_mapping_status"] = "OK"
+                genre_mapped += 1
+                changed += 1  # Count genre mapping as change
+            else:
+                r["genre_mapping_status"] = "OK"
+        else:
+            # Mark as UNMAPPED for reporting
+            r["genre_mapping_status"] = "UNMAPPED"
+            file_path = r.get("file_path", "")
+            genre_unmapped.append((file_path, genre_suggest))
+    
+    if changed or genre_mapped or genre_unmapped:
         _save_unsorted(rows)
     # Oblicz źródła użycia na podstawie wypełnionych kolumn per-source
     mb_cnt = lfm_cnt = sc_cnt = 0
@@ -766,6 +795,21 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     # Short diagnostics
     if total:
         print(f"   → genres set — MB:{mb_set}, LFM:{lfm_set}")
+    if genre_mapped > 0:
+        print(f"🎵 Genre auto-mapped: {genre_mapped} tracks")
+    if genre_unmapped:
+        print(f"⚠️  Genre unmapped ({len(genre_unmapped)} tracks) - need synonym mapping:")
+        # Group by genre_suggest to show unique unmapped genres
+        from collections import Counter
+        unmapped_genres = Counter([g for _, g in genre_unmapped])
+        for genre, count in unmapped_genres.most_common():
+            print(f"     • '{genre}' ({count} tracks)")
+        print(f"   📋 Files with unmapped genres:")
+        for file_path, genre_suggest in genre_unmapped[:10]:  # Show first 10
+            filename = Path(file_path).name if file_path else "?"
+            print(f"      - {filename}: '{genre_suggest}'")
+        if len(genre_unmapped) > 10:
+            print(f"      ... and {len(genre_unmapped) - 10} more")
     if fetch_covers:
         print(f"🎨 Okładki: added={covers_added}, skipped={covers_skipped}, failed={covers_failed}")
     if not _lfm_key_present:
