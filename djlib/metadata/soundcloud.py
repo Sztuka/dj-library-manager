@@ -239,6 +239,51 @@ def track_tags(artist: str, title: str, version: str = "") -> Dict[str, List[str
         return {}
     return {"genre": genres[:1], "tags": genres}
 
+
+def get_track_year(artist: str, title: str, version: str = "") -> Optional[str]:
+    """Get upload year from SoundCloud for a track (especially remixes/edits).
+    
+    Returns year (e.g., "2024") from created_at field, or None if not found.
+    """
+    cid = get_valid_client_id()
+    if not cid:
+        return None
+    
+    queries = _candidate_queries(artist, title, version)
+    if not queries:
+        return None
+    
+    try:
+        global _SC_REQUESTS
+        # Try first query only (most specific)
+        q = queries[0]
+        time.sleep(0.8)
+        _SC_REQUESTS += 1
+        r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+        if r.status_code == 403:
+            time.sleep(2.0)
+            r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        
+        data = r.json() or {}
+        items = (data.get("collection") or [])[:3]
+        
+        # Try to find best matching track
+        for item in items:
+            created_at = item.get("created_at")
+            if created_at:
+                # created_at format: "2024-02-04T10:30:00Z"
+                try:
+                    year = created_at[:4]
+                    if year.isdigit() and len(year) == 4:
+                        return year
+                except Exception:
+                    continue
+        return None
+    except Exception:
+        return None
+
 def client_id_health() -> Dict[str, str]:
     """Validate client_id by performing a lightweight public search request.
     Returns dict with status: ok|invalid|missing|error|rate-limit and message.

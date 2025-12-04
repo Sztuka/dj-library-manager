@@ -52,6 +52,11 @@ def _search_recordings(q: str, limit: int = 5) -> dict:
     return musicbrainzngs.search_recordings(query=q, limit=limit)
 
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
+def _search_release_groups(q: str, limit: int = 5) -> dict:
+    _throttle_mb()
+    return musicbrainzngs.search_release_groups(query=q, limit=limit)
+
+@retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_recording_by_id(rid: str) -> dict:
     _throttle_mb()
     return musicbrainzngs.get_recording_by_id(rid, includes=["tags","artists","releases"])  # type: ignore[arg-type]
@@ -94,9 +99,29 @@ def search_recording(artist: str, title: str, duration: Optional[int] = None) ->
                 length_ms = None
             ac = _join_artist_credit(rec.get("artist-credit") or [])
             score = int(rec.get("ext:score", 0))
+            # Find earliest release-group (original release, not live/compilation/remaster)
             rgid = None
             if rec.get("release-list"):
-                rgid = (rec.get("release-list")[0] or {}).get("release-group", {}).get("id")
+                releases = rec.get("release-list") or []
+                # Filter out live/compilation releases, prefer original studio releases
+                studio_releases = [
+                    r for r in releases
+                    if r.get("release-group", {}).get("primary-type") in ["Single", "Album", "EP"]
+                ]
+                candidates = studio_releases if studio_releases else releases
+                # Sort by date (earliest first)
+                dated_releases = [
+                    (r, r.get("date", "9999"))
+                    for r in candidates
+                    if r.get("date")
+                ]
+                if dated_releases:
+                    dated_releases.sort(key=lambda x: x[1])
+                    earliest = dated_releases[0][0]
+                    rgid = earliest.get("release-group", {}).get("id")
+                elif candidates:
+                    # Fallback: use first if no dates available
+                    rgid = candidates[0].get("release-group", {}).get("id")
             aid = None
             if rec.get("artist-credit"):
                 ent = (rec.get("artist-credit")[0] or {}).get("artist") or {}
@@ -175,3 +200,36 @@ def get_recording_genres(recording_id: str, *, release_group_id: Optional[str] =
     seen = set()
     uniq = [g for g in genres if not (g.lower() in seen or seen.add(g.lower()))]
     return uniq
+
+
+def get_original_release_year(artist: str, title: str) -> Optional[str]:
+    """Get original release year using release-group search."""
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist and not title:
+        return None
+    q_parts: List[str] = []
+    if artist:
+        q_parts.append(f'artist:"{artist}"')
+    if title:
+        q_parts.append(f'releasegroup:"{title}"')
+    q = " AND ".join(q_parts)
+    try:
+        data = _search_release_groups(q, limit=10)
+        rg_list = (data or {}).get("release-group-list") or []
+        # Filter for Single/Album/EP (not Live/Compilation)
+        studio_rgs = [
+            rg for rg in rg_list
+            if rg.get("primary-type") in ["Single", "Album", "EP"]
+        ]
+        candidates = studio_rgs if studio_rgs else rg_list
+        # Sort by score and take best match
+        if candidates:
+            candidates.sort(key=lambda x: int(x.get("ext:score", 0)), reverse=True)
+            best = candidates[0]
+            first_release = best.get("first-release-date", "")
+            if first_release and len(first_release) >= 4:
+                return first_release[:4]
+    except Exception:
+        pass
+    return None

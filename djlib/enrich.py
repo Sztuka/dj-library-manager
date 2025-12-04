@@ -394,6 +394,18 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
         album_from_tags = tags.get("album", "").strip()
         year_from_online = ""
         album_from_online = ""
+        
+        # For ORIGINALS (no version): use MusicBrainz release-group for accurate first release date
+        # For REMIXES/EDITS (has version): only use Beatport if it finds the specific remix
+        # This prevents assigning original's year to remixes (misleading)
+        if not version:
+            try:
+                mb_year = mb_client.get_original_release_year(artist, title)
+                if mb_year:
+                    year_from_online = mb_year
+            except Exception:
+                pass
+        
         try:
             from djlib.metadata.genre_resolver import resolve as resolve_genres
             from djlib.metadata import lastfm, beatport
@@ -405,18 +417,59 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                 disable_beatport=False
             )
             
-            # Try Last.fm first for year and album (better metadata quality)
-            try:
-                lastfm_info = lastfm.track_info(artist, title)
-                if lastfm_info.get("year"):
-                    year_from_online = lastfm_info["year"]
-                if lastfm_info.get("album"):
-                    album_from_online = lastfm_info["album"]
-            except Exception:
-                pass
+            # For remixes: try Beatport first (might have specific remix release date)
+            if version:
+                try:
+                    # Try with version in title for better matching
+                    full_title = f"{title} {version}" if version else title
+                    beatport_data = beatport.search_track(artist, full_title, duration_s=dur_s)
+                    if beatport_data:
+                        # Verify Beatport actually found the remix, not just the original
+                        bp_title = beatport_data.get("title", "").lower()
+                        bp_version = (beatport_data.get("version") or "").lower()
+                        version_lower = version.lower()
+                        # Check if returned track matches our version
+                        version_found = (
+                            version_lower in bp_title or
+                            version_lower in bp_version or
+                            any(word in bp_version for word in version_lower.split() if len(word) > 3)
+                        )
+                        if version_found:
+                            release_date = beatport_data.get("release_date")
+                            if release_date and release_date.strip():
+                                year_from_online = release_date.split("-")[0]
+                            album_name = beatport_data.get("album")
+                            if album_name and album_name.strip():
+                                album_from_online = album_name
+                        # If version not found, Beatport returned original - ignore year
+                except Exception:
+                    pass
+                
+                # If Beatport didn't find the remix, try SoundCloud for upload year
+                if not year_from_online:
+                    try:
+                        from djlib.metadata import soundcloud
+                        sc_year = soundcloud.get_track_year(artist, title, version)
+                        if sc_year:
+                            year_from_online = sc_year
+                    except Exception:
+                        pass
             
-            # Fallback to Beatport if Last.fm didn't provide
+            # Try Last.fm for year/album if we don't have them yet
             if not year_from_online or not album_from_online:
+                try:
+                    lastfm_info = lastfm.track_info(artist, title)
+                    if not year_from_online and lastfm_info.get("year"):
+                        # For remixes, Last.fm returns original year - skip it
+                        if not version:
+                            year_from_online = lastfm_info["year"]
+                    if not album_from_online and lastfm_info.get("album"):
+                        album_from_online = lastfm_info["album"]
+                except Exception:
+                    pass
+            
+            # Fallback to Beatport for originals if Last.fm didn't provide
+            if not version and (not year_from_online or not album_from_online):
                 try:
                     beatport_data = beatport.search_track(artist, title, duration_s=dur_s)
                     if beatport_data:
@@ -552,10 +605,18 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
         out_title = match.title or title
         duration = _format_duration(match.length_ms) if isinstance(match.length_ms, int) else ""
 
-        # album i rok – spróbuj z release-group (title, first-release-date)
+        # album i rok – najpierw spróbuj z release-group search (najbardziej wiarygodne dla roku)
         album = ""
         year = ""
-        if match.release_group_id:
+        try:
+            year_from_rg_search = mb_client.get_original_release_year(out_artist, out_title)
+            if year_from_rg_search:
+                year = year_from_rg_search
+        except Exception:
+            pass
+        
+        # Jeśli nie udało się przez RG search, spróbuj z release-group-id z recording
+        if not year and match.release_group_id:
             try:
                 rg = mb_client._get_release_group_by_id(match.release_group_id)
                 ent = (rg or {}).get("release-group", {})
@@ -570,6 +631,15 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
                         first_release_date = releases[0].get("date", "")
                         if first_release_date and first_release_date.strip():
                             year = first_release_date.split("-")[0]
+            except Exception:
+                pass
+        
+        # Pobierz album z RG jeśli jeszcze nie mamy
+        if not album and match.release_group_id:
+            try:
+                rg = mb_client._get_release_group_by_id(match.release_group_id)
+                ent = (rg or {}).get("release-group", {})
+                album = ent.get("title", "")
             except Exception:
                 pass
 
@@ -648,8 +718,21 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
         out_title = rec.get("title") or best_title
         releases = rec.get("releases") or []
         album = releases[0].get("title") if releases else ""
-        date = releases[0].get("date") if releases else ""
-        year = (date or "").split("-")[0] if date else ""
+        
+        # Get original release year using release-group search (more reliable)
+        year = ""
+        try:
+            year_from_rg = mb_client.get_original_release_year(out_artist, out_title)
+            if year_from_rg:
+                year = year_from_rg
+        except Exception:
+            pass
+        
+        # Fallback: use first release date if RG search didn't work
+        if not year:
+            date = releases[0].get("date") if releases else ""
+            year = (date or "").split("-")[0] if date else ""
+        
         length_ms = rec.get("length")
         duration = _format_duration(length_ms if isinstance(length_ms, int) else None)
         # Preferuj pełny pipeline z klienta: zebrać genres/tags także z RG i Artist
