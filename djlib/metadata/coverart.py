@@ -1,11 +1,19 @@
 """Album artwork fetching with multi-source fallback.
 
-Priority chain (by quality):
+Priority chain:
+
+For ORIGINALS (no version):
 1. MusicBrainz Cover Art Archive (500px front cover, best for general music)
 2. Beatport dynamic URI (1400x1400, gold standard for EDM)
 3. Last.fm album.getInfo (300x300, broad coverage)
-4. SoundCloud track artwork (500x500, for niche/unreleased tracks)
+4. SoundCloud track artwork (500x500, last resort)
 
+For REMIXES (has version):
+1. Beatport dynamic URI (1400x1400, if found specific remix)
+2. SoundCloud track artwork (500x500, PRIORITY for remixes - like year logic)
+3. Last.fm album.getInfo (300x300, fallback)
+
+Skips MusicBrainz for remixes (returns original cover, not remix).
 Only adds artwork if APIC frame is missing - never overwrites existing covers.
 """
 from __future__ import annotations
@@ -239,11 +247,18 @@ def fetch_cover_art(
 ) -> Tuple[bool, str]:
     """Fetch and add cover art to MP3 file using multi-source fallback.
     
-    Priority chain (by quality):
+    Priority chain:
+    
+    For ORIGINALS (no version):
     1. MusicBrainz Cover Art Archive (500px)
-    2. Beatport dynamic URI (1400x1400 - highest quality)
+    2. Beatport dynamic URI (1400x1400 - highest quality for EDM)
     3. Last.fm album.getInfo (300x300)
     4. SoundCloud track artwork (500x500)
+    
+    For REMIXES (has version):
+    1. Beatport dynamic URI (1400x1400 - if found specific remix)
+    2. SoundCloud track artwork (500x500 - priority for remixes!)
+    3. Last.fm album.getInfo (300x300 - fallback)
     
     Args:
         filepath: Path to MP3 file
@@ -251,7 +266,7 @@ def fetch_cover_art(
         album: Album name (for Last.fm)
         title: Track title (for SoundCloud)
         version: Track version/remix info (for SoundCloud)
-        release_group_id: MusicBrainz release group ID (optional)
+        release_group_id: MusicBrainz release group ID (optional, ignored for remixes)
         beatport_artwork_url: Beatport dynamic URI (optional, best quality for EDM)
         lastfm_api_key: Last.fm API key (optional)
         soundcloud_client_id: SoundCloud client ID (optional)
@@ -265,8 +280,8 @@ def fetch_cover_art(
     if skip_if_exists and has_artwork(filepath):
         return (True, 'exists')
     
-    # Try MusicBrainz Cover Art Archive (first for general music)
-    if release_group_id:
+    # For ORIGINALS: try MusicBrainz first (skip for remixes - returns original cover)
+    if not version and release_group_id:
         result = fetch_from_musicbrainz(release_group_id)
         if result:
             image_data, mime_type = result
@@ -274,12 +289,21 @@ def fetch_cover_art(
                 return (True, 'mb')
     
     # Try Beatport (best quality for EDM - 1400x1400)
+    # For remixes: CLI already verified this is the actual remix, not original
     if not disable_beatport and beatport_artwork_url:
         result = fetch_from_beatport(beatport_artwork_url)
         if result:
             image_data, mime_type = result
             if add_artwork(filepath, image_data, mime_type):
                 return (True, 'beatport')
+    
+    # For REMIXES: prioritize SoundCloud (like year logic - high weight for remixes)
+    if version and soundcloud_client_id:
+        result = fetch_from_soundcloud(artist, title, version, soundcloud_client_id)
+        if result:
+            image_data, mime_type = result
+            if add_artwork(filepath, image_data, mime_type):
+                return (True, 'soundcloud')
     
     # Try Last.fm
     if lastfm_api_key and album:
@@ -289,8 +313,8 @@ def fetch_cover_art(
             if add_artwork(filepath, image_data, mime_type):
                 return (True, 'lastfm')
     
-    # Try SoundCloud
-    if soundcloud_client_id:
+    # For ORIGINALS: try SoundCloud as last resort
+    if not version and soundcloud_client_id:
         result = fetch_from_soundcloud(artist, title, version, soundcloud_client_id)
         if result:
             image_data, mime_type = result

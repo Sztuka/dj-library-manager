@@ -695,9 +695,13 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 version = (r.get("version_suggest") or r.get("version_info") or "").strip()
                 
                 # Try to get MusicBrainz release_group_id from online enrichment
-                release_group_id = online.get("release_group_id") if online else None
+                # Skip MusicBrainz for remixes (returns original cover, not remix)
+                release_group_id = None
+                if not version and online:
+                    release_group_id = online.get("release_group_id")
                 
                 # Try to get Beatport artwork URL
+                # For remixes: search with version in title and verify match (like year logic)
                 beatport_artwork_url = None
                 if not getattr(args, "skip_beatport", False):
                     try:
@@ -710,9 +714,30 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                                     dur_s = int(dur_parts[0]) * 60 + int(dur_parts[1])
                             except Exception:
                                 pass
-                        bp_result = bp_search(artist, title, dur_s)
+                        
+                        # For remixes, include version in search to find specific remix
+                        search_title = title
+                        if version:
+                            search_title = f"{title} {version}"
+                        
+                        bp_result = bp_search(artist, search_title, dur_s)
                         if bp_result:
-                            beatport_artwork_url = bp_result.get("artwork_url")
+                            # For remixes: verify Beatport found the actual remix, not original
+                            if version:
+                                bp_title = bp_result.get("title", "").lower()
+                                bp_version = (bp_result.get("version") or "").lower()
+                                version_lower = version.lower()
+                                version_found = (
+                                    version_lower in bp_title or
+                                    version_lower in bp_version or
+                                    any(word in bp_version for word in version_lower.split() if len(word) > 3)
+                                )
+                                if version_found:
+                                    beatport_artwork_url = bp_result.get("artwork_url")
+                                # If version not found, ignore - Beatport returned original
+                            else:
+                                # For originals, always use artwork
+                                beatport_artwork_url = bp_result.get("artwork_url")
                     except Exception:
                         pass
                 
