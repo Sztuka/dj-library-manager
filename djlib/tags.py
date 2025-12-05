@@ -105,31 +105,49 @@ def read_tags(path: Path) -> Dict[str, str]:
         raw = MutFile(str(path))
         if raw and getattr(raw, "tags", None):
             raw_tags = raw.tags
-            # Try various date/year tag names (Vorbis comments for FLAC, ID3 for MP3)
-            year_candidates = [
-                _first_str(raw_tags.get("originaldate")),  # Original release date (priority)
-                _first_str(raw_tags.get("year")),
-                _first_str(raw_tags.get("date")),
-                _first_str(raw_tags.get("releasedate")),
-            ]
-            for candidate in year_candidates:
-                candidate = (candidate or "").strip()
-                if candidate:
-                    # Extract year from formats: "1958", "1958-03-15", "1958/03/15"
-                    year = candidate.split("-")[0].split("/")[0][:4]
-                    if year.isdigit() and len(year) == 4:
-                        break
             
-            # Read album from raw tags
-            album_candidates = [
-                _first_str(raw_tags.get("album")),
-                _first_str(raw_tags.get("TALB")),  # ID3v2 album tag
-            ]
-            for candidate in album_candidates:
-                candidate = (candidate or "").strip()
-                if candidate:
-                    album = candidate
-                    break
+            # For ID3 tags (MP3), read TDRC frame directly
+            if hasattr(raw_tags, '__getitem__') and 'TDRC' in raw_tags:
+                tdrc = raw_tags['TDRC']
+                if tdrc and hasattr(tdrc, 'text') and tdrc.text:
+                    year_text = str(tdrc.text[0])
+                    year = year_text.split("-")[0].split("/")[0][:4]
+                    if year.isdigit() and len(year) == 4:
+                        pass  # year is set
+                    else:
+                        year = ""
+            
+            # Fallback: Try various date/year tag names (Vorbis comments for FLAC)
+            if not year:
+                year_candidates = [
+                    _first_str(raw_tags.get("originaldate")),  # Original release date (priority)
+                    _first_str(raw_tags.get("year")),
+                    _first_str(raw_tags.get("date")),
+                    _first_str(raw_tags.get("releasedate")),
+                ]
+                for candidate in year_candidates:
+                    candidate = (candidate or "").strip()
+                    if candidate:
+                        # Extract year from formats: "1958", "1958-03-15", "1958/03/15"
+                        year = candidate.split("-")[0].split("/")[0][:4]
+                        if year.isdigit() and len(year) == 4:
+                            break
+            
+            # Read album from raw tags (ID3 TALB frame or Vorbis album tag)
+            if hasattr(raw_tags, '__getitem__') and 'TALB' in raw_tags:
+                talb = raw_tags['TALB']
+                if talb and hasattr(talb, 'text') and talb.text:
+                    album = str(talb.text[0]).strip()
+            
+            if not album:
+                album_candidates = [
+                    _first_str(raw_tags.get("album")),
+                ]
+                for candidate in album_candidates:
+                    candidate = (candidate or "").strip()
+                    if candidate:
+                        album = candidate
+                        break
     except Exception:
         pass
 
@@ -200,34 +218,9 @@ def write_tags(path: Path, updates: Dict[str, str]) -> None:
     Zapisz metadane do pliku audio.
     Obsługiwane klucze: artist, title, bpm, key_camelot, genre, comment, year, album
     """
-    # First handle year and album with raw tags (must be done before easy mode)
-    if "year" in updates and updates["year"]:
-        year_val = updates["year"].strip()
-        if year_val:
-            try:
-                raw = MutFile(str(path))
-                if raw and hasattr(raw, 'tags') and raw.tags:
-                    # FLAC/Vorbis and most formats support 'date' as Vorbis comment
-                    if hasattr(raw.tags, '__setitem__'):
-                        raw.tags["date"] = [year_val]  # Vorbis comments need list
-                        raw.tags["year"] = [year_val]  # Compatibility
-                        raw.save()
-            except Exception as e:
-                pass  # Ignore errors
+    # Handle all tags in one operation to avoid multiple saves
+    print(f"   DEBUG write_tags({path.name}): updates = {updates}")
     
-    if "album" in updates and updates["album"]:
-        album_val = updates["album"].strip()
-        if album_val:
-            try:
-                raw = MutFile(str(path))
-                if raw and hasattr(raw, 'tags') and raw.tags:
-                    if hasattr(raw.tags, '__setitem__'):
-                        raw.tags["album"] = [album_val]  # Vorbis comments need list
-                        raw.save()
-            except Exception as e:
-                pass  # Ignore errors
-    
-    # Now handle other tags with easy mode
     f = MutFile(str(path), easy=True)
     if f is None:
         raise ValueError(f"Nie można otworzyć pliku audio: {path}")
@@ -244,39 +237,44 @@ def write_tags(path: Path, updates: Dict[str, str]) -> None:
         "bpm": "bpm",
         "genre": "genre",
         "comment": "comment",
+        "year": "date",  # Use 'date' for year in easy mode
+        "album": "album",
     }
     
     for our_key, mutagen_key in mapping.items():
         if our_key in updates:
-            tags[mutagen_key] = updates[our_key]
+            val = updates[our_key]
+            if val or our_key in ["album", "year"]:  # Always write year/album, even if empty (to clear)
+                print(f"      Setting {mutagen_key} = {repr(val)}")
+                tags[mutagen_key] = val
     
     # Specjalna obsługa key_camelot -> initialkey (raw tag dla MP3/ID3)
     if "key_camelot" in updates:
         key_val = updates["key_camelot"]
         if key_val:
-            # Spróbuj raw tags dla MP3
-            raw = MutFile(str(path))
-            if raw and hasattr(raw, 'tags') and raw.tags:
-                # ID3 TKEY
-                try:
-                    from mutagen.id3 import TKEY as ID3TKEY
-                    raw.tags.add(ID3TKEY(encoding=3, text=key_val))
-                    raw.save()
-                    return  # Jeśli się udało, zakończ
-                except Exception:
-                    pass
-                # MP4 custom tag
-                try:
-                    if hasattr(raw.tags, 'keys') and any('----:com.apple.iTunes' in k for k in raw.tags.keys()):
-                        raw.tags["----:com.apple.iTunes:initialkey"] = key_val
-                        raw.save()
-                        return
-                except Exception:
-                    pass
             # Fallback: spróbuj easy tags z "key"
             try:
                 tags["key"] = key_val
             except Exception:
                 pass  # ignoruj jeśli nie działa
     
+    # Save all tags at once
+    print(f"      Saving tags to {path.name}...")
     f.save()
+    print(f"      ✅ Tags saved successfully!")
+    
+    # After saving easy tags, handle special cases with raw tags if needed
+    if "key_camelot" in updates and updates["key_camelot"]:
+        key_val = updates["key_camelot"]
+        try:
+            raw = MutFile(str(path))
+            if raw and hasattr(raw, 'tags') and raw.tags:
+                # ID3 TKEY for MP3
+                try:
+                    from mutagen.id3 import TKEY as ID3TKEY
+                    raw.tags.add(ID3TKEY(encoding=3, text=key_val))
+                    raw.save()
+                except Exception:
+                    pass
+        except Exception:
+            pass

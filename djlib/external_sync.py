@@ -167,6 +167,53 @@ def get_rekordbox_track_ids() -> Dict[Path, str]:
         return {}
 
 
+def get_rekordbox_by_track_id() -> Dict[str, tuple[str, Path]]:
+    """
+    Get mapping of our track_id to (rekordbox_id, file_path) by reading custom tags from files in Rekordbox.
+    
+    Returns:
+        Dict[str, tuple[str, Path]]: {track_id: (rekordbox_id, file_path)}
+        Empty dict if Rekordbox not available or no database found.
+    """
+    if not PYREKORDBOX_AVAILABLE:
+        return {}
+    
+    rekordbox_db_path = Path.home() / "Library" / "Pioneer" / "rekordbox" / "master.db"
+    if not rekordbox_db_path.exists():
+        return {}
+    
+    try:
+        assert Rekordbox6Database is not None, "pyrekordbox not available"
+        db = Rekordbox6Database(rekordbox_db_path)
+        mapping: Dict[str, tuple[str, Path]] = {}
+        
+        for content in db.get_content():
+            full_path = getattr(content, 'FolderPath', '').strip()
+            if not full_path:
+                continue
+            
+            file_path = Path(full_path)
+            rekordbox_id = str(getattr(content, 'ID', ''))
+            if not rekordbox_id:
+                continue
+            
+            # Try to read our custom track_id from file (may not exist if moved)
+            # If file doesn't exist at path in DB, we'll still need rekordbox_id to update it
+            try:
+                if file_path.exists():
+                    djlib_tags = read_djlib_tags(file_path)
+                    track_id = djlib_tags.get('track_id', '')
+                    if track_id:
+                        mapping[track_id] = (rekordbox_id, file_path)
+            except Exception:
+                pass  # Skip files with unreadable tags
+        
+        return mapping
+    except Exception as e:
+        print(f"⚠️  Warning: Could not read Rekordbox database: {e}")
+        return {}
+
+
 def get_traktor_track_ids(collection_nml_path: Optional[Path] = None) -> Dict[Path, str]:
     """
     Get mapping of file paths to Traktor AUDIO_IDs from collection.nml.
@@ -204,21 +251,96 @@ def get_traktor_track_ids(collection_nml_path: Optional[Path] = None) -> Dict[Pa
             
             dir_path = location.get("DIR", "")
             file_name = location.get("FILE", "")
+            volume = location.get("VOLUME", "")
             
             if not dir_path or not file_name:
                 continue
             
-            # Reconstruct full path (normalize Traktor format)
-            full_path_raw = str(Path(dir_path) / file_name)
-            full_path = full_path_raw.replace('/:', '/').replace(':/', '/')
-            while '//' in full_path:
-                full_path = full_path.replace('//', '/')
+            # Reconstruct full path from Traktor format
+            # Traktor DIR format: /:<part1>/:part2/:part3/:
+            # Volume info: VOLUME="Macintosh HD" or VOLUME="<external-drive>"
+            parts = [p for p in dir_path.split('/:') if p]
             
-            file_path = Path(full_path)
+            # macOS: /Volumes/<drive>/<rest> or /<root-path>
+            if volume and volume != "Macintosh HD":
+                full_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+            else:
+                full_path = Path("/") / "/".join(parts) / file_name
+            
             traktor_id = entry.get("AUDIO_ID", "") or entry.get("PRIMARYKEY", "")
             
             if traktor_id:
-                mapping[file_path] = traktor_id
+                mapping[full_path] = traktor_id
+        
+        return mapping
+    except Exception as e:
+        print(f"⚠️  Warning: Could not read Traktor collection: {e}")
+        return {}
+
+
+def get_traktor_by_track_id(collection_nml_path: Optional[Path] = None) -> Dict[str, tuple[str, Path]]:
+    """
+    Get mapping of our track_id to (traktor_id, file_path) by reading custom tags from files in Traktor.
+    
+    Args:
+        collection_nml_path: Path to collection.nml. If None, tries default locations.
+    
+    Returns:
+        Dict[str, tuple[str, Path]]: {track_id: (traktor_audio_id, file_path)}
+        Empty dict if collection.nml not found.
+    """
+    # Try default locations if not specified
+    if collection_nml_path is None:
+        docs = Path.home() / "Documents" / "Native Instruments"
+        if docs.exists():
+            for traktor_dir in docs.glob("Traktor*"):
+                nml = traktor_dir / "collection.nml"
+                if nml.exists():
+                    collection_nml_path = nml
+                    break
+    
+    if collection_nml_path is None or not collection_nml_path.exists():
+        return {}
+    
+    try:
+        tree = ET.parse(collection_nml_path)
+        root = tree.getroot()
+        mapping: Dict[str, tuple[str, Path]] = {}
+        
+        for entry in root.findall(".//ENTRY"):
+            location = entry.find("LOCATION")
+            if location is None:
+                continue
+            
+            dir_path = location.get("DIR", "")
+            file_name = location.get("FILE", "")
+            volume = location.get("VOLUME", "")
+            
+            if not dir_path or not file_name:
+                continue
+            
+            # Reconstruct full path
+            parts = [p for p in dir_path.split('/:') if p]
+            if volume and volume != "Macintosh HD":
+                full_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+            else:
+                full_path = Path("/") / "/".join(parts) / file_name
+            
+            if not full_path.exists():
+                continue
+            
+            traktor_id = entry.get("AUDIO_ID", "") or entry.get("PRIMARYKEY", "")
+            if not traktor_id:
+                continue
+            
+            # Read our custom track_id from file
+            try:
+                djlib_tags = read_djlib_tags(full_path)
+                track_id = djlib_tags.get('track_id', '')
+                if track_id:
+                    mapping[track_id] = (traktor_id, full_path)
+            except Exception:
+                pass  # Skip files with unreadable tags
         
         return mapping
     except Exception as e:
@@ -845,6 +967,8 @@ def add_tracks_to_rekordbox(
     
     added_count = 0
     updated_count = 0
+    failed_updates = []
+    failed_adds = []
     
     try:
         for track in tracks:
@@ -862,6 +986,7 @@ def add_tracks_to_rekordbox(
                         rb_id_int = int(rekordbox_id)
                     except (TypeError, ValueError):
                         print(f"⚠️  Invalid Rekordbox ID '{rekordbox_id}' for {file_path.name}")
+                        failed_updates.append(file_path.name)
                         continue
 
                     try:
@@ -869,16 +994,107 @@ def add_tracks_to_rekordbox(
                         if content is None:
                             raise RuntimeError(f"Rekordbox ID {rb_id_int} not found")
 
-                        # update_content_path also refreshes ANLZ metadata; delay commit until we touch FileNameL
-                        db.update_content_path(content, str(file_path), commit=False)
-
+                        # Update path directly without refreshing ANLZ (avoids parsing errors)
+                        old_path = getattr(content, 'FolderPath', '')
+                        if old_path != str(file_path):
+                            content.FolderPath = str(file_path)
+                        
                         file_name_only = file_path.name
                         if getattr(content, "FileNameL", None) != file_name_only:
                             content.FileNameL = file_name_only
+                        
+                        # ✅ AUTO-REFRESH: Update tags in Rekordbox DB
+                        try:
+                            from djlib.tags import read_tags
+                            file_tags = read_tags(file_path)
+                            
+                            # Update Artist (find or create)
+                            if file_tags.get('artist'):
+                                artist_name = file_tags['artist']
+                                artist_obj = db.get_artist(Name=artist_name)
+                                if artist_obj:
+                                    artist_instance = artist_obj.first()
+                                    if artist_instance:
+                                        content.ArtistID = artist_instance.ID
+                                    else:
+                                        # Artist doesn't exist - create it
+                                        new_artist = db.add_artist(name=artist_name)
+                                        if new_artist:
+                                            content.ArtistID = new_artist.ID
+                            
+                            # Update Title
+                            if file_tags.get('title'):
+                                content.Title = file_tags['title']
+                            
+                            # Update Album (clear if empty, or find/create if has value)
+                            album_value = file_tags.get('album', '').strip()
+                            if not album_value:
+                                # Clear album - set to NULL/empty
+                                content.AlbumID = None
+                            else:
+                                # Find or create album
+                                album_obj = db.get_album(Name=album_value)
+                                if album_obj:
+                                    album_instance = album_obj.first()
+                                    if album_instance:
+                                        content.AlbumID = album_instance.ID
+                                    else:
+                                        # Album doesn't exist - create it
+                                        new_album = db.add_album(name=album_value)
+                                        if new_album:
+                                            content.AlbumID = new_album.ID
+                            
+                            # Update Genre (find or create)
+                            if file_tags.get('genre'):
+                                genre_name = file_tags['genre']
+                                genre_obj = db.get_genre(Name=genre_name)
+                                if genre_obj:
+                                    genre_instance = genre_obj.first()
+                                    if genre_instance:
+                                        content.GenreID = genre_instance.ID
+                                    else:
+                                        # Genre doesn't exist - create it
+                                        new_genre = db.add_genre(name=genre_name)
+                                        if new_genre:
+                                            content.GenreID = new_genre.ID
+                            
+                            # Update Key (find existing)
+                            if file_tags.get('key_camelot'):
+                                key_name = file_tags['key_camelot']
+                                key_obj = db.get_key(ScaleName=key_name)
+                                if key_obj:
+                                    key_instance = key_obj.first()
+                                    if key_instance:
+                                        content.KeyID = key_instance.ID
+                            
+                            # Update Year
+                            if file_tags.get('year'):
+                                try:
+                                    year_int = int(file_tags['year'])
+                                    content.ReleaseYear = year_int
+                                except (ValueError, TypeError):
+                                    pass
+                            
+                            # Update BPM
+                            if file_tags.get('bpm'):
+                                try:
+                                    bpm_float = float(file_tags['bpm'])
+                                    content.BPM = bpm_float
+                                except (ValueError, TypeError):
+                                    pass
+                            
+                            # Clear ImagePath (cover art) - Rekordbox will auto-detect from file
+                            content.ImagePath = ""
+                                    
+                        except Exception as tag_err:
+                            print(f"   ⚠️  Could not refresh tags for {file_path.name}: {tag_err}")
 
                         updated_count += 1
                     except Exception as e:
                         print(f"⚠️  Failed to update {file_path.name}: {e}")
+                        failed_updates.append(file_path.name)
+                        # Skip this file but continue with others
+                        continue
             else:
                 # Add new track
                 try:
@@ -888,14 +1104,26 @@ def add_tracks_to_rekordbox(
                         added_count += 1
                 except Exception as e:
                     print(f"⚠️  Failed to add {file_path.name}: {e}")
+                    failed_adds.append(file_path.name)
+                    # Skip this file but continue with others
+                    continue
         
-        # Commit changes
+        # Commit successful updates even if some failed
         db.commit()
         
         if added_count > 0:
             print(f"✅ Added {added_count} new tracks to Rekordbox")
         if updated_count > 0:
             print(f"🔄 Updated {updated_count} existing track paths in Rekordbox")
+        
+        if failed_updates:
+            print(f"⚠️  Failed to update {len(failed_updates)} tracks in Rekordbox")
+            for name in failed_updates:
+                print(f"   - {name}")
+        if failed_adds:
+            print(f"⚠️  Failed to add {len(failed_adds)} tracks to Rekordbox")
+            for name in failed_adds:
+                print(f"   - {name}")
         
     finally:
         db.close()
@@ -1101,9 +1329,25 @@ def _backup_traktor_collection(collection_path: Path) -> Path:
 
 
 def _safe_save_traktor_collection(collection_path: Path, nml_obj: Any) -> None:
+    """Safely save Traktor collection with validation."""
     serializer = XmlSerializer()
-    serialized = serializer.render(nml_obj)
+    
+    try:
+        serialized = serializer.render(nml_obj)
+    except Exception as e:
+        raise RuntimeError(f"Failed to serialize Traktor collection: {e}")
+    
+    # Remove leading whitespace from each line
     serialized = '\n'.join(line.lstrip() for line in serialized.splitlines())
+    
+    # Validate XML is well-formed before writing
+    try:
+        import xml.etree.ElementTree as ET
+        ET.fromstring(serialized)
+    except ET.ParseError as e:
+        raise RuntimeError(f"Generated invalid XML: {e}")
+    
+    # Write to temp file first
     with tempfile.NamedTemporaryFile(
         'w',
         dir=str(collection_path.parent),
@@ -1113,6 +1357,18 @@ def _safe_save_traktor_collection(collection_path: Path, nml_obj: Any) -> None:
     ) as tmp:
         tmp.write(serialized)
         temp_path = Path(tmp.name)
+    
+    # Validate temp file is readable
+    try:
+        tree = ET.parse(str(temp_path))
+        root = tree.getroot()
+        if root.tag != 'NML':
+            raise ValueError(f"Invalid root tag: {root.tag}")
+    except Exception as e:
+        temp_path.unlink()  # Clean up temp file
+        raise RuntimeError(f"Generated invalid Traktor collection file: {e}")
+    
+    # Atomic replace
     temp_path.replace(collection_path)
 
 
@@ -1300,7 +1556,14 @@ def add_tracks_to_traktor(
         return (0, 0)
 
     _backup_traktor_collection(collection_nml_path)
-    _safe_save_traktor_collection(collection_nml_path, collection.nml)
+    
+    try:
+        # Use built-in save() method instead of manual serialization
+        collection.save()
+    except Exception as e:
+        print(f"❌ Failed to save Traktor collection: {e}")
+        print(f"   Collection backup preserved, no changes applied")
+        return (0, 0)
 
     if added_count > 0:
         print(f"✅ Added {added_count} new tracks to Traktor collection")
@@ -1361,14 +1624,14 @@ def sync_dj_libraries_after_export(
     print(f"📋 Loaded {len(library_rows)} tracks from library.csv")
     
     # Get current Rekordbox and Traktor track IDs
-    rekordbox_mapping = get_rekordbox_track_ids()
-    traktor_mapping = get_traktor_track_ids(collection_nml_path)
+    rekordbox_mapping = get_rekordbox_track_ids()  # {path: rb_id}
+    traktor_mapping = get_traktor_track_ids(collection_nml_path)  # {path: tr_id}
     
     print(f"📖 Rekordbox: {len(rekordbox_mapping)} tracks")
     print(f"📖 Traktor: {len(traktor_mapping)} tracks")
     print()
     
-    # Find NEW tracks (not in DJ software yet)
+    # Find NEW tracks (not in DJ software yet) vs tracks needing path UPDATES
     new_for_rekordbox = []
     new_for_traktor = []
     
@@ -1379,22 +1642,128 @@ def sync_dj_libraries_after_export(
         
         file_path = Path(file_path_str)
         if not file_path.exists():
+            print(f"   ⚠️  Skipping {file_path} - does not exist")
             continue
         
         track_id = row.get('track_id', '')
-        rekordbox_id = row.get('rekordbox_id', '')
-        traktor_id = row.get('traktor_id', '')
+        original_path_str = row.get('original_path', '')
+        original_path = Path(original_path_str) if original_path_str else None
         
-        # Check if in Rekordbox
-        if file_path not in rekordbox_mapping:
+        print(f"\n   Checking: {file_path.name}")
+        print(f"      original_path: {original_path}")
+        print(f"      final_path: {file_path}")
+        
+        # Always read DJ software IDs from audio file tags (source of truth)
+        rekordbox_id = ''
+        traktor_id = ''
+        try:
+            djlib_tags = read_djlib_tags(file_path)
+            rekordbox_id = djlib_tags.get('rekordbox_id', '')
+            traktor_id = djlib_tags.get('traktor_id', '')
+        except Exception:
+            pass
+        
+        # Check if track exists in Rekordbox
+        # All tracks in library.csv should be synced (tags may have changed even if path didn't)
+        in_rekordbox = False
+        found_rekordbox_id = rekordbox_id
+        
+        # Strategy 1: Check by original path (where file was before export)
+        if original_path and original_path in rekordbox_mapping:
+            in_rekordbox = True
+            found_rekordbox_id = rekordbox_mapping[original_path]
+            # Always sync - even if path unchanged, tags may have been updated
             new_for_rekordbox.append({
                 'file_path': file_path,
                 'track_id': track_id,
-                'rekordbox_id': rekordbox_id,
+                'rekordbox_id': found_rekordbox_id,
+            })
+        # Strategy 2: Check by rekordbox_id from tags
+        elif rekordbox_id:
+            for path, rb_id in rekordbox_mapping.items():
+                if rb_id == rekordbox_id:
+                    in_rekordbox = True
+                    # Always sync - tags may have changed
+                    new_for_rekordbox.append({
+                        'file_path': file_path,
+                        'track_id': track_id,
+                        'rekordbox_id': rekordbox_id,
+                    })
+                    break
+        # Strategy 3: Check by current path
+        elif file_path in rekordbox_mapping:
+            # File already at this path in DB
+            in_rekordbox = True
+            found_rekordbox_id = rekordbox_mapping[file_path]
+            # Still sync - tags may have changed
+            new_for_rekordbox.append({
+                'file_path': file_path,
+                'track_id': track_id,
+                'rekordbox_id': found_rekordbox_id,
             })
         
-        # Check if in Traktor
-        if file_path not in traktor_mapping:
+        # Strategy 4: Truly new track (not in DB at all)
+        # Strategy 4: Truly new track (not in DB at all)
+        if not in_rekordbox:
+            new_for_rekordbox.append({
+                'file_path': file_path,
+                'track_id': track_id,
+                'rekordbox_id': rekordbox_id if rekordbox_id else '',
+            })
+        
+        # Check if track exists in Traktor
+        # All tracks in library.csv should be synced (tags may have changed even if path didn't)
+        in_traktor = False
+        found_traktor_id = traktor_id if traktor_id else track_id
+        
+        # Strategy 1: Check by original path (where file was before export)
+        if original_path and original_path in traktor_mapping:
+            in_traktor = True
+            found_traktor_id = traktor_mapping[original_path]
+            # Always sync - even if path unchanged, tags may have been updated
+            new_for_traktor.append({
+                'file_path': file_path,
+                'track_id': track_id,
+                'traktor_id': found_traktor_id,
+                'artist': row.get('artist', ''),
+                'title': row.get('title', ''),
+                'bpm': row.get('bpm', ''),
+                'key': row.get('key_camelot', ''),
+            })
+        # Strategy 2: Check by traktor_id from tags
+        elif traktor_id:
+            for path, tr_id in traktor_mapping.items():
+                if tr_id == traktor_id:
+                    in_traktor = True
+                    # Always sync - tags may have changed
+                    new_for_traktor.append({
+                        'file_path': file_path,
+                        'track_id': track_id,
+                        'traktor_id': traktor_id,
+                        'artist': row.get('artist', ''),
+                        'title': row.get('title', ''),
+                        'bpm': row.get('bpm', ''),
+                        'key': row.get('key_camelot', ''),
+                    })
+                    break
+        # Strategy 3: Check by current path
+        elif file_path in traktor_mapping:
+            # File already at this path in DB
+            in_traktor = True
+            found_traktor_id = traktor_mapping[file_path]
+            # Still sync - tags may have changed
+            new_for_traktor.append({
+                'file_path': file_path,
+                'track_id': track_id,
+                'traktor_id': found_traktor_id,
+                'artist': row.get('artist', ''),
+                'title': row.get('title', ''),
+                'bpm': row.get('bpm', ''),
+                'key': row.get('key_camelot', ''),
+            })
+        
+        # Strategy 4: Truly new track (not in DB at all)
+        if not in_traktor:
             new_for_traktor.append({
                 'file_path': file_path,
                 'track_id': track_id,
@@ -1405,15 +1774,15 @@ def sync_dj_libraries_after_export(
                 'key': row.get('key_camelot', ''),
             })
     
-    print(f"🆕 NEW tracks not in Rekordbox: {len(new_for_rekordbox)}")
-    print(f"🆕 NEW tracks not in Traktor: {len(new_for_traktor)}")
+    print(f"🆕 Tracks to add/update in Rekordbox: {len(new_for_rekordbox)}")
+    print(f"🆕 Tracks to add/update in Traktor: {len(new_for_traktor)}")
     print()
     
     # Add to Rekordbox (programmatically using pyrekordbox)
     rekordbox_added = 0
     rekordbox_updated = 0
     if new_for_rekordbox:
-        print(f"📝 Adding {len(new_for_rekordbox)} tracks to Rekordbox...")
+        print(f"📝 Syncing {len(new_for_rekordbox)} tracks to Rekordbox...")
         try:
             rekordbox_added, rekordbox_updated = add_tracks_to_rekordbox(
                 new_for_rekordbox,
@@ -1443,7 +1812,7 @@ def sync_dj_libraries_after_export(
                         break
         
         if collection_nml_path and collection_nml_path.exists():
-            print(f"📝 Adding {len(new_for_traktor)} tracks to Traktor...")
+            print(f"📝 Syncing {len(new_for_traktor)} tracks to Traktor...")
             traktor_added, traktor_updated = add_tracks_to_traktor(
                 collection_nml_path,
                 new_for_traktor,

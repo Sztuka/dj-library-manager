@@ -120,9 +120,9 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     parts: List[Tuple[str, float, Dict[str, float]]] = []
 
     # Beatport (gold standard for EDM - highest weight)
-    # Increased weight for remixes (Beatport tracks specific remix releases)
+    # Reduced weight for remixes (Beatport often returns original's genre, not remix-specific)
     if not disable_beatport:
-        bp_w = 12.0 if is_remix else 10.0
+        bp_w = 8.0 if is_remix else 10.0
         try:
             from djlib.metadata.beatport import search_track as bp_search
             bp_result = bp_search(artist, title, duration_s)
@@ -168,8 +168,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # Last.fm (stronger influence to reflect community tags importance)
     # Zwiększona waga (podniesiona z 4.0 → 6.0) aby Last.fm częściej dominowało w wynikach przy szerokim zestawie tagów.
     # Reduced weight for remixes (LFM returns data for original track, not remix)
-    # Further reduced 3.0 → 1.5 to prevent high-playcount indie/pop tags from dominating remix-specific genres
-    lfm_w = 1.5 if is_remix else 6.0
+    # Further reduced 3.0 → 0.5 to prevent high-playcount indie/pop tags from dominating remix-specific genres
+    lfm_w = 0.5 if is_remix else 6.0
     tags_lfm = lastfm.top_tags(artist, title)
     if tags_lfm:
         local: Dict[str, float] = {}
@@ -192,7 +192,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # SoundCloud (light weight for originals, higher for remixes)
     # SoundCloud is most reliable for remix-specific genre tagging
     if not disable_soundcloud:
-        sc_w = 15.0 if is_remix else 2.0  # significantly increased for remixes to override Last.fm
+        sc_w = 20.0 if is_remix else 2.0  # significantly increased for remixes to override Last.fm and Beatport
         sc = sc_track_tags(artist, title, version)
         if sc.get("tags"):
             local: Dict[str, float] = {}

@@ -277,11 +277,27 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
         # Check if file has DJLIB_TRACK_ID tag (from Phase 1 snapshot import)
         djlib_tags = read_djlib_tags(p)
+        needs_id_update = False
+        
         if djlib_tags.get('track_id'):
             # Reuse existing track_id (file was previously in DJ software)
             track_id = djlib_tags['track_id']
             rekordbox_id = djlib_tags.get('rekordbox_id', '')
             traktor_id = djlib_tags.get('traktor_id', '')
+            
+            # ✅ VALIDATION: Check if IDs in tags match current DJ software databases
+            current_rekordbox_id = rekordbox_mapping.get(p, '')
+            current_traktor_id = traktor_mapping.get(p, '')
+            
+            if current_rekordbox_id and current_rekordbox_id != rekordbox_id:
+                print(f"   🔧 Fixing Rekordbox ID for {p.name}: {rekordbox_id} → {current_rekordbox_id}")
+                rekordbox_id = current_rekordbox_id
+                needs_id_update = True
+            
+            if current_traktor_id and current_traktor_id != traktor_id:
+                print(f"   🔧 Fixing Traktor ID for {p.name}: {traktor_id} → {current_traktor_id}")
+                traktor_id = current_traktor_id
+                needs_id_update = True
         else:
             # Generate new track_id (new file)
             track_id = generate_track_id(p, tags.get("artist", ""), tags.get("title", ""))
@@ -289,20 +305,21 @@ def cmd_scan(args: argparse.Namespace) -> None:
             # Get DJ software IDs from current DBs (if file is in Rekordbox/Traktor)
             rekordbox_id = rekordbox_mapping.get(p, '')
             traktor_id = traktor_mapping.get(p, '')
-            
-            # Tag file immediately with DJLIB custom tags
-            if rekordbox_id or traktor_id or True:  # Always tag, even if not in DJ software yet
-                try:
-                    from djlib.djlib_tags import write_djlib_tags
-                    write_djlib_tags(
-                        p,
-                        track_id=track_id,
-                        rekordbox_id=rekordbox_id if rekordbox_id else None,
-                        traktor_id=traktor_id if traktor_id else None,
-                        original_path=str(p)
-                    )
-                except Exception as e:
-                    print(f"⚠️  Could not tag {p.name}: {e}")
+            needs_id_update = True
+        
+        # Tag file with DJLIB custom tags (always on first scan, or if IDs changed)
+        if needs_id_update:
+            try:
+                from djlib.djlib_tags import write_djlib_tags
+                write_djlib_tags(
+                    p,
+                    track_id=track_id,
+                    rekordbox_id=rekordbox_id if rekordbox_id else None,
+                    traktor_id=traktor_id if traktor_id else None,
+                    original_path=str(p)
+                )
+            except Exception as e:
+                print(f"⚠️  Could not tag {p.name}: {e}")
         
         rec: Dict[str, str] = {
             "track_id": track_id,
@@ -991,6 +1008,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     log_path = LOGS_DIR / f"moves-{stamp}.csv"
     log_rows = []
+    
+    # Get current DJ software mappings for ID validation
+    from djlib.external_sync import get_rekordbox_track_ids, get_traktor_track_ids
+    rekordbox_mapping = get_rekordbox_track_ids()
+    traktor_mapping = get_traktor_track_ids()
 
     for r in ready:
         # Determine destination path (new model or legacy fallback)
@@ -1001,6 +1023,42 @@ def cmd_apply(args: argparse.Namespace) -> None:
         if not src.exists():
             print(f"[WARN] Nie znaleziono pliku: {src}")
             continue
+        
+        # ✅ VALIDATE & FIX DJ software IDs before moving
+        current_rekordbox_id = rekordbox_mapping.get(src, '')
+        current_traktor_id = traktor_mapping.get(src, '')
+        
+        if current_rekordbox_id and current_rekordbox_id != r.get("rekordbox_id", ""):
+            print(f"   🔧 Updating Rekordbox ID for {src.name}: {r.get('rekordbox_id', '')} → {current_rekordbox_id}")
+            r["rekordbox_id"] = current_rekordbox_id
+            # Update tag in file
+            try:
+                from djlib.djlib_tags import write_djlib_tags
+                write_djlib_tags(
+                    src,
+                    track_id=r.get("track_id", ""),
+                    rekordbox_id=current_rekordbox_id,
+                    traktor_id=r.get("traktor_id") or None,
+                    original_path=str(src)
+                )
+            except Exception as e:
+                print(f"⚠️  Could not update tags for {src.name}: {e}")
+        
+        if current_traktor_id and current_traktor_id != r.get("traktor_id", ""):
+            print(f"   🔧 Updating Traktor ID for {src.name}: {r.get('traktor_id', '')} → {current_traktor_id}")
+            r["traktor_id"] = current_traktor_id
+            # Update tag in file
+            try:
+                from djlib.djlib_tags import write_djlib_tags
+                write_djlib_tags(
+                    src,
+                    track_id=r.get("track_id", ""),
+                    rekordbox_id=r.get("rekordbox_id") or None,
+                    traktor_id=current_traktor_id,
+                    original_path=str(src)
+                )
+            except Exception as e:
+                print(f"⚠️  Could not update tags for {src.name}: {e}")
 
         # Build final filename
         title_candidate = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
@@ -1096,27 +1154,55 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "is_duplicate": r.get("is_duplicate") or "",
             "pop_playcount": r.get("pop_playcount") or "",
             "pop_listeners": r.get("pop_listeners") or "",
+            # DJ software IDs (preserve for sync)
+            "rekordbox_id": r.get("rekordbox_id") or "",
+            "traktor_id": r.get("traktor_id") or "",
             # Legacy fields
             "target_subfolder": target_subfolder or "",
         }
-        library_rows.append(record)
+        
+        # Update existing record or append new one (avoid duplicates by track_id)
+        existing_idx = None
+        for idx, lib_row in enumerate(library_rows):
+            if lib_row.get("track_id") == record["track_id"]:
+                existing_idx = idx
+                break
+        
+        if existing_idx is not None:
+            # Update existing record (file was moved/renamed)
+            library_rows[existing_idx] = record
+        else:
+            # Add new record
+            library_rows.append(record)
         
         # Po udanym przeniesieniu wyczyść spam tagi i zapisz zaakceptowane metadane
+        print(f"\n🔧 Processing tags for: {dest_path.name}")
         try:
             # Najpierw wyczyść spam tagi (musicdjs.club, chomikuj.pl, etc.)
+            print(f"   Step 1: Cleaning spam tags...")
             result = clean_tags(dest_path, dry_run=False)
             if result and result.get("removed_tags"):
                 tags_cleaned += 1
+                print(f"   ✅ Cleaned {len(result['removed_tags'])} spam tags")
+            
             # Teraz zapisz właściwe metadane
+            print(f"   Step 2: Writing metadata tags...")
             updates = {}
             if artist:
                 updates["artist"] = artist
             title_out = merge_title_and_version(record.get("title", ""), record.get("version_info", ""))
             if title_out:
                 updates["title"] = title_out
+            
             genre = (record["genre"] or "").strip()
             if genre:
                 updates["genre"] = genre
+            else:
+                print(f"   ⚠️  No genre to write for {dest_path.name}")
+                print(f"      record['genre'] = {repr(record.get('genre', 'MISSING'))}")
+                print(f"      r['genre'] = {repr(r.get('genre', 'MISSING'))}")
+                print(f"      r['genre_suggest'] = {repr(r.get('genre_suggest', 'MISSING'))}")
+            
             bpm_raw = (record["bpm"] or "").strip()
             if bpm_raw:
                 try:
@@ -1127,10 +1213,15 @@ def cmd_apply(args: argparse.Namespace) -> None:
             key_cam = (record["key_camelot"] or "").strip().upper()
             if key_cam:
                 updates["key_camelot"] = key_cam
+            
             # Zapisz rok z kolumny year (lub fallback na year_suggest)
             year_val = (r.get("year") or r.get("year_suggest") or "").strip()
             if year_val:
                 updates["year"] = year_val
+            else:
+                print(f"   ⚠️  No year to write for {dest_path.name}")
+                print(f"      r['year'] = {repr(r.get('year', 'MISSING'))}")
+                print(f"      r['year_suggest'] = {repr(r.get('year_suggest', 'MISSING'))}")
             
             # ALWAYS clear album tag (DJ libraries don't need compilation names)
             updates["album"] = ""
@@ -1138,6 +1229,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             if updates:
                 write_tags(dest_path, updates)
                 tags_written += 1
+                print(f"   ✅ Written tags to {dest_path.name}: {list(updates.keys())}")
         except Exception as e:
             print(f"[WARN] Tag write/clean failed for {dest_path}: {e}")
             tags_errors += 1
