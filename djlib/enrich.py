@@ -394,15 +394,16 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
         album_from_tags = tags.get("album", "").strip()
         year_from_online = ""
         album_from_online = ""
+        release_group_id_online = None
         
-        # For ORIGINALS (no version): use MusicBrainz release-group for accurate first release date
+        # For ORIGINALS (no version): use MusicBrainz release-group for accurate first release date + album + cover
         # For REMIXES/EDITS (has version): only use Beatport if it finds the specific remix
-        # This prevents assigning original's year to remixes (misleading)
+        # This prevents assigning original's year/album to remixes (misleading)
         if not version:
             try:
-                mb_year = mb_client.get_original_release_year(artist, title)
-                if mb_year:
-                    year_from_online = mb_year
+                mb_info = mb_client.get_original_release_info(artist, title)
+                if mb_info:
+                    year_from_online, album_from_online, release_group_id_online = mb_info
             except Exception:
                 pass
         
@@ -492,7 +493,7 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                 # Prioritize online over tags (online has more context about releases)
                 final_year = year_from_online if year_from_online else year_from_tags
                 final_album = album_from_online if album_from_online else album_from_tags
-                return {
+                result = {
                     "artist_suggest": artist,
                     "title_suggest": title,
                     "version_suggest": version,
@@ -502,6 +503,10 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                     "duration_suggest": "",
                     "meta_source": meta_source,
                 }
+                # Add release_group_id for cover art fetching (originals only)
+                if release_group_id_online:
+                    result["release_group_id"] = release_group_id_online
+                return result
         except Exception:
             pass
     
@@ -760,7 +765,7 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
             seen = set()
             genres = [g for g in names if not (g.lower() in seen or seen.add(g.lower()))]
         genre = genres[0] if genres else ""
-        return {
+        result = {
             "artist_suggest": out_artist,
             "title_suggest": out_title,
             "version_suggest": "",
@@ -770,6 +775,10 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
             "duration_suggest": duration,
             "meta_source": "acoustid+musicbrainz",
         }
+        # Add release_group_id for cover art if available
+        if rgid:
+            result["release_group_id"] = rgid
+        return result
     except Exception:
         return None
 

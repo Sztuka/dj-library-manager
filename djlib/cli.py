@@ -756,6 +756,16 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         disable_beatport=getattr(args, "skip_beatport", False)
                     )
                     
+                    # Save cover art URL to row
+                    cover_url = ""
+                    if source == 'mb' and release_group_id:
+                        cover_url = f"https://coverartarchive.org/release-group/{release_group_id}/front-500"
+                    elif source == 'beatport' and beatport_artwork_url:
+                        cover_url = beatport_artwork_url
+                    # For lastfm/soundcloud we don't have direct URLs easily accessible
+                    if cover_url:
+                        r["cover_art_url"] = cover_url
+                    
                     if source == 'exists':
                         covers_skipped += 1
                     elif success:

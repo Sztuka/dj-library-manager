@@ -233,3 +233,49 @@ def get_original_release_year(artist: str, title: str) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def get_original_release_info(artist: str, title: str) -> Optional[Tuple[str, str, str]]:
+    """Get original release info: (year, album, release_group_id).
+    
+    Uses release-group search to find earliest studio release.
+    Returns tuple of (year, album_title, release_group_id) or None.
+    """
+    artist = (artist or "").strip()
+    title = (title or "").strip()
+    if not artist and not title:
+        return None
+    q_parts: List[str] = []
+    if artist:
+        q_parts.append(f'artist:"{artist}"')
+    if title:
+        q_parts.append(f'releasegroup:"{title}"')
+    q = " AND ".join(q_parts)
+    try:
+        data = _search_release_groups(q, limit=10)
+        rg_list = (data or {}).get("release-group-list") or []
+        # Filter for Single/Album/EP (not Live/Compilation)
+        studio_rgs = [
+            rg for rg in rg_list
+            if rg.get("primary-type") in ["Single", "Album", "EP"]
+        ]
+        candidates = studio_rgs if studio_rgs else rg_list
+        # Sort by score and take best match
+        if candidates:
+            candidates.sort(key=lambda x: int(x.get("ext:score", 0)), reverse=True)
+            best = candidates[0]
+            
+            year = ""
+            first_release = best.get("first-release-date", "")
+            if first_release and len(first_release) >= 4:
+                year = first_release[:4]
+            
+            album = (best.get("title") or "").strip()
+            release_group_id = best.get("id", "")
+            
+            if year and album and release_group_id:
+                return (year, album, release_group_id)
+    except Exception:
+        pass
+    return None
+

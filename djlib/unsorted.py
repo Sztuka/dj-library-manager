@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Mapping, Sequence
+from io import BytesIO
+import requests
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Protection, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.worksheet.worksheet import Worksheet
 
 from djlib.filename import build_final_filename
@@ -41,6 +44,8 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("album_suggest", hidden=False, width=32, locked=True),
     ColumnSpec("year_suggest", hidden=False, width=12, locked=True),
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
+    ColumnSpec("cover_art_url", hidden=False, width=60, locked=True),  # Link to cover art
+    ColumnSpec("cover_art", hidden=False, width=15, locked=True),  # Thumbnail image
     # Genre hints (visible for decision making, but locked)
     ColumnSpec("genres_musicbrainz", width=24, locked=True),
     ColumnSpec("genres_lastfm", width=24, locked=True),
@@ -207,6 +212,11 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
                     f'&" ["&{key_letter}{row_idx}&" "&ROUND({bpm_letter}{row_idx},0)&"].{ext}"'
                 )
                 cell = ws.cell(row=row_idx, column=col_idx, value=formula)
+            # Special handling for cover_art_url - make it a clickable hyperlink
+            elif spec.name == "cover_art_url" and cell_value:
+                cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
+                cell.hyperlink = str(cell_value)
+                cell.font = Font(color="0000FF", underline="single", size=16)  # Blue underlined link
             else:
                 cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
             
@@ -246,7 +256,36 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
                 cell.protection = Protection(locked=False)
                 cell.font = red_font if use_red else editable_font
                 cell.border = editable_border
-        ws.row_dimensions[row_idx].height = 30
+        ws.row_dimensions[row_idx].height = 80  # Increased height for cover art thumbnails
+
+    # Insert cover art images
+    cover_art_col_idx = next((i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "cover_art"), None)
+    cover_art_url_col_idx = next((i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "cover_art_url"), None)
+    
+    if cover_art_col_idx and cover_art_url_col_idx:
+        for row_idx, data in enumerate(normalized_rows, start=2):
+            cover_url = data.get("cover_art_url", "").strip()
+            if cover_url:
+                try:
+                    # Download image
+                    response = requests.get(cover_url, timeout=5)
+                    if response.status_code == 200:
+                        img_data = BytesIO(response.content)
+                        img = XLImage(img_data)
+                        
+                        # Resize to fit cell (approx 100x100 pixels)
+                        img.width = 100
+                        img.height = 100
+                        
+                        # Get cell reference for cover_art column
+                        cell_ref = f"{get_column_letter(cover_art_col_idx)}{row_idx}"
+                        
+                        # Anchor image to cell
+                        img.anchor = cell_ref
+                        ws.add_image(img)
+                except Exception:
+                    # Silently skip if image download fails
+                    pass
 
     # Column formatting
     for idx, spec in enumerate(UNSORTED_COLUMNS, start=1):
