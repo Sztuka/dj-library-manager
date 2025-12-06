@@ -284,6 +284,49 @@ def get_track_year(artist: str, title: str, version: str = "") -> Optional[str]:
     except Exception:
         return None
 
+
+def get_track_artwork_url(artist: str, title: str, version: str = "", client_id: Optional[str] = None) -> Optional[str]:
+    """Get artwork URL from SoundCloud for a track.
+    
+    Returns high-res artwork URL (t500x500) or None if not found.
+    """
+    cid = client_id or get_valid_client_id()
+    if not cid:
+        return None
+    
+    queries = _candidate_queries(artist, title, version)
+    if not queries:
+        return None
+    
+    try:
+        global _SC_REQUESTS
+        # Try first query only (most specific)
+        q = queries[0]
+        time.sleep(0.8)
+        _SC_REQUESTS += 1
+        r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+        if r.status_code == 403:
+            time.sleep(2.0)
+            r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+        if r.status_code != 200:
+            return None
+        
+        data = r.json() or {}
+        items = (data.get("collection") or [])[:3]
+        
+        # Try to find track with artwork
+        for item in items:
+            artwork_url = item.get("artwork_url")
+            if artwork_url:
+                # Replace 'large' (100x100) with 't500x500' for better quality
+                # Also try t1080x1080 for even better quality
+                high_res_url = artwork_url.replace('-large.', '-t1080x1080.')
+                return high_res_url
+        return None
+    except Exception:
+        return None
+
+
 def client_id_health() -> Dict[str, str]:
     """Validate client_id by performing a lightweight public search request.
     Returns dict with status: ok|invalid|missing|error|rate-limit and message.

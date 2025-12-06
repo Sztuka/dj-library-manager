@@ -742,6 +742,20 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         pass
                 
                 if artist and title:
+                    # First, try to get cover art URL (always, even if cover exists)
+                    from djlib.metadata.coverart import get_cover_art_url
+                    cover_url = get_cover_art_url(
+                        artist=artist,
+                        title=title,
+                        version=version,
+                        release_group_id=release_group_id,
+                        beatport_artwork_url=beatport_artwork_url,
+                        soundcloud_client_id=soundcloud_id,
+                    )
+                    if cover_url:
+                        r["cover_art_url"] = cover_url
+                    
+                    # Then fetch/download cover art to file
                     success, source = fetch_cover_art(
                         filepath=str(p),
                         artist=artist,
@@ -755,16 +769,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         skip_if_exists=True,
                         disable_beatport=getattr(args, "skip_beatport", False)
                     )
-                    
-                    # Save cover art URL to row
-                    cover_url = ""
-                    if source == 'mb' and release_group_id:
-                        cover_url = f"https://coverartarchive.org/release-group/{release_group_id}/front-500"
-                    elif source == 'beatport' and beatport_artwork_url:
-                        cover_url = beatport_artwork_url
-                    # For lastfm/soundcloud we don't have direct URLs easily accessible
-                    if cover_url:
-                        r["cover_art_url"] = cover_url
                     
                     if source == 'exists':
                         covers_skipped += 1

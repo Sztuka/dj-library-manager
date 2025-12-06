@@ -232,6 +232,45 @@ def fetch_from_soundcloud(artist: str, title: str, version: str, client_id: str)
     except Exception:
         return None
 
+def get_cover_art_url(
+    artist: str,
+    title: str,
+    version: str = "",
+    release_group_id: Optional[str] = None,
+    beatport_artwork_url: Optional[str] = None,
+    soundcloud_client_id: Optional[str] = None,
+) -> Optional[str]:
+    """Get cover art URL without downloading the image.
+    
+    Uses same priority logic as fetch_cover_art but only returns URL.
+    
+    Returns:
+        URL string or None
+    """
+    # For ORIGINALS: try MusicBrainz first (skip for remixes)
+    if not version and release_group_id:
+        return f"https://coverartarchive.org/release-group/{release_group_id}/front-500"
+    
+    # Try Beatport
+    if beatport_artwork_url:
+        # Replace {w}x{h} placeholder with 1400x1400
+        if '{w}x{h}' in beatport_artwork_url:
+            return beatport_artwork_url.replace('{w}x{h}', '1400x1400')
+        return beatport_artwork_url
+    
+    # Try SoundCloud (for remixes prioritized, for originals last resort)
+    if soundcloud_client_id:
+        try:
+            from djlib.metadata.soundcloud import get_track_artwork_url
+            sc_url = get_track_artwork_url(artist, title, version, soundcloud_client_id)
+            if sc_url:
+                return sc_url
+        except Exception:
+            pass
+    
+    return None
+
+
 def fetch_cover_art(
     filepath: str,
     artist: str,
