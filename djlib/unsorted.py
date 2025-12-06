@@ -46,6 +46,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
     ColumnSpec("cover_art_url", hidden=False, width=60, locked=True),  # Link to cover art
     ColumnSpec("cover_art", hidden=False, width=15, locked=True),  # Thumbnail image
+    ColumnSpec("cover_art_action", hidden=False, width=14),  # replace/keep/auto/custom (editable)
     # Genre hints (visible for decision making, but locked)
     ColumnSpec("genres_musicbrainz", width=24, locked=True),
     ColumnSpec("genres_lastfm", width=24, locked=True),
