@@ -900,16 +900,26 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
         try:
             canonical_data = lookup_canonical_release(out_artist, out_title, fetch_year=True)
             if canonical_data:
-                first_release_data = {
-                    "original_album_title": canonical_data['album_title'],
-                    "original_release_mbid": canonical_data['release_mbid'],
-                    "recording_mbid": canonical_data['recording_mbid'],
-                }
-                # Use canonical data for suggest fields (don't override with API data)
-                album = canonical_data['album_title']
-                if 'release_year' in canonical_data:
-                    year = canonical_data['release_year']
-                    first_release_data['original_release_year'] = canonical_data['release_year']
+                # Reject compilations/best-of albums from canonical data
+                album_title_lower = canonical_data['album_title'].lower()
+                compilation_keywords = ['greatest hits', 'best of', 'the best', 'collection', 
+                                       'anthology', 'ultimate', 'essential', 'gold', 'platinum']
+                is_compilation = any(keyword in album_title_lower for keyword in compilation_keywords)
+                
+                if is_compilation:
+                    logger.debug(f"Rejecting canonical compilation: {canonical_data['album_title']}")
+                    canonical_data = None
+                else:
+                    first_release_data = {
+                        "original_album_title": canonical_data['album_title'],
+                        "original_release_mbid": canonical_data['release_mbid'],
+                        "recording_mbid": canonical_data['recording_mbid'],
+                    }
+                    # Use canonical data for suggest fields (don't override with API data)
+                    album = canonical_data['album_title']
+                    if 'release_year' in canonical_data:
+                        year = canonical_data['release_year']
+                        first_release_data['original_release_year'] = canonical_data['release_year']
         except Exception:
             pass
         
