@@ -4,11 +4,14 @@ from typing import Dict, Tuple
 from djlib.filename import parse_from_filename, split_title_and_version
 from djlib.tags import read_tags
 import json
+import logging
 import os
 import re
 import unicodedata
 from djlib.metadata import mb_client
 from djlib.metadata.canonical_mb import lookup_canonical_release
+
+logger = logging.getLogger(__name__)
 
 # Compiled regexes for feature normalization (performance optimization)
 _FEAT_FROM_ARTIST = re.compile(
@@ -634,36 +637,47 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
     try:
         canonical_data = lookup_canonical_release(artist, title, fetch_year=True)
         if canonical_data:
-            # Got canonical data - prioritize it!
-            result = {
-                "artist_suggest": canonical_data['artist_name'],
-                "title_suggest": title,
-                "album_suggest": canonical_data['album_title'],
-                "original_album_title": canonical_data['album_title'],
-                "original_release_mbid": canonical_data['release_mbid'],
-                "recording_mbid": canonical_data['recording_mbid'],
-                "meta_source": "musicbrainz_canonical",
-            }
-            # Add year if available
-            if 'release_year' in canonical_data:
-                result['year_suggest'] = canonical_data['release_year']
-                result['original_release_year'] = canonical_data['release_year']
+            # Reject compilations/best-of albums from canonical data
+            # These are unreliable - prefer to find original album via API
+            album_title_lower = canonical_data['album_title'].lower()
+            compilation_keywords = ['greatest hits', 'best of', 'the best', 'collection', 
+                                   'anthology', 'ultimate', 'essential', 'gold', 'platinum']
+            is_compilation = any(keyword in album_title_lower for keyword in compilation_keywords)
             
-            # Still fetch genres from API (canonical doesn't have genres)
-            try:
-                match = mb_client.search_recording(artist, title)
-                if match:
-                    genres = mb_client.get_recording_genres(
-                        match.recording_id, 
-                        release_group_id=match.release_group_id, 
-                        artist_id=match.artist_id
-                    )
-                    if genres:
-                        result['genre_suggest'] = genres[0]
-            except Exception:
-                pass
-            
-            return result
+            if is_compilation:
+                logger.debug(f"Rejecting canonical compilation: {canonical_data['album_title']}")
+                canonical_data = None
+            else:
+                # Got canonical data - prioritize it!
+                result = {
+                    "artist_suggest": canonical_data['artist_name'],
+                    "title_suggest": title,
+                    "album_suggest": canonical_data['album_title'],
+                    "original_album_title": canonical_data['album_title'],
+                    "original_release_mbid": canonical_data['release_mbid'],
+                    "recording_mbid": canonical_data['recording_mbid'],
+                    "meta_source": "musicbrainz_canonical",
+                }
+                # Add year if available
+                if 'release_year' in canonical_data:
+                    result['year_suggest'] = canonical_data['release_year']
+                    result['original_release_year'] = canonical_data['release_year']
+                
+                # Still fetch genres from API (canonical doesn't have genres)
+                try:
+                    match = mb_client.search_recording(artist, title)
+                    if match:
+                        genres = mb_client.get_recording_genres(
+                            match.recording_id, 
+                            release_group_id=match.release_group_id, 
+                            artist_id=match.artist_id
+                        )
+                        if genres:
+                            result['genre_suggest'] = genres[0]
+                except Exception:
+                    pass
+                
+                return result
     except Exception as e:
         # Canonical lookup failed - continue to API
         logger.debug(f"Canonical lookup failed: {e}")
@@ -756,18 +770,8 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
                         "original_release_category": first_release.release_category,
                         "original_release_source": first_release.source,
                     }
-                else:
-                    # DEBUG: Function returned None
-                    import sys
-                    print(f"⚠️  DEBUG: mb_fetch_first_release_for_recording returned None for {out_artist} - {out_title}", file=sys.stderr)
-            except Exception as e:
-                # DEBUG: Exception occurred
-                import sys
-                print(f"⚠️  DEBUG: Exception in mb_fetch_first_release_for_recording for {out_artist} - {out_title}: {e}", file=sys.stderr)
-        else:
-            # DEBUG: No recording_id
-            import sys
-            print(f"⚠️  DEBUG: No recording_id for {out_artist} - {out_title}", file=sys.stderr)
+            except Exception:
+                pass
 
         result = {
             "artist_suggest": out_artist,

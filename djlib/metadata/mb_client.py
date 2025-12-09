@@ -389,10 +389,14 @@ def mb_fetch_first_release_for_recording(recording_mbid: str, artist: str = "", 
         if not recording_mbid:
             return None
         
-        # Step 2: Get releases for this recording
-        rec_data = _get_recording_by_id_with_releases(recording_mbid)
-        rec = (rec_data or {}).get("recording", {})
-        releases = rec.get("release-list", [])
+        # Step 2: Get releases for this recording using browse (more complete than search)
+        _throttle_mb()
+        browse_result = musicbrainzngs.browse_releases(
+            recording=recording_mbid, 
+            limit=100, 
+            includes=['release-groups']
+        )  # type: ignore
+        releases = browse_result.get("release-list", [])
         
         if not releases:
             return None
@@ -417,12 +421,18 @@ def mb_fetch_first_release_for_recording(recording_mbid: str, artist: str = "", 
                 
                 primary_type = rg.get("primary-type", "")
                 secondary_types = rg.get("secondary-type-list", [])
+                title = rg.get("title", "").lower()
                 
                 is_live = "Live" in secondary_types or primary_type == "Live"
                 is_compilation = "Compilation" in secondary_types
                 
+                # Also check title for compilation keywords
+                compilation_keywords = ['greatest hits', 'best of', 'the best', 'collection',
+                                       'anthology', 'ultimate', 'essential', 'gold', 'platinum']
+                is_compilation_by_title = any(keyword in title for keyword in compilation_keywords)
+                
                 # Keep only studio albums with release date
-                if not is_live and not is_compilation and rg.get("first-release-date"):
+                if not is_live and not is_compilation and not is_compilation_by_title and rg.get("first-release-date"):
                     studio_rgs.append(rg)
             except Exception:
                 continue
@@ -480,6 +490,5 @@ def mb_fetch_first_release_for_recording(recording_mbid: str, artist: str = "", 
         )
     
     except Exception:
-        return None
         return None
 
