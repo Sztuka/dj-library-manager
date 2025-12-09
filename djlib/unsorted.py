@@ -42,6 +42,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("version_suggest", hidden=True, width=20, locked=True),
     ColumnSpec("genre_suggest", hidden=False, width=24, locked=True),
     ColumnSpec("album_suggest", hidden=False, width=32, locked=True),
+    ColumnSpec("release_group_id", hidden=True, width=36, locked=True),  # MusicBrainz MBID for cover art
     ColumnSpec("year_suggest", hidden=False, width=12, locked=True),
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
     ColumnSpec("cover_art_url", hidden=False, width=60, locked=True),  # Link to cover art
@@ -55,6 +56,14 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("pop_playcount", width=14, locked=True),
     ColumnSpec("pop_listeners", width=14, locked=True),
     ColumnSpec("meta_source", hidden=True, width=20, locked=True),
+    # MusicBrainz canonical first release data (hidden, locked)
+    ColumnSpec("original_album_title", hidden=True, width=32, locked=True),
+    ColumnSpec("original_release_date", hidden=True, width=18, locked=True),
+    ColumnSpec("original_release_year", hidden=True, width=12, locked=True),
+    ColumnSpec("original_release_mbid", hidden=True, width=36, locked=True),
+    ColumnSpec("original_release_group_mbid", hidden=True, width=36, locked=True),
+    ColumnSpec("original_release_category", hidden=True, width=16, locked=True),
+    ColumnSpec("original_release_source", hidden=True, width=24, locked=True),
     # Editable fields (user must review/accept)
     ColumnSpec("artist", width=30),
     ColumnSpec("title", width=45),
@@ -78,6 +87,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
 DONE_CHOICES = ("TRUE", "FALSE")
 STATUS_CHOICES = ("accept", "reject", "review", "")
 DESTINATION_CHOICES = ("library", "reject", "archive", "mixes", "")
+COVER_ART_ACTION_CHOICES = ("replace", "keep", "auto", "custom", "")
 
 
 def _as_str(val: object | None) -> str:
@@ -94,6 +104,8 @@ def normalize_unsorted_row(row: Mapping[str, str | None]) -> Dict[str, str]:
         out[col.name] = _as_str(row.get(col.name, ""))
     if not out.get("done"):
         out["done"] = "FALSE"
+    if not out.get("cover_art_action"):
+        out["cover_art_action"] = "replace"  # Default: always replace covers
     
     # Compute final_filename preview
     artist = out.get("artist", "")
@@ -331,10 +343,14 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
     lists_ws.cell(row=1, column=4, value=DONE_CHOICES[0])
     lists_ws.cell(row=2, column=4, value=DONE_CHOICES[1])
     
+    # Cover art action choices
+    for idx, choice in enumerate(COVER_ART_ACTION_CHOICES, start=1):
+        lists_ws.cell(row=idx, column=5, value=choice)
+    
     # Legacy bucket choices (if provided, for backward compatibility)
     if bucket_choices:
         for idx, bucket in enumerate(bucket_choices, start=1):
-            lists_ws.cell(row=idx, column=5, value=_as_str(bucket))
+            lists_ws.cell(row=idx, column=6, value=_as_str(bucket))
     
     lists_ws.sheet_state = "hidden"
 
@@ -387,6 +403,19 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
         dv_done.errorTitle = "Invalid value"
         ws.add_data_validation(dv_done)
         dv_done.add(f"{done_letter}2:{done_letter}1048576")
+    except Exception:
+        pass
+    
+    # Data validation for cover_art_action column
+    try:
+        cover_action_idx = [i for i, spec in enumerate(UNSORTED_COLUMNS, start=1) if spec.name == "cover_art_action"][0]
+        cover_action_letter = get_column_letter(cover_action_idx)
+        dv_cover = DataValidation(type="list", formula1=f"'_lists'!$E$1:$E${len(COVER_ART_ACTION_CHOICES)}", 
+                                  allow_blank=True, showDropDown=False)
+        dv_cover.error = "Use replace/keep/auto/custom"
+        dv_cover.errorTitle = "Invalid cover action"
+        ws.add_data_validation(dv_cover)
+        dv_cover.add(f"{cover_action_letter}2:{cover_action_letter}1048576")
     except Exception:
         pass
     

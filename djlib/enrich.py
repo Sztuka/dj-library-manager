@@ -8,6 +8,7 @@ import os
 import re
 import unicodedata
 from djlib.metadata import mb_client
+from djlib.metadata.canonical_mb import lookup_canonical_release
 
 # Compiled regexes for feature normalization (performance optimization)
 _FEAT_FROM_ARTIST = re.compile(
@@ -353,9 +354,13 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
     
     Args:
         enable_online: If False, skip AcoustID/MusicBrainz/genre resolver (faster for scan)
+        tags: Dict with metadata, may include 'skip_fingerprint': 'yes' to force using tags
     """
     # Use derive_local_metadata to get normalized artist, title, version
     artist, title, version = derive_local_metadata(path, tags)
+    
+    # Check if user wants to skip fingerprint (force use tags)
+    skip_fingerprint = (tags.get("skip_fingerprint") or "").strip().lower() in {"yes", "y", "true", "1"}
 
     if enable_online:
         # Najpierw spróbuj lookup online z fingerprintem (AcoustID)
@@ -369,13 +374,31 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
         except Exception:
             pass
         
-        if fp and dur_sec:
+        # Skip AcoustID if user explicitly requested (skip_fingerprint=yes)
+        if fp and dur_sec and not skip_fingerprint:
             online = lookup_acoustid(fp, dur_sec)
             if online:
-                # Preserve filename-derived version if online lacks it
-                if version and not (online.get("version_suggest") or "").strip():
-                    online = {**online, "version_suggest": version}
-                return online
+                # Sanity check: verify AcoustID result matches file tags (artist similarity)
+                # If AcoustID returns completely different artist, fingerprint may be wrong
+                acoustid_artist = (online.get("artist_suggest") or "").lower().strip()
+                tags_artist = artist.lower().strip()
+                
+                # Simple similarity check: at least one common word (3+ chars)
+                acoustid_words = set(w for w in acoustid_artist.replace(",", " ").split() if len(w) >= 3)
+                tags_words = set(w for w in tags_artist.replace(",", " ").split() if len(w) >= 3)
+                has_common_word = bool(acoustid_words & tags_words)
+                
+                # If no common words, artists are completely different - likely fingerprint mismatch
+                if not has_common_word and acoustid_artist and tags_artist:
+                    # Log mismatch for debugging
+                    import sys
+                    print(f"⚠️  AcoustID mismatch: tags say '{artist}' but fingerprint detected '{online.get('artist_suggest')}' - using tags", file=sys.stderr)
+                    # Don't return acoustid result, fallback to MusicBrainz with tags
+                else:
+                    # Preserve filename-derived version if online lacks it
+                    if version and not (online.get("version_suggest") or "").strip():
+                        online = {**online, "version_suggest": version}
+                    return online
         
         # Następnie spróbuj MusicBrainz search
         # WAŻNE: dla remixów (gdy version istnieje) NIE używaj MusicBrainz early return,
@@ -596,11 +619,57 @@ def _clean_title(t: str) -> str:
 def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
     """Lookup przez MusicBrainz z użyciem klienta mb_client (1 rps, retry).
     Zwraca dict suggest_* (w tym genre_suggest z 'genres'/'tags' oraz fallback z release-group/artist).
+    
+    Strategy:
+    1. Try Canonical MusicBrainz Data lookup (instant, no API calls)
+    2. Fallback to live MusicBrainz API search
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
     if not title and not artist:
         return None
+    
+    # Step 1: Try canonical lookup first (offline, instant)
+    canonical_data = None
+    try:
+        canonical_data = lookup_canonical_release(artist, title, fetch_year=True)
+        if canonical_data:
+            # Got canonical data - prioritize it!
+            result = {
+                "artist_suggest": canonical_data['artist_name'],
+                "title_suggest": title,
+                "album_suggest": canonical_data['album_title'],
+                "original_album_title": canonical_data['album_title'],
+                "original_release_mbid": canonical_data['release_mbid'],
+                "recording_mbid": canonical_data['recording_mbid'],
+                "meta_source": "musicbrainz_canonical",
+            }
+            # Add year if available
+            if 'release_year' in canonical_data:
+                result['year_suggest'] = canonical_data['release_year']
+                result['original_release_year'] = canonical_data['release_year']
+            
+            # Still fetch genres from API (canonical doesn't have genres)
+            try:
+                match = mb_client.search_recording(artist, title)
+                if match:
+                    genres = mb_client.get_recording_genres(
+                        match.recording_id, 
+                        release_group_id=match.release_group_id, 
+                        artist_id=match.artist_id
+                    )
+                    if genres:
+                        result['genre_suggest'] = genres[0]
+            except Exception:
+                pass
+            
+            return result
+    except Exception as e:
+        # Canonical lookup failed - continue to API
+        logger.debug(f"Canonical lookup failed: {e}")
+        canonical_data = None
+    
+    # Step 2: Fallback to live MusicBrainz API
     try:
         match = mb_client.search_recording(artist, title)
         if not match:
@@ -613,12 +682,31 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
         # album i rok – najpierw spróbuj z release-group search (najbardziej wiarygodne dla roku)
         album = ""
         year = ""
+        release_group_id_filtered = None  # Filtered RG ID (studio releases only)
+        
         try:
-            year_from_rg_search = mb_client.get_original_release_year(out_artist, out_title)
-            if year_from_rg_search:
-                year = year_from_rg_search
+            # get_original_release_info filters out Live/Compilation, returns (year, album, release_group_id)
+            mb_info = mb_client.get_original_release_info(out_artist, out_title)
+            if mb_info:
+                year_from_rg_search, album_from_rg_search, rg_id_from_search = mb_info
+                if year_from_rg_search:
+                    year = year_from_rg_search
+                if album_from_rg_search:
+                    album = album_from_rg_search
+                if rg_id_from_search:
+                    release_group_id_filtered = rg_id_from_search
         except Exception:
             pass
+        
+        # If get_original_release_info didn't find anything, check if match.release_group_id is studio type
+        if not release_group_id_filtered and match.release_group_id:
+            try:
+                rg_type = mb_client.get_release_group_type(match.release_group_id)
+                # Accept only studio releases (Album, Single, EP) - reject Live, Compilation, etc.
+                if rg_type in ["Album", "Single", "EP"]:
+                    release_group_id_filtered = match.release_group_id
+            except Exception:
+                pass
         
         # Jeśli nie udało się przez RG search, spróbuj z release-group-id z recording
         if not year and match.release_group_id:
@@ -652,7 +740,36 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
         genres = mb_client.get_recording_genres(match.recording_id, release_group_id=match.release_group_id, artist_id=match.artist_id)
         genre = genres[0] if genres else ""
 
-        return {
+        # NEW: Try to resolve canonical first release from recording MBID
+        # This provides the earliest official studio album for canonical metadata
+        first_release_data = {}
+        if match.recording_id or (out_artist and out_title):
+            try:
+                first_release = mb_client.mb_fetch_first_release_for_recording(match.recording_id, out_artist, out_title)
+                if first_release:
+                    first_release_data = {
+                        "original_album_title": first_release.album_title,
+                        "original_release_date": first_release.original_release_date,
+                        "original_release_year": str(first_release.original_release_year),
+                        "original_release_mbid": first_release.release_mbid,
+                        "original_release_group_mbid": first_release.release_group_mbid,
+                        "original_release_category": first_release.release_category,
+                        "original_release_source": first_release.source,
+                    }
+                else:
+                    # DEBUG: Function returned None
+                    import sys
+                    print(f"⚠️  DEBUG: mb_fetch_first_release_for_recording returned None for {out_artist} - {out_title}", file=sys.stderr)
+            except Exception as e:
+                # DEBUG: Exception occurred
+                import sys
+                print(f"⚠️  DEBUG: Exception in mb_fetch_first_release_for_recording for {out_artist} - {out_title}: {e}", file=sys.stderr)
+        else:
+            # DEBUG: No recording_id
+            import sys
+            print(f"⚠️  DEBUG: No recording_id for {out_artist} - {out_title}", file=sys.stderr)
+
+        result = {
             "artist_suggest": out_artist,
             "title_suggest": out_title,
             "version_suggest": "",
@@ -661,8 +778,13 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
             "year_suggest": year,
             "duration_suggest": duration,
             "meta_source": "musicbrainz",
-            "release_group_id": match.release_group_id or "",  # For cover art fetching
+            "release_group_id": release_group_id_filtered or match.release_group_id or "",  # Prefer filtered (studio) over raw recording RG
         }
+        
+        # Merge first release data (non-invasive, only adds new fields)
+        result.update(first_release_data)
+        
+        return result
     except Exception:
         return None
 
@@ -765,10 +887,73 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
             seen = set()
             genres = [g for g in names if not (g.lower() in seen or seen.add(g.lower()))]
         genre = genres[0] if genres else ""
+        
+        # NEW: Try to resolve canonical first release from recording MBID
+        first_release_data = {}
+        canonical_data = None
+        
+        # Try canonical lookup first (instant, no API)
+        try:
+            canonical_data = lookup_canonical_release(out_artist, out_title, fetch_year=True)
+            if canonical_data:
+                first_release_data = {
+                    "original_album_title": canonical_data['album_title'],
+                    "original_release_mbid": canonical_data['release_mbid'],
+                    "recording_mbid": canonical_data['recording_mbid'],
+                }
+                # Use canonical data for suggest fields (don't override with API data)
+                album = canonical_data['album_title']
+                if 'release_year' in canonical_data:
+                    year = canonical_data['release_year']
+                    first_release_data['original_release_year'] = canonical_data['release_year']
+        except Exception:
+            pass
+        
+        # Fallback to API-based resolution (only if canonical didn't provide data)
+        if not canonical_data and (best_id or (out_artist and out_title)):
+            try:
+                first_release = mb_client.mb_fetch_first_release_for_recording(best_id, out_artist, out_title)
+                if first_release:
+                    first_release_data = {
+                        "original_album_title": first_release.album_title,
+                        "original_release_date": first_release.original_release_date,
+                        "original_release_year": str(first_release.original_release_year),
+                        "original_release_mbid": first_release.release_mbid,
+                        "original_release_group_mbid": first_release.release_group_mbid,
+                        "original_release_category": first_release.release_category,
+                        "original_release_source": first_release.source,
+                    }
+            except Exception:
+                pass
+        
+        # Detect if this is a live recording (AcoustID detected different recording than canonical)
+        version_info = ""
+        if canonical_data and best_id and canonical_data['recording_mbid'] != best_id:
+            # AcoustID detected different recording than canonical - likely live/alternate version
+            # Check if album or release-group indicates live
+            is_live = False
+            
+            # Check album title for "Live" keywords
+            album_lower = album.lower()
+            if any(keyword in album_lower for keyword in ['live', 'concert', 'unplugged', 'mtv unplugged']):
+                is_live = True
+            
+            # Check release-group primary-type
+            if not is_live and rgid:
+                try:
+                    rg_type = mb_client.get_release_group_type(rgid)
+                    if rg_type == "Live":
+                        is_live = True
+                except Exception:
+                    pass
+            
+            if is_live:
+                version_info = "Live"
+        
         result = {
             "artist_suggest": out_artist,
             "title_suggest": out_title,
-            "version_suggest": "",
+            "version_suggest": version_info,
             "genre_suggest": genre,
             "album_suggest": album,
             "year_suggest": year,
@@ -778,6 +963,10 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
         # Add release_group_id for cover art if available
         if rgid:
             result["release_group_id"] = rgid
+        
+        # Merge first release data
+        result.update(first_release_data)
+        
         return result
     except Exception:
         return None

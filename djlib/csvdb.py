@@ -11,6 +11,7 @@ FIELDNAMES = [
     "original_path",
     "file_hash",
     "fingerprint",
+    "skip_fingerprint",  # Set to "yes" to force using tags instead of AcoustID
     "added_date",
     "final_filename",
     "final_path",
@@ -28,6 +29,16 @@ FIELDNAMES = [
     "is_duplicate",
     "pop_playcount",
     "pop_listeners",
+    # MusicBrainz canonical first release data
+    "recording_mbid",
+    "release_group_id",  # MusicBrainz release-group MBID for cover art
+    "original_album_title",
+    "original_release_date",
+    "original_release_year",
+    "original_release_mbid",
+    "original_release_group_mbid",
+    "original_release_category",
+    "original_release_source",
 ]
 
 def load_records(csv_path: Path) -> List[Dict[str, str]]:

@@ -38,6 +38,19 @@ class RecordingMatch:
     length_ms: Optional[int]
 
 
+@dataclass
+class FirstReleaseAlbum:
+    """Canonical first release album for a recording from MusicBrainz."""
+    recording_mbid: str
+    release_mbid: str           # chosen release
+    release_group_mbid: str     # associated release-group
+    album_title: str
+    original_release_date: str  # e.g. "1975-12-01" or "1969-10-22" or "1999"
+    original_release_year: int  # first 4 digits
+    release_category: str       # "studio" or "live"
+    source: str = "musicbrainz_first_release"
+
+
 def _join_artist_credit(ac: list) -> str:
     parts = []
     for c in ac or []:
@@ -62,9 +75,70 @@ def _get_recording_by_id(rid: str) -> dict:
     return musicbrainzngs.get_recording_by_id(rid, includes=["tags","artists","releases"])  # type: ignore[arg-type]
 
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
+def _get_recording_by_id_with_releases(rid: str) -> dict:
+    """Get recording with full release+release-group data for first release resolution."""
+    _throttle_mb()
+    return musicbrainzngs.get_recording_by_id(rid, includes=["releases"])  # type: ignore[arg-type]
+
+@retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
+def _get_release_by_id(release_mbid: str) -> dict:
+    _throttle_mb()
+    return musicbrainzngs.get_release_by_id(release_mbid, includes=["release-groups"])  # type: ignore[arg-type]
+
+@retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_release_group_by_id(rgid: str) -> dict:
     _throttle_mb()
     return musicbrainzngs.get_release_group_by_id(rgid, includes=["tags", "releases"])  # type: ignore[arg-type]
+
+
+def get_release_year(release_mbid: str) -> Optional[str]:
+    """
+    Get ORIGINAL release year from MusicBrainz release MBID.
+    
+    Uses release-group's first-release-date instead of specific release date
+    to get the original/canonical year (not reissues).
+    
+    Args:
+        release_mbid: MusicBrainz release MBID
+    
+    Returns:
+        Original release year as string (e.g. "1975") or None if not found
+    """
+    try:
+        release_data = _get_release_by_id(release_mbid)
+        release = (release_data or {}).get("release", {})
+        
+        # Try to get first-release-date from release-group (original year)
+        rg = release.get("release-group", {})
+        rg_id = rg.get("id")
+        
+        if rg_id:
+            try:
+                rg_data = _get_release_group_by_id(rg_id)
+                rg_full = (rg_data or {}).get("release-group", {})
+                first_date = rg_full.get("first-release-date", "")
+                if first_date and len(first_date) >= 4:
+                    return first_date[:4]  # Extract year (YYYY)
+            except Exception:
+                pass
+        
+        # Fallback: use specific release date if first-release-date not available
+        date = release.get("date", "")
+        if date and len(date) >= 4:
+            return date[:4]  # Extract year (YYYY)
+    except Exception:
+        pass
+    return None
+
+
+def get_release_group_type(rgid: str) -> Optional[str]:
+    """Get primary-type of a release-group (Album, Single, EP, Live, Compilation, etc.)."""
+    try:
+        rg_data = _get_release_group_by_id(rgid)
+        rg = (rg_data or {}).get("release-group", {})
+        return rg.get("primary-type")
+    except Exception:
+        return None
 
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_artist_by_id(aid: str) -> dict:
@@ -278,4 +352,134 @@ def get_original_release_info(artist: str, title: str) -> Optional[Tuple[str, st
     except Exception:
         pass
     return None
+
+
+def mb_fetch_first_release_for_recording(recording_mbid: str, artist: str = "", title: str = "") -> Optional[FirstReleaseAlbum]:
+    """
+    Resolve the first/canonical studio release using release-group lookup.
+    
+    Strategy:
+    1. Get recording_mbid (from AcoustID or search)
+    2. Fetch releases for recording → extract unique release-group IDs
+    3. Fetch details for each RG, filter studio (not Live/Compilation)
+    4. Return earliest studio RG
+    
+    Note: This requires multiple API calls due to MB API limitations:
+    - recording?inc=releases returns releases (not release-groups)
+    - Must extract RG IDs from releases and fetch each separately
+    
+    Args:
+        recording_mbid: MusicBrainz recording ID (required)
+        artist: Artist name (used if no recording_mbid)
+        title: Track title (used if no recording_mbid)
+    
+    Returns:
+        FirstReleaseAlbum or None if resolution fails
+    """
+    if not recording_mbid and not (artist and title):
+        return None
+    
+    try:
+        # Step 1: Get recording_mbid if needed
+        if not recording_mbid and artist and title:
+            match = search_recording(artist, title)
+            if match and match.recording_id:
+                recording_mbid = match.recording_id
+        
+        if not recording_mbid:
+            return None
+        
+        # Step 2: Get releases for this recording
+        rec_data = _get_recording_by_id_with_releases(recording_mbid)
+        rec = (rec_data or {}).get("recording", {})
+        releases = rec.get("release-list", [])
+        
+        if not releases:
+            return None
+        
+        # Step 3: Extract unique release-group IDs
+        rg_ids = set()
+        for rel in releases:
+            rg = rel.get("release-group", {})
+            rg_id = rg.get("id")
+            if rg_id:
+                rg_ids.add(rg_id)
+        
+        if not rg_ids:
+            return None
+        
+        # Step 4: Fetch details for each RG and filter for studio
+        studio_rgs = []
+        for rg_id in rg_ids:
+            try:
+                rg_data = _get_release_group_by_id(rg_id)
+                rg = (rg_data or {}).get("release-group", {})
+                
+                primary_type = rg.get("primary-type", "")
+                secondary_types = rg.get("secondary-type-list", [])
+                
+                is_live = "Live" in secondary_types or primary_type == "Live"
+                is_compilation = "Compilation" in secondary_types
+                
+                # Keep only studio albums with release date
+                if not is_live and not is_compilation and rg.get("first-release-date"):
+                    studio_rgs.append(rg)
+            except Exception:
+                continue
+        
+        if not studio_rgs:
+            return None
+        
+        # Step 5: Sort by first-release-date and pick earliest
+        studio_rgs.sort(key=lambda rg: rg.get("first-release-date", ""))
+        earliest_rg = studio_rgs[0]
+        
+        album_title = (earliest_rg.get("title") or "").strip()
+        first_release_date = earliest_rg.get("first-release-date", "")
+        rg_id = earliest_rg.get("id", "")
+        
+        if not album_title or not first_release_date or not rg_id:
+            return None
+        
+        # Extract year
+        year = int(first_release_date[:4]) if len(first_release_date) >= 4 else 0
+        if not year:
+            return None
+        
+        # Step 6: Get earliest official release MBID from this RG
+        release_mbid = ""
+        try:
+            releases = earliest_rg.get("release-list", [])
+            
+            official_releases = [
+                r for r in releases
+                if r.get("status") == "Official" and r.get("date")
+            ]
+            
+            if official_releases:
+                official_releases.sort(key=lambda r: r.get("date", ""))
+                release_mbid = official_releases[0].get("id", "")
+                # Use actual earliest release date (may be more precise)
+                earliest_date = official_releases[0].get("date", "")
+                if earliest_date and len(earliest_date) >= len(first_release_date):
+                    first_release_date = earliest_date
+                    if len(earliest_date) >= 4:
+                        year = int(earliest_date[:4])
+        except Exception:
+            pass
+        
+        return FirstReleaseAlbum(
+            recording_mbid=recording_mbid,
+            release_mbid=release_mbid,
+            release_group_mbid=rg_id,
+            album_title=album_title,
+            original_release_date=first_release_date,
+            original_release_year=year,
+            release_category="studio",
+            source="musicbrainz_first_release",
+        )
+    
+    except Exception:
+        return None
+        return None
 

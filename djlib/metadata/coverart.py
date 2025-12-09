@@ -43,9 +43,16 @@ def has_artwork(filepath: str) -> bool:
         return False
 
 def add_artwork(filepath: str, image_data: bytes, mime_type: str = 'image/jpeg') -> bool:
-    """Add APIC frame to MP3 file. Returns True if successful."""
+    """Add APIC frame to MP3 file. Removes all existing APIC frames first. Returns True if successful."""
     try:
         audio = ID3(filepath)
+        
+        # Remove ALL existing APIC frames (including APIC:Cover, APIC:SeratoArt, etc.)
+        apic_keys = [key for key in audio.keys() if key.startswith('APIC')]
+        for key in apic_keys:
+            audio.delall(key)
+        
+        # Add new cover art
         audio.add(APIC(
             encoding=3,  # UTF-8
             mime=mime_type,
@@ -58,37 +65,48 @@ def add_artwork(filepath: str, image_data: bytes, mime_type: str = 'image/jpeg')
     except Exception:
         return False
 
-def fetch_from_musicbrainz(release_group_id: str) -> Optional[Tuple[bytes, str]]:
+def fetch_from_musicbrainz(release_group_id: str, release_mbid: Optional[str] = None) -> Optional[Tuple[bytes, str]]:
     """Fetch cover art from MusicBrainz Cover Art Archive.
+    
+    Tries in order:
+    1. Specific release MBID (if provided) - most accurate
+    2. Release-group MBID (fallback) - may be generic
     
     Returns (image_data, mime_type) or None.
     Uses direct CAA API for 500px front cover.
     """
     global _LAST_CAA_REQUEST
     
-    if not release_group_id:
+    if not release_group_id and not release_mbid:
         return None
     
-    # Rate limiting
-    elapsed = time.time() - _LAST_CAA_REQUEST
-    if elapsed < CAA_MIN_INTERVAL:
-        time.sleep(CAA_MIN_INTERVAL - elapsed)
+    urls_to_try = []
     
-    try:
-        # Cover Art Archive API: https://coverartarchive.org/
-        # Format: https://coverartarchive.org/release-group/{mbid}/front-500
-        url = f"https://coverartarchive.org/release-group/{release_group_id}/front-500"
+    # Try release first (specific album edition)
+    if release_mbid:
+        urls_to_try.append(f"https://coverartarchive.org/release/{release_mbid}/front-500")
+    
+    # Then fallback to release-group (generic for all editions)
+    if release_group_id:
+        urls_to_try.append(f"https://coverartarchive.org/release-group/{release_group_id}/front-500")
+    
+    for url in urls_to_try:
+        # Rate limiting
+        elapsed = time.time() - _LAST_CAA_REQUEST
+        if elapsed < CAA_MIN_INTERVAL:
+            time.sleep(CAA_MIN_INTERVAL - elapsed)
         
-        _LAST_CAA_REQUEST = time.time()
-        response = requests.get(url, timeout=10)
-        
-        if response.status_code == 200:
-            mime_type = response.headers.get('Content-Type', 'image/jpeg')
-            return (response.content, mime_type)
-        
-        return None
-    except Exception:
-        return None
+        try:
+            _LAST_CAA_REQUEST = time.time()
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                mime_type = response.headers.get('Content-Type', 'image/jpeg')
+                return (response.content, mime_type)
+        except Exception:
+            continue
+    
+    return None
 
 def fetch_from_lastfm(artist: str, album: str, api_key: str) -> Optional[Tuple[bytes, str]]:
     """Fetch cover art from Last.fm album.getInfo API.
@@ -140,6 +158,56 @@ def fetch_from_lastfm(artist: str, album: str, api_key: str) -> Optional[Tuple[b
                     if img_response.status_code == 200:
                         mime_type = img_response.headers.get('Content-Type', 'image/jpeg')
                         return (img_response.content, mime_type)
+        
+        return None
+    except Exception:
+        return None
+
+def get_lastfm_cover_url(artist: str, album: str, api_key: str) -> Optional[str]:
+    """Get Last.fm cover art URL without downloading the image.
+    
+    Returns URL string or None.
+    Uses 'extralarge' size (300x300).
+    """
+    global _LAST_LASTFM_REQUEST
+    
+    if not artist or not album or not api_key:
+        return None
+    
+    # Rate limiting
+    elapsed = time.time() - _LAST_LASTFM_REQUEST
+    if elapsed < LASTFM_MIN_INTERVAL:
+        time.sleep(LASTFM_MIN_INTERVAL - elapsed)
+    
+    try:
+        # Last.fm API: album.getInfo
+        url = "https://ws.audioscrobbler.com/2.0/"
+        params = {
+            'method': 'album.getInfo',
+            'artist': artist,
+            'album': album,
+            'api_key': api_key,
+            'format': 'json'
+        }
+        
+        _LAST_LASTFM_REQUEST = time.time()
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code != 200:
+            return None
+        
+        data = response.json()
+        album_data = data.get('album')
+        if not album_data:
+            return None
+        
+        # Get largest available image URL
+        images = album_data.get('image', [])
+        for img in reversed(images):  # Start from largest
+            if img.get('size') in ['extralarge', 'large']:
+                image_url = img.get('#text')
+                if image_url and not image_url.endswith('2a96cbd8b46e442fc41c2b86b821562f.png'):  # Skip Last.fm placeholder
+                    return image_url
         
         return None
     except Exception:
@@ -236,9 +304,12 @@ def get_cover_art_url(
     artist: str,
     title: str,
     version: str = "",
+    album: str = "",
     release_group_id: Optional[str] = None,
+    release_mbid: Optional[str] = None,
     beatport_artwork_url: Optional[str] = None,
     soundcloud_client_id: Optional[str] = None,
+    lastfm_api_key: Optional[str] = None,
 ) -> Optional[str]:
     """Get cover art URL without downloading the image.
     
@@ -248,15 +319,31 @@ def get_cover_art_url(
         URL string or None
     """
     # For ORIGINALS: try MusicBrainz first (skip for remixes)
-    if not version and release_group_id:
-        return f"https://coverartarchive.org/release-group/{release_group_id}/front-500"
+    # Prefer release-group over specific release (more reliable for cover art)
+    # If we only have release_mbid (no release_group_id), skip to Last.fm fallback
+    # since many canonical releases don't have cover art
+    if not version:
+        if release_group_id:
+            return f"https://coverartarchive.org/release-group/{release_group_id}/front-500"
+        # Skip release_mbid if we have Last.fm available (more reliable than specific releases)
+        # elif release_mbid:
+        #     return f"https://coverartarchive.org/release/{release_mbid}/front-500"
     
-    # Try Beatport
+    # Try Beatport (CLI verifies match before passing URL)
     if beatport_artwork_url:
         # Replace {w}x{h} placeholder with 1400x1400
         if '{w}x{h}' in beatport_artwork_url:
             return beatport_artwork_url.replace('{w}x{h}', '1400x1400')
         return beatport_artwork_url
+    
+    # Try Last.fm (fallback for originals when MusicBrainz has no cover)
+    if not version and album and lastfm_api_key:
+        try:
+            lfm_url = get_lastfm_cover_url(artist, album, lastfm_api_key)
+            if lfm_url:
+                return lfm_url
+        except Exception:
+            pass
     
     # Try SoundCloud (for remixes prioritized, for originals last resort)
     if soundcloud_client_id:
@@ -278,18 +365,20 @@ def fetch_cover_art(
     title: str,
     version: str = "",
     release_group_id: Optional[str] = None,
+    release_mbid: Optional[str] = None,
     beatport_artwork_url: Optional[str] = None,
     lastfm_api_key: Optional[str] = None,
     soundcloud_client_id: Optional[str] = None,
     skip_if_exists: bool = True,
-    disable_beatport: bool = False
+    disable_beatport: bool = False,
+    cover_art_url: Optional[str] = None
 ) -> Tuple[bool, str]:
     """Fetch and add cover art to MP3 file using multi-source fallback.
     
     Priority chain:
     
     For ORIGINALS (no version):
-    1. MusicBrainz Cover Art Archive (500px)
+    1. MusicBrainz Cover Art Archive (500px) - tries release first, then release-group
     2. Beatport dynamic URI (1400x1400 - highest quality for EDM)
     3. Last.fm album.getInfo (300x300)
     4. SoundCloud track artwork (500x500)
@@ -306,11 +395,13 @@ def fetch_cover_art(
         title: Track title (for SoundCloud)
         version: Track version/remix info (for SoundCloud)
         release_group_id: MusicBrainz release group ID (optional, ignored for remixes)
+        release_mbid: MusicBrainz release ID (optional, more specific than release_group_id)
         beatport_artwork_url: Beatport dynamic URI (optional, best quality for EDM)
         lastfm_api_key: Last.fm API key (optional)
         soundcloud_client_id: SoundCloud client ID (optional)
         skip_if_exists: If True, skip files that already have artwork
         disable_beatport: If True, skip Beatport artwork fetching
+        cover_art_url: Pre-fetched cover art URL (optional, if provided will be used directly)
     
     Returns:
         (success: bool, source: str) where source is 'mb', 'beatport', 'lastfm', 'soundcloud', 'exists', or 'failed'
@@ -319,16 +410,37 @@ def fetch_cover_art(
     if skip_if_exists and has_artwork(filepath):
         return (True, 'exists')
     
+    # If cover_art_url was provided (pre-fetched), download directly
+    if cover_art_url:
+        try:
+            response = requests.get(cover_art_url, timeout=10)
+            if response.status_code == 200:
+                mime_type = response.headers.get('Content-Type', 'image/jpeg')
+                if add_artwork(filepath, response.content, mime_type):
+                    # Determine source from URL
+                    if 'coverartarchive.org' in cover_art_url:
+                        return (True, 'mb')
+                    elif 'sndcdn.com' in cover_art_url:
+                        return (True, 'soundcloud')
+                    elif 'beatsource.com' in cover_art_url or 'beatport' in cover_art_url:
+                        return (True, 'beatport')
+                    elif 'lastfm' in cover_art_url:
+                        return (True, 'lastfm')
+                    else:
+                        return (True, 'direct_url')
+        except Exception:
+            pass  # Fall through to normal priority chain
+    
     # For ORIGINALS: try MusicBrainz first (skip for remixes - returns original cover)
-    if not version and release_group_id:
-        result = fetch_from_musicbrainz(release_group_id)
+    if not version and (release_group_id or release_mbid):
+        result = fetch_from_musicbrainz(release_group_id, release_mbid)
         if result:
             image_data, mime_type = result
             if add_artwork(filepath, image_data, mime_type):
                 return (True, 'mb')
     
     # Try Beatport (best quality for EDM - 1400x1400)
-    # For remixes: CLI already verified this is the actual remix, not original
+    # CLI verifies match quality (artist+title+version) before passing artwork_url
     if not disable_beatport and beatport_artwork_url:
         result = fetch_from_beatport(beatport_artwork_url)
         if result:

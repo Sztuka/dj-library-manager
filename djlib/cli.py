@@ -18,6 +18,7 @@ from djlib.tags import read_tags, write_tags
 from djlib.rekordbox_status import was_analyzed, extract_metadata_from_db
 from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
 from djlib.metadata.genre_resolver import resolve as resolve_genres
+from djlib.metadata.canonical_mb import import_canonical_dump as do_import_canonical_dump, get_canonical_db_path
 from djlib.fingerprint import file_sha256, fingerprint_info
 from djlib.filename import build_final_filename, extension_for, split_title_and_version, merge_title_and_version
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
@@ -422,7 +423,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     mb_set = 0
     lfm_set = 0
     covers_added = 0
-    covers_skipped = 0
     covers_failed = 0
     # Check API credentials presence for diagnostics
     try:
@@ -577,7 +577,9 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         ) or not r.get("genre_suggest")  # nadpisz jeśli genre pusty
         any_change = False
         for k, v in online.items():
-            if k in {"artist_suggest","title_suggest","version_suggest","genre_suggest","album_suggest","year_suggest","duration_suggest"}:
+            if k in {"artist_suggest","title_suggest","version_suggest","genre_suggest","album_suggest","release_group_id","year_suggest","duration_suggest",
+                     "recording_mbid","original_album_title","original_release_date","original_release_year","original_release_mbid",
+                     "original_release_group_mbid","original_release_category","original_release_source"}:
                 cur = (r.get(k) or "").strip()
                 if (not cur and v) or (allow_override and v and cur != v):
                     r[k] = v
@@ -677,15 +679,13 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         if any_change:
             changed += 1
         
-        # Fetch cover art if --fetch-covers flag is set
+        # Fetch cover art URLs if --fetch-covers flag is set (doesn't write to MP3 yet)
         if fetch_covers:
             try:
-                from djlib.metadata.coverart import fetch_cover_art
-                from djlib.config import get_lastfm_api_key
+                
                 from djlib.metadata.soundcloud import get_valid_client_id
                 
                 # Get API keys
-                lastfm_key = get_lastfm_api_key()
                 soundcloud_id = get_valid_client_id() if not getattr(args, "skip_soundcloud", False) else None
                 
                 # Extract metadata for cover fetching
@@ -697,13 +697,37 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 # Try to get MusicBrainz release_group_id from online enrichment
                 # Skip MusicBrainz for remixes (returns original cover, not remix)
                 release_group_id = None
-                if not version and online:
-                    release_group_id = online.get("release_group_id")
+                release_mbid = None
+                if not version:
+                    if online:
+                        release_group_id = online.get("release_group_id")
+                        # Prefer canonical first release MBID if available (from online OR existing in Excel)
+                        release_mbid = online.get("original_release_mbid") or r.get("original_release_mbid")
+                    else:
+                        # Even if online is None (e.g., mismatch detection rejected AcoustID),
+                        # try to use existing original_release_mbid from Excel
+                        release_mbid = r.get("original_release_mbid")
+                    
+                    # If we have release_mbid but no release_group_id, fetch it from MB
+                    # (moved outside else block to handle canonical data which has release_mbid but no RG)
+                    if release_mbid and not release_group_id:
+                        try:
+                            from djlib.metadata import mb_client
+                            rel_data = mb_client._get_release_by_id(release_mbid)
+                            rel = rel_data.get("release", {})
+                            if "release-group" in rel:
+                                release_group_id = rel["release-group"]["id"]
+                                # Save to Excel for future use
+                                r["release_group_id"] = release_group_id
+                                any_change = True  # Mark as changed so it gets saved
+                        except Exception:
+                            pass
                 
                 # Try to get Beatport artwork URL
-                # For remixes: search with version in title and verify match (like year logic)
+                # ONLY for remixes - Beatport has covers for specific remixes
+                # For originals, prefer MusicBrainz/Last.fm (more reliable album matching)
                 beatport_artwork_url = None
-                if not getattr(args, "skip_beatport", False):
+                if version and not getattr(args, "skip_beatport", False):
                     try:
                         from djlib.metadata.beatport import search_track as bp_search
                         dur_s = None
@@ -716,70 +740,70 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                                 pass
                         
                         # For remixes, include version in search to find specific remix
-                        search_title = title
-                        if version:
-                            search_title = f"{title} {version}"
+                        search_title = f"{title} {version}"
                         
                         bp_result = bp_search(artist, search_title, dur_s)
                         if bp_result:
-                            # For remixes: verify Beatport found the actual remix, not original
-                            if version:
-                                bp_title = bp_result.get("title", "").lower()
-                                bp_version = (bp_result.get("version") or "").lower()
-                                version_lower = version.lower()
-                                version_found = (
-                                    version_lower in bp_title or
-                                    version_lower in bp_version or
-                                    any(word in bp_version for word in version_lower.split() if len(word) > 3)
-                                )
-                                if version_found:
-                                    beatport_artwork_url = bp_result.get("artwork_url")
-                                # If version not found, ignore - Beatport returned original
-                            else:
-                                # For originals, always use artwork
+                            # Verify Beatport match (artist + title + version)
+                            bp_title = bp_result.get("title", "").lower()
+                            bp_artist = bp_result.get("artist", "").lower()
+                            bp_version = (bp_result.get("version") or "").lower()
+                            
+                            # Check artist match (fuzzy: AC/DC vs ACDC vs AC DC)
+                            artist_lower = artist.lower().replace("/", "").replace(" ", "")
+                            bp_artist_normalized = bp_artist.replace("/", "").replace(" ", "")
+                            artist_match = artist_lower in bp_artist_normalized or bp_artist_normalized in artist_lower
+                            
+                            # Check title match (fuzzy: T.N.T. vs TNT)
+                            title_lower = title.lower().replace(".", "").replace(" ", "")
+                            bp_title_normalized = bp_title.replace(".", "").replace(" ", "")
+                            title_match = title_lower in bp_title_normalized or bp_title_normalized in title_lower
+                            
+                            # Verify version/remix info
+                            version_lower = version.lower()
+                            version_found = (
+                                version_lower in bp_title or
+                                version_lower in bp_version or
+                                any(word in bp_version for word in version_lower.split() if len(word) > 3)
+                            )
+                            # Accept only if artist + title + version all match
+                            if artist_match and title_match and version_found:
                                 beatport_artwork_url = bp_result.get("artwork_url")
                     except Exception:
                         pass
                 
                 if artist and title:
-                    # First, try to get cover art URL (always, even if cover exists)
+                    # Get cover art URL for Excel preview (doesn't write to MP3)
                     from djlib.metadata.coverart import get_cover_art_url
+                    
+                    # Get Last.fm API key if available
+                    lastfm_key = None
+                    try:
+                        from djlib.metadata.lastfm import get_lastfm_api_key
+                        lastfm_key = get_lastfm_api_key()
+                    except Exception:
+                        pass
+                    
                     cover_url = get_cover_art_url(
                         artist=artist,
                         title=title,
                         version=version,
+                        album=album,
                         release_group_id=release_group_id,
+                        release_mbid=release_mbid,
                         beatport_artwork_url=beatport_artwork_url,
                         soundcloud_client_id=soundcloud_id,
+                        lastfm_api_key=lastfm_key,
                     )
                     if cover_url:
                         r["cover_art_url"] = cover_url
-                    
-                    # Then fetch/download cover art to file
-                    success, source = fetch_cover_art(
-                        filepath=str(p),
-                        artist=artist,
-                        album=album,
-                        title=title,
-                        version=version,
-                        release_group_id=release_group_id,
-                        beatport_artwork_url=beatport_artwork_url,
-                        lastfm_api_key=lastfm_key,
-                        soundcloud_client_id=soundcloud_id,
-                        skip_if_exists=True,
-                        disable_beatport=getattr(args, "skip_beatport", False)
-                    )
-                    
-                    if source == 'exists':
-                        covers_skipped += 1
-                    elif success:
+                        any_change = True  # Mark as changed
                         covers_added += 1
-                        print(f"   🎨 {p.name}: okładka dodana ({source})")
                     else:
                         covers_failed += 1
             except Exception as e:
                 covers_failed += 1
-                print(f"   ⚠ Cover art error for {p.name}: {e}")
+                print(f"   ⚠ Cover art URL error for {p.name}: {e}")
         
         # Auto-fill artist/title if still empty and we now have suggest values (quality-of-life)
         if not (r.get("artist") or "").strip() and (r.get("artist_suggest") or "").strip():
@@ -876,7 +900,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         if len(genre_unmapped) > 10:
             print(f"      ... and {len(genre_unmapped) - 10} more")
     if fetch_covers:
-        print(f"🎨 Okładki: added={covers_added}, skipped={covers_skipped}, failed={covers_failed}")
+        print(f"🎨 Okładki URL: found={covers_added}, failed={covers_failed} (zapisane tylko do Excel, nie do MP3)")
     if not _lfm_key_present:
         print("   ⚠ Brak LASTFM_API_KEY (DJLIB_LASTFM_API_KEY) — kolumna genres_lastfm może pozostać pusta.")
     if sc_health_msg:
@@ -1031,6 +1055,18 @@ def cmd_apply(args: argparse.Namespace) -> None:
     """
     from djlib.logistics import build_library_path, build_reject_path, build_archive_path, build_mixes_path
     
+    # Check if Rekordbox is running before starting
+    try:
+        from pyrekordbox.utils import get_rekordbox_pid
+        pid = get_rekordbox_pid()
+        if pid:
+            print(f"\n⚠️  WARNING: Rekordbox is currently running (PID {pid})")
+            print("    Cover art will NOT be updated in Rekordbox database.")
+            print("    Please close Rekordbox and re-run apply for automatic cover art sync.")
+            print("    (You can continue, but will need to manually 'Reload Tags' in Rekordbox)\n")
+    except ImportError:
+        pass  # pyrekordbox not available
+    
     rows = _load_unsorted()
     ready = [r for r in rows if is_done(r.get("done"))]
     if not ready:
@@ -1042,6 +1078,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
     tags_errors = 0
     tags_cleaned = 0
     tags_clean_errors = 0
+    covers_applied = 0
+    covers_skipped = 0
+    covers_failed = 0
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1224,6 +1263,59 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 tags_cleaned += 1
                 print(f"   ✅ Cleaned {len(result['removed_tags'])} spam tags")
             
+            # Step 1.5: Apply cover art to file (if cover_art_url exists)
+            cover_url = r.get("cover_art_url", "").strip()
+            cover_action = (r.get("cover_art_action") or "replace").strip().lower()
+            
+            if cover_url and cover_action != "keep":
+                print(f"   Step 1.5: Applying cover art...")
+                try:
+                    from djlib.metadata.coverart import fetch_cover_art
+                    
+                    # Determine if cover should be skipped based on action
+                    skip_existing = (cover_action == "keep")
+                    
+                    # Extract metadata for fetch_cover_art
+                    artist_meta = (r.get("artist_suggest") or r.get("artist") or "").strip()
+                    title_meta = (r.get("title_suggest") or r.get("title") or "").strip()
+                    album_meta = (r.get("album_suggest") or r.get("album") or "").strip()
+                    version_meta = (r.get("version_suggest") or r.get("version_info") or "").strip()
+                    
+                    # Try to fetch/apply cover art
+                    success, source = fetch_cover_art(
+                        filepath=str(dest_path),
+                        artist=artist_meta,
+                        album=album_meta,
+                        title=title_meta,
+                        version=version_meta,
+                        skip_if_exists=skip_existing,
+                        cover_art_url=cover_url  # Use pre-fetched URL from enrich-online
+                    )
+                    
+                    if source == 'exists':
+                        covers_skipped += 1
+                        print(f"   ⏭️  Cover art already exists, skipped")
+                    elif success:
+                        covers_applied += 1
+                        print(f"   ✅ Cover art applied from {source}")
+                        
+                        # Add cover art to Rekordbox database
+                        try:
+                            from djlib.external_sync import refresh_rekordbox_cover_art
+                            if refresh_rekordbox_cover_art(dest_path):
+                                print(f"   🔄 Rekordbox: Cover art added to database")
+                        except Exception:
+                            pass  # Rekordbox refresh is optional, don't fail if it errors
+                    else:
+                        covers_failed += 1
+                        print(f"   ⚠️  Cover art fetch failed (had URL: {cover_url[:50]}...)")
+                except Exception as e:
+                    covers_failed += 1
+                    print(f"   ⚠️  Cover art error: {e}")
+            elif cover_url and cover_action == "keep":
+                covers_skipped += 1
+                print(f"   ⏭️  Cover art: action=keep, preserving existing")
+            
             # Teraz zapisz właściwe metadane
             print(f"   Step 2: Writing metadata tags...")
             updates = {}
@@ -1293,6 +1385,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
     save_records(CSV_PATH, library_rows)
     print(f"Przeniesiono {len(processed_ids)} pozycji do biblioteki.")
     print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")
+    print(f"🎨 Okładki: applied={covers_applied}, skipped={covers_skipped}, failed={covers_failed}")
     print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
     
     # Auto-sync with DJ software libraries (Rekordbox + Traktor)
@@ -1399,6 +1492,60 @@ def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
     print("   3. Optionally run: python -m djlib.cli analyze-audio (for ML features)")
     print()
     return
+
+def cmd_import_canonical_dump(args: argparse.Namespace) -> None:
+    """Import MusicBrainz Canonical Data dump into SQLite database."""
+    from pathlib import Path
+    
+    db_path = get_canonical_db_path()
+    
+    # Check if database exists
+    if db_path.exists() and not getattr(args, "force", False):
+        print(f"✅ Database already exists: {db_path}")
+        print(f"   Size: {db_path.stat().st_size / (1024**3):.2f} GB")
+        print("\nUse --force to rebuild.")
+        return
+    
+    # Find dump file
+    dump_path = getattr(args, "dump", None)
+    if dump_path:
+        dump_path = Path(dump_path)
+        if not dump_path.exists():
+            print(f"❌ Dump file not found: {dump_path}")
+            return
+    else:
+        # Auto-detect dump in data/ folder
+        data_dir = db_path.parent
+        dump_files = list(data_dir.glob("musicbrainz-canonical-dump-*.tar.zst"))
+        
+        if not dump_files:
+            print("❌ No canonical dump found in data/ folder.")
+            print("\nDownload from:")
+            print("https://data.metabrainz.org/pub/musicbrainz/canonical_data/")
+            print("\nExample:")
+            print("  cd data/")
+            print("  curl -O https://data.metabrainz.org/pub/musicbrainz/canonical_data/musicbrainz-canonical-dump-YYYYMMDD-HHMMSS/musicbrainz-canonical-dump-YYYYMMDD-HHMMSS.tar.zst")
+            return
+        
+        # Use most recent dump
+        dump_path = sorted(dump_files)[-1]
+        print(f"📦 Found dump: {dump_path.name}")
+    
+    print(f"\n🔧 Importing canonical data...")
+    print(f"   Dump: {dump_path}")
+    print(f"   Database: {db_path}")
+    print("\nThis will take several minutes. Please wait...\n")
+    
+    try:
+        do_import_canonical_dump(dump_path, db_path)
+        print(f"\n✅ Import complete!")
+        print(f"   Database: {db_path}")
+        print(f"   Size: {db_path.stat().st_size / (1024**3):.2f} GB")
+    except Exception as e:
+        print(f"\n❌ Import failed: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 def cmd_genres_resolve(args: argparse.Namespace) -> None:
     artist = (getattr(args, "artist", None) or "").strip()
@@ -2381,6 +2528,12 @@ def build_parser() -> argparse.ArgumentParser:
     res.set_defaults(func=cmd_genres_resolve)
 
     # REMOVED: detect-taxonomy and taxonomy-backup commands (legacy bucketing system)
+    
+    # Import MusicBrainz Canonical Data dump
+    icd = sp.add_parser("import-canonical-dump", help="Import MusicBrainz Canonical Data dump to SQLite")
+    icd.add_argument("--dump", required=False, help="Path to .tar.zst dump file (auto-detect if not provided)")
+    icd.add_argument("--force", action="store_true", help="Rebuild database even if it exists")
+    icd.set_defaults(func=cmd_import_canonical_dump)
     
     return p
 
