@@ -579,7 +579,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         for k, v in online.items():
             if k in {"artist_suggest","title_suggest","version_suggest","genre_suggest","album_suggest","release_group_id","year_suggest","duration_suggest",
                      "recording_mbid","original_album_title","original_release_date","original_release_year","original_release_mbid",
-                     "original_release_group_mbid","original_release_category","original_release_source"}:
+                     "original_release_group_mbid","original_release_category","original_release_source",
+                     "archive_org_identifier","archive_org_cover_url"}:
                 cur = (r.get(k) or "").strip()
                 if (not cur and v) or (allow_override and v and cur != v):
                     r[k] = v
@@ -775,6 +776,18 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 if artist and title:
                     # Get cover art URL for Excel preview (doesn't write to MP3)
                     from djlib.metadata.coverart import get_cover_art_url
+
+                    # Archive.org (if online enrichment found it or if already stored in Excel)
+                    archive_org_identifier = None
+                    archive_org_cover_url = None
+                    try:
+                        if online:
+                            archive_org_identifier = online.get("archive_org_identifier")
+                            archive_org_cover_url = online.get("archive_org_cover_url")
+                    except Exception:
+                        pass
+                    archive_org_identifier = archive_org_identifier or r.get("archive_org_identifier")
+                    archive_org_cover_url = archive_org_cover_url or r.get("archive_org_cover_url")
                     
                     # Get Last.fm API key if available
                     lastfm_key = None
@@ -791,6 +804,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         album=album,
                         release_group_id=release_group_id,
                         release_mbid=release_mbid,
+                        archive_org_identifier=archive_org_identifier,
+                        archive_org_cover_url=archive_org_cover_url,
                         beatport_artwork_url=beatport_artwork_url,
                         soundcloud_client_id=soundcloud_id,
                         lastfm_api_key=lastfm_key,

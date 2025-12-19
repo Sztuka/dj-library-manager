@@ -123,6 +123,7 @@ def fingerprint_info(path: Path) -> tuple[int, str]:
     duration zwracamy jako int sekund.
     """
     fpcalc_path = ensure_fpcalc_in_env()
+    
     # 1) Spróbuj przez pyacoustid (najprościej)
     try:
         duration_val, fp_raw = acoustid.fingerprint_file(str(path))

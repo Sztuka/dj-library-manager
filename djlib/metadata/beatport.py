@@ -33,6 +33,51 @@ API_BASE = "https://api.beatport.com/v4"
 CACHE_DIR = Path.home() / ".djlib"
 TOKEN_CACHE = CACHE_DIR / "beatport_token.json"
 
+# In-process cache to avoid repeated disk reads / refresh checks
+_TOKEN_IN_MEMORY: Optional[str] = None
+
+# Refresh cooldown (avoid repeated Playwright logins across rows/runs)
+REFRESH_COOLDOWN_SECONDS = 10 * 60
+
+
+def _now_ts() -> float:
+    return time.time()
+
+
+def _load_cache_doc() -> Dict:
+    if not TOKEN_CACHE.exists():
+        return {}
+    try:
+        with open(TOKEN_CACHE, "r") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_cache_doc(data: Dict) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(TOKEN_CACHE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def _get_last_refresh_attempt_ts() -> Optional[float]:
+    doc = _load_cache_doc()
+    ts = doc.get("last_refresh_attempt_ts")
+    try:
+        return float(ts) if ts is not None else None
+    except Exception:
+        return None
+
+
+def _set_last_refresh_attempt_ts(ts: float) -> None:
+    doc = _load_cache_doc()
+    doc["last_refresh_attempt_ts"] = ts
+    _save_cache_doc(doc)
+
 
 def _decode_jwt(token: str) -> Dict | None:
     """Decode JWT payload without verification (for expiry check)."""
@@ -103,20 +148,19 @@ def _save_cached_token(token: str) -> None:
     # Save to memory immediately
     _MEMORY_TOKEN = token
     
-    # Save to file
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    
     payload = _decode_jwt(token)
     exp_timestamp = payload.get("exp", 0) if payload else 0
-    
-    data = {
-        "token": token,
-        "cached_at": datetime.now(timezone.utc).isoformat(),
-        "expires_at": datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).isoformat() if exp_timestamp else None
-    }
-    
-    with open(TOKEN_CACHE, "w") as f:
-        json.dump(data, f, indent=2)
+
+    doc = _load_cache_doc()
+    doc.update(
+        {
+            "token": token,
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).isoformat() if exp_timestamp else None,
+            "last_refresh_attempt_ts": _now_ts(),
+        }
+    )
+    _save_cache_doc(doc)
 
 
 def _refresh_token_with_playwright() -> str:
@@ -296,7 +340,7 @@ def _refresh_token_with_playwright() -> str:
     return captured_token
 
 
-def get_valid_token(max_retries: int = 2) -> str:
+def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str:
     """Get valid Beatport token - auto-refresh if expired.
     
     Args:
@@ -309,11 +353,27 @@ def get_valid_token(max_retries: int = 2) -> str:
         Exception if refresh fails or credentials missing
     """
     global _REFRESHING
+    global _TOKEN_IN_MEMORY
+
+    # Fast path: in-process token already loaded
+    if _TOKEN_IN_MEMORY:
+        return _TOKEN_IN_MEMORY
     
     # Try cached token first
     token = _load_cached_token()
     if token:
+        _TOKEN_IN_MEMORY = token
         return token
+
+    # No valid cached token. Apply cooldown to refresh attempts unless forced.
+    if not force_refresh:
+        last_ts = _get_last_refresh_attempt_ts()
+        if last_ts is not None and (_now_ts() - last_ts) < REFRESH_COOLDOWN_SECONDS:
+            remaining = int(REFRESH_COOLDOWN_SECONDS - (_now_ts() - last_ts))
+            raise Exception(
+                f"Beatport token refresh cooldown active ({remaining}s left). "
+                "Cached token is missing/expired; wait or retry later."
+            )
     
     # If another process is already refreshing, wait and retry
     if _REFRESHING:
@@ -330,12 +390,15 @@ def get_valid_token(max_retries: int = 2) -> str:
     _REFRESHING = True
     
     try:
+        # Record refresh attempt time (cross-process)
+        _set_last_refresh_attempt_ts(_now_ts())
         # Token expired or missing - refresh with retry limit
         last_error = None
         for attempt in range(max_retries):
             try:
                 token = _refresh_token_with_playwright()
                 _save_cached_token(token)
+                _TOKEN_IN_MEMORY = token
                 return token
             except Exception as e:
                 last_error = e
@@ -397,9 +460,19 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
             # This prevents infinite loops
             if TOKEN_CACHE.exists():
                 TOKEN_CACHE.unlink()
-            
-            print("⚠ Beatport token expired. Re-run command to refresh.")
-            return None
+
+            # Try one forced refresh (bypass cooldown) and retry once.
+            try:
+                token = get_valid_token(force_refresh=True)
+                response = requests.get(
+                    f"{API_BASE}/catalog/search/",
+                    params={"q": query, "type": "tracks"},
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10,
+                )
+            except Exception:
+                print("⚠ Beatport token expired. Re-run command to refresh.")
+                return None
         
         if response.status_code != 200:
             return None

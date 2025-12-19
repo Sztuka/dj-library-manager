@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 try:
     from pyrekordbox import Rekordbox6Database
+    from pyrekordbox.utils import get_rekordbox_pid
     PYREKORDBOX_AVAILABLE = True
 except ImportError:
     Rekordbox6Database = None  # type: ignore[assignment,misc]
@@ -920,6 +921,120 @@ def create_path_map(move_log_path: Path,
 
 
 # ============ PHASE 3: PATH SYNC (WRITE - EXPLICIT OPT-IN) ============
+
+def refresh_rekordbox_cover_art(file_path: Path) -> bool:
+    """
+    Extract cover art from MP3 and add to Rekordbox database.
+    
+    Rekordbox stores cover art as external JPEG files in /PIONEER/Artwork/{uuid}/artwork.jpg
+    and references them via Content.ImagePath. This function:
+    1. Extracts APIC frame from audio file
+    2. Saves as JPEG in Rekordbox artwork directory
+    3. Updates Content.ImagePath in database
+    
+    Args:
+        file_path: Absolute path to the audio file
+        
+    Returns:
+        True if successfully added cover art to Rekordbox, False otherwise
+    """
+    if not PYREKORDBOX_AVAILABLE:
+        return False
+    
+    # Check if Rekordbox is running - must be closed for DB modifications
+    pid = get_rekordbox_pid()
+    if pid:
+        print(f"⚠️  Rekordbox is running (PID {pid}). Please close Rekordbox before updating cover art.")
+        return False
+    
+    rekordbox_db_path = Path.home() / "Library" / "Pioneer" / "rekordbox" / "master.db"
+    if not rekordbox_db_path.exists():
+        return False
+    
+    # Rekordbox artwork directory
+    artwork_base = Path.home() / "Library" / "Pioneer" / "rekordbox" / "share" / "PIONEER" / "Artwork"
+    
+    try:
+        # 1. Extract cover art from audio file
+        from mutagen.id3 import ID3
+        audio = ID3(str(file_path))
+        
+        # Find APIC frame
+        apic_data = None
+        for key in audio.keys():
+            if key.startswith('APIC'):
+                apic_data = audio[key].data
+                break
+        
+        if not apic_data:
+            # No cover art in file
+            return False
+        
+        # 2. Convert/resize cover art to match Rekordbox format (500x500, optimized JPEG)
+        from PIL import Image
+        import io
+        
+        # Load image from APIC data
+        img = Image.open(io.BytesIO(apic_data))
+        
+        # Resize to 500x500 (Rekordbox standard size)
+        if img.size != (500, 500):
+            # Use high-quality resampling
+            img = img.resize((500, 500), Image.Resampling.LANCZOS)
+        
+        # Convert to RGB if needed (remove alpha channel)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Save as optimized JPEG
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=85, optimize=True)
+        optimized_data = output.getvalue()
+        
+        # 3. Save to Rekordbox artwork directory with UUID structure
+        import uuid
+        artwork_uuid = str(uuid.uuid4())  # e.g., 'f49ed70d-2592-46c8-8514-5c6fa0345c34'
+        
+        # Rekordbox splits UUID: first 3 chars as folder, rest as subfolder
+        # Format: /PIONEER/Artwork/{uuid[:3]}/{uuid[3:]}/artwork.jpg
+        uuid_folder = artwork_uuid[:3]        # e.g., 'f49'
+        uuid_subfolder = artwork_uuid[3:]     # e.g., 'ed70d-2592-46c8-8514-5c6fa0345c34'
+        
+        artwork_subdir = artwork_base / uuid_folder / uuid_subfolder
+        artwork_subdir.mkdir(parents=True, exist_ok=True)
+        artwork_file = artwork_subdir / "artwork.jpg"
+        
+        # Write optimized JPEG (not original APIC data)
+        with artwork_file.open('wb') as f:
+            f.write(optimized_data)
+        
+        # 3. Update Rekordbox database
+        assert Rekordbox6Database is not None
+        db = Rekordbox6Database(rekordbox_db_path)
+        
+        # Find track by path
+        file_path_str = str(file_path)
+        content = None
+        for c in db.get_content():
+            if getattr(c, 'FolderPath', '') == file_path_str:
+                content = c
+                break
+        
+        if not content:
+            # Track not in Rekordbox yet
+            db.close()
+            return False
+        
+        # Set ImagePath using Rekordbox's UUID-based path format
+        rekordbox_image_path = f"/PIONEER/Artwork/{uuid_folder}/{uuid_subfolder}/artwork.jpg"
+        content.ImagePath = rekordbox_image_path
+        
+        db.commit()
+        db.close()
+        return True
+        
+    except Exception:
+        return False
 
 def add_tracks_to_rekordbox(
     tracks: List[Dict[str, Any]],

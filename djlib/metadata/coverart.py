@@ -307,6 +307,8 @@ def get_cover_art_url(
     album: str = "",
     release_group_id: Optional[str] = None,
     release_mbid: Optional[str] = None,
+    archive_org_identifier: Optional[str] = None,
+    archive_org_cover_url: Optional[str] = None,
     beatport_artwork_url: Optional[str] = None,
     soundcloud_client_id: Optional[str] = None,
     lastfm_api_key: Optional[str] = None,
@@ -318,6 +320,18 @@ def get_cover_art_url(
     Returns:
         URL string or None
     """
+    # Archive.org (best for live recordings when available)
+    if archive_org_cover_url:
+        return archive_org_cover_url
+    if archive_org_identifier:
+        try:
+            from djlib.metadata import archive_org
+            url = archive_org.get_cover_url(archive_org_identifier)
+            if url:
+                return url
+        except Exception:
+            pass
+
     # For ORIGINALS: try MusicBrainz first (skip for remixes)
     # Prefer release-group over specific release (more reliable for cover art)
     # If we only have release_mbid (no release_group_id), skip to Last.fm fallback

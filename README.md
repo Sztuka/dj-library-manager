@@ -2,6 +2,20 @@
 
 **Automated DJ library organization with Rekordbox integration, metadata enrichment, and audio analysis.**
 
+---
+
+## ⚠️ IMPORTANT: File & Folder Locations
+
+| What | Path | Notes |
+|------|------|-------|
+| **Staging database** | `data/unsorted.xlsx` | **XLSX format** (not CSV!), in project folder |
+| **Unsorted music folder** | `~/Music Unsorted/` | Tracks pending processing (user home) |
+| **Music library folder** | `~/Music Library/` | Organized, approved tracks (user home) |
+
+> **Note for AI assistants:** The staging file is `data/unsorted.xlsx` inside the **project folder** (XLSX, not CSV!). Music folders (`Music Unsorted`, `Music Library`) are in the **user's home directory**, not in the project.
+
+---
+
 ## Canonical Genre System
 
 - See `djlib/genre_canonical.py` for genre resolver logic.
@@ -354,16 +368,26 @@ python -m djlib.cli analyze-audio --check-env
 
 **Sources** (with quality weights):
 
+- **MusicBrainz Canonical Data** (weight 15.0) - **offline canonical album resolution**, filters Live/Compilations, ~40M curated recording→release pairs, <10ms lookup ✨ **NEW!**
 - **Beatport** (weight 10.0) - **gold standard for EDM**, 100+ precise subgenres (progressive house, melodic techno, afro house), release dates
 - **Last.fm** (weight 6.0) - genre tags, popularity, release years
-- **MusicBrainz** (weight 3.0) - canonical genres, release dates
+- **MusicBrainz API** (weight 3.0, fallback) - live API search if canonical miss
 - **SoundCloud** (weight 2.0, optional) - user tags
+
+**MusicBrainz Canonical Data** (new feature):
+
+- **Instant offline lookup** for original studio releases (no API calls)
+- **Filters out** Live albums, Compilations, Bootlegs automatically
+- **Fixes the "wrong album" problem**: AC/DC "T.N.T." → correct 1975 album, not 2009 live bootleg
+- Setup: Download dump → import to SQLite → automatic in enrichment pipeline
+- See `docs/CANONICAL_DATA.md` for setup instructions
 
 **New columns in `unsorted.xlsx`:**
 
 - `genres_beatport`, `genres_musicbrainz`, `genres_lastfm`, `genres_soundcloud` (raw lists)
-- `genre_suggest` (weighted fusion with Beatport priority)
-- `year_suggest` (priority: MusicBrainz > Beatport > Last.fm)
+- `genre_suggest` (weighted fusion with Canonical > Beatport > Last.fm priority)
+- `year_suggest` (priority: Canonical > MusicBrainz API > Beatport > Last.fm)
+- `original_album_title`, `original_release_mbid` (canonical first release from MB Canonical Data)
 - `pop_playcount`, `pop_listeners` (popularity metrics)
 
 **Auto-refresh authentication** (no manual token extraction):
@@ -376,7 +400,10 @@ python -m djlib.cli analyze-audio --check-env
 **Commands:**
 
 ```bash
-# Enrich all tracks (Beatport, MusicBrainz, Last.fm, SoundCloud)
+# One-time setup: Import MusicBrainz Canonical Data
+python -m djlib.cli import-canonical-dump
+
+# Enrich all tracks (Canonical → Beatport → MusicBrainz → Last.fm → SoundCloud)
 python -m djlib.cli enrich-online
 
 # Setup Beatport credentials (one-time, stored in system keyring)

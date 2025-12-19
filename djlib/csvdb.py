@@ -39,6 +39,9 @@ FIELDNAMES = [
     "original_release_group_mbid",
     "original_release_category",
     "original_release_source",
+    # Archive.org live concert metadata
+    "archive_org_identifier",  # Archive.org identifier (e.g., 'brucespringsteenbornintheusalivelondon2013')
+    "archive_org_cover_url",   # Cover art URL from Archive.org
 ]
 
 def load_records(csv_path: Path) -> List[Dict[str, str]]:

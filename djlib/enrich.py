@@ -10,6 +10,7 @@ import re
 import unicodedata
 from djlib.metadata import mb_client
 from djlib.metadata.canonical_mb import lookup_canonical_release
+from djlib.metadata import archive_org
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,26 @@ _FEAT_INLINE = re.compile(
 
 MB_ENDPOINT = "https://musicbrainz.org/ws/2/recording"
 MB_UA = "DJLibraryManager/0.1 (+https://github.com/Sztuka/dj-library-manager)"
+
+
+def get_audio_duration(path: Path) -> int:
+    """
+    Get audio file duration in seconds using mutagen.
+    
+    Args:
+        path: Path to audio file
+    
+    Returns:
+        Duration in seconds (int) or 0 if failed
+    """
+    try:
+        from mutagen import File
+        audio = File(path)
+        if audio and audio.info:
+            return int(round(audio.info.length))
+    except Exception:
+        pass
+    return 0
 
 
 # Special artist names that should preserve uppercase/special formatting
@@ -377,9 +398,15 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
         except Exception:
             pass
         
+        # Fallback: get duration from audio file metadata if not in tags
+        if not dur_sec:
+            dur_sec = get_audio_duration(path)
+        
         # Skip AcoustID if user explicitly requested (skip_fingerprint=yes)
         if fp and dur_sec and not skip_fingerprint:
-            online = lookup_acoustid(fp, dur_sec)
+            # Pass album tag from file for live detection (fallback when MB has no RG data)
+            file_album = tags.get("album", "")
+            online = lookup_acoustid(fp, dur_sec, file_album_tag=file_album)
             if online:
                 # Sanity check: verify AcoustID result matches file tags (artist similarity)
                 # If AcoustID returns completely different artist, fingerprint may be wrong
@@ -401,6 +428,35 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                     # Preserve filename-derived version if online lacks it
                     if version and not (online.get("version_suggest") or "").strip():
                         online = {**online, "version_suggest": version}
+                    
+                    # Check if this is a live recording - enrich with Archive.org
+                    file_album = tags.get("album", "")
+                    is_live_version = version and version.lower() in ("live", "concert", "unplugged", "ao vivo", "in concert")
+                    is_live_album = any(kw in file_album.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
+                    is_live = is_live_version or is_live_album
+                    
+                    if is_live and dur_sec:
+                        try:
+                            archive_rec = archive_org.search_by_artist_title_duration(
+                                artist=artist,
+                                title=title,
+                                duration_seconds=dur_sec,
+                                tolerance_seconds=1.0
+                            )
+                            if archive_rec:
+                                online["archive_org_identifier"] = archive_rec.identifier
+                                if archive_rec.cover_url:
+                                    online["archive_org_cover_url"] = archive_rec.cover_url
+                                # Update album and year from Archive.org if better
+                                if archive_rec.title:
+                                    online["album_suggest"] = archive_rec.title
+                                if archive_rec.year:
+                                    online["year_suggest"] = str(archive_rec.year)
+                                # Mark as live recording
+                                online["version_suggest"] = "Live"
+                        except Exception:
+                            pass
+                    
                     return online
         
         # Następnie spróbuj MusicBrainz search
@@ -408,9 +464,39 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
         # bo MB zwraca dane oryginalnego utworu bez uwzględnienia wersji.
         # Zamiast tego przechodzimy dalej do genre_resolver, który używa version do
         # znalezienia prawidłowych gatunków dla remixu (np. SoundCloud z wysoką wagą).
-        if not version:
+        # WYJĄTEK: "Live" nie jest remixem - używaj MB + Archive.org dla live recordings
+        file_album = tags.get("album", "")
+        is_live_version = version and version.lower() in ("live", "concert", "unplugged", "ao vivo", "in concert")
+        is_live_album = any(kw in file_album.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
+        is_live = is_live_version or is_live_album
+        
+        # Skip MusicBrainz for remixes/edits (not live)
+        if not version or is_live:
             online = lookup_musicbrainz(artist, title)
             if online:
+                # Check if this is a live recording - enrich with Archive.org
+                if is_live and dur_sec:
+                    try:
+                        archive_rec = archive_org.search_by_artist_title_duration(
+                            artist=artist,
+                            title=title,
+                            duration_seconds=dur_sec,
+                            tolerance_seconds=1.0
+                        )
+                        if archive_rec:
+                            online["archive_org_identifier"] = archive_rec.identifier
+                            if archive_rec.cover_url:
+                                online["archive_org_cover_url"] = archive_rec.cover_url
+                            # Update album and year from Archive.org if better than canonical
+                            if archive_rec.title:
+                                online["album_suggest"] = archive_rec.title
+                            if archive_rec.year:
+                                online["year_suggest"] = str(archive_rec.year)
+                            # Add version="Live" to mark this as live recording
+                            online["version_suggest"] = "Live"
+                    except Exception:
+                        pass
+                
                 return online
         
         # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud/Beatport (resolver)
@@ -532,6 +618,35 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                 # Add release_group_id for cover art fetching (originals only)
                 if release_group_id_online:
                     result["release_group_id"] = release_group_id_online
+                
+                # Try Archive.org for live recordings (when no fingerprint was used)
+                # This handles cases where skip_fingerprint=yes but we still want Archive.org cover
+                is_live = version and any(kw in version.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
+                if not is_live:
+                    # Check album tag for live indicators
+                    file_album = tags.get("album", "")
+                    is_live = any(kw in file_album.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
+                
+                if is_live and dur_sec:
+                    try:
+                        archive_rec = archive_org.search_by_artist_title_duration(
+                            artist=artist,
+                            title=title,
+                            duration_seconds=dur_sec,
+                            tolerance_seconds=1.0
+                        )
+                        if archive_rec:
+                            result["archive_org_identifier"] = archive_rec.identifier
+                            if archive_rec.cover_url:
+                                result["archive_org_cover_url"] = archive_rec.cover_url
+                            # Update album and year from Archive.org if better
+                            if archive_rec.title and not final_album:
+                                result["album_suggest"] = archive_rec.title
+                            if archive_rec.year and not final_year:
+                                result["year_suggest"] = str(archive_rec.year)
+                    except Exception:
+                        pass
+                
                 return result
         except Exception:
             pass
@@ -792,10 +907,15 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
     except Exception:
         return None
 
-def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
+def lookup_acoustid(fp: str, duration_sec: int, file_album_tag: str = "") -> Dict[str, str] | None:
     """Lookup przez AcoustID (wymaga Application API key) → MusicBrainz recording → metadane.
     Używa pyacoustid.lookup + parse_lookup_result zgodnie z dokumentacją.
     Zwraca słownik suggest_* albo None.
+    
+    Args:
+        fp: AcoustID fingerprint
+        duration_sec: Duration in seconds
+        file_album_tag: Album tag from file (for live detection when MB data incomplete)
     """
     key = os.getenv("DJLIB_ACOUSTID_KEY") or os.getenv("DJLIB_ACOUSTID_API_KEY")
     if not key:
@@ -895,74 +1015,149 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
         # NEW: Try to resolve canonical first release from recording MBID
         first_release_data = {}
         canonical_data = None
+        version_info = ""  # Initialize version_info early
         
-        # Try canonical lookup first (instant, no API)
+        # Detect if this is a live recording FIRST (before canonical/API lookup)
+        # Check release-group type and album title
+        is_live_recording = False
+        is_compilation = False
+        rgid = None
         try:
-            canonical_data = lookup_canonical_release(out_artist, out_title, fetch_year=True)
-            if canonical_data:
-                # Reject compilations/best-of albums from canonical data
-                album_title_lower = canonical_data['album_title'].lower()
-                compilation_keywords = ['greatest hits', 'best of', 'the best', 'collection', 
-                                       'anthology', 'ultimate', 'essential', 'gold', 'platinum']
-                is_compilation = any(keyword in album_title_lower for keyword in compilation_keywords)
+            # Extract RG ID from releases (not from top-level release-group)
+            if releases:
+                rgid = releases[0].get("release-group", {}).get("id") or None
+            if rgid:
+                # Check RG type for Live/Broadcast/Compilation
+                rg_data = mb_client._get_release_group_by_id(rgid)
+                rg = rg_data.get("release-group", {})
+                primary_type = rg.get("primary-type", "")
+                secondary_types = rg.get("secondary-type-list", [])
                 
-                if is_compilation:
-                    logger.debug(f"Rejecting canonical compilation: {canonical_data['album_title']}")
-                    canonical_data = None
-                else:
-                    first_release_data = {
-                        "original_album_title": canonical_data['album_title'],
-                        "original_release_mbid": canonical_data['release_mbid'],
-                        "recording_mbid": canonical_data['recording_mbid'],
-                    }
-                    # Use canonical data for suggest fields (don't override with API data)
-                    album = canonical_data['album_title']
-                    if 'release_year' in canonical_data:
-                        year = canonical_data['release_year']
-                        first_release_data['original_release_year'] = canonical_data['release_year']
+                # Check for compilation FIRST - if it's a compilation, skip it entirely
+                if "Compilation" in secondary_types:
+                    is_compilation = True
+                elif "Live" in secondary_types or primary_type in ["Live", "Broadcast"]:
+                    is_live_recording = True
         except Exception:
             pass
         
-        # Fallback to API-based resolution (only if canonical didn't provide data)
-        if not canonical_data and (best_id or (out_artist and out_title)):
+        # Also check album title for live indicators
+        if not is_live_recording:
+            album_lower = album.lower()
+            if any(keyword in album_lower for keyword in ['live', 'concert', 'unplugged']):
+                is_live_recording = True
+        
+        # Fallback: check file album tag if MusicBrainz has no RG data
+        live_from_file_tag = False
+        if not is_live_recording and not is_compilation and file_album_tag:
+            file_album_lower = file_album_tag.lower()
+            if any(keyword in file_album_lower for keyword in ['live', 'concert', 'unplugged', 'ao vivo']):
+                is_live_recording = True
+                live_from_file_tag = True  # Remember we detected live from file tag, not MB
+        
+        # If RG is a compilation, SKIP it entirely and look for canonical/API data instead
+        if is_compilation:
+            logger.debug(f"Skipping compilation RG: {rgid}")
+            rgid = None  # Clear RG ID so we don't use it
+        
+        # If this is a live recording (and NOT compilation), DON'T try to find studio album
+        # Use the live album as-is
+        if is_live_recording and not is_compilation:
+            version_info = "Live"
+            # If live detected from file tag (not MB RG), search for live album in MB
+            if live_from_file_tag and file_album_tag:
+                # Try to find live album/release-group in MusicBrainz
+                live_rg_found = False
+                try:
+                    import musicbrainzngs
+                    # Search for live album: artist + file album tag or title + "live"
+                    search_result = musicbrainzngs.search_release_groups(
+                        artist=out_artist,
+                        releasegroup=file_album_tag,
+                        limit=10
+                    )
+                    
+                    # Find first RG that is Live/Broadcast type
+                    for rg in search_result.get('release-group-list', []):
+                        rg_primary = rg.get('primary-type', '')
+                        rg_secondary = rg.get('secondary-type-list', [])
+                        rg_id = rg.get('id', '')
+                        rg_title = rg.get('title', '')
+                        rg_date = rg.get('first-release-date', '')
+                        
+                        # Check if it's Live/Broadcast and NOT compilation
+                        is_live_rg = (rg_primary in ['Live', 'Broadcast'] or 'Live' in rg_secondary)
+                        is_comp_rg = 'Compilation' in rg_secondary
+                        
+                        if is_live_rg and not is_comp_rg:
+                            album = rg_title
+                            if rg_date:
+                                year = rg_date[:4]  # Extract year
+                            first_release_data = {
+                                "original_release_group_mbid": rg_id,
+                            }
+                            if rg_date:
+                                first_release_data["original_release_date"] = rg_date
+                                first_release_data["original_release_year"] = year
+                            live_rg_found = True
+                            logger.debug(f"Found live RG from file album tag: {rg_title} ({rg_id})")
+                            break
+                except Exception as e:
+                    logger.debug(f"Failed to search live RG: {e}")
+                
+                # If no live RG found in MB, use file album tag as-is
+                if not live_rg_found:
+                    album = file_album_tag
+            elif rgid:
+                # Live detected from MB RG - keep RG info
+                first_release_data = {
+                    "original_release_group_mbid": rgid,
+                }
+        else:
+            # Not live - try to find original studio release
+            # Try canonical lookup first (instant, no API)
             try:
-                first_release = mb_client.mb_fetch_first_release_for_recording(best_id, out_artist, out_title)
-                if first_release:
-                    first_release_data = {
-                        "original_album_title": first_release.album_title,
-                        "original_release_date": first_release.original_release_date,
-                        "original_release_year": str(first_release.original_release_year),
-                        "original_release_mbid": first_release.release_mbid,
-                        "original_release_group_mbid": first_release.release_group_mbid,
-                        "original_release_category": first_release.release_category,
-                        "original_release_source": first_release.source,
-                    }
+                canonical_data = lookup_canonical_release(out_artist, out_title, fetch_year=True)
+                if canonical_data:
+                    # Reject compilations/best-of albums from canonical data
+                    album_title_lower = canonical_data['album_title'].lower()
+                    compilation_keywords = ['greatest hits', 'best of', 'the best', 'collection', 
+                                           'anthology', 'ultimate', 'essential', 'gold', 'platinum']
+                    is_compilation = any(keyword in album_title_lower for keyword in compilation_keywords)
+                    
+                    if is_compilation:
+                        logger.debug(f"Rejecting canonical compilation: {canonical_data['album_title']}")
+                        canonical_data = None
+                    else:
+                        first_release_data = {
+                            "original_album_title": canonical_data['album_title'],
+                            "original_release_mbid": canonical_data['release_mbid'],
+                            "recording_mbid": canonical_data['recording_mbid'],
+                        }
+                        # Use canonical data for suggest fields (don't override with API data)
+                        album = canonical_data['album_title']
+                        if 'release_year' in canonical_data:
+                            year = canonical_data['release_year']
+                            first_release_data['original_release_year'] = canonical_data['release_year']
             except Exception:
                 pass
-        
-        # Detect if this is a live recording (AcoustID detected different recording than canonical)
-        version_info = ""
-        if canonical_data and best_id and canonical_data['recording_mbid'] != best_id:
-            # AcoustID detected different recording than canonical - likely live/alternate version
-            # Check if album or release-group indicates live
-            is_live = False
             
-            # Check album title for "Live" keywords
-            album_lower = album.lower()
-            if any(keyword in album_lower for keyword in ['live', 'concert', 'unplugged', 'mtv unplugged']):
-                is_live = True
-            
-            # Check release-group primary-type
-            if not is_live and rgid:
+            # Fallback to API-based resolution (only if canonical didn't provide data)
+            if not canonical_data and (best_id or (out_artist and out_title)):
                 try:
-                    rg_type = mb_client.get_release_group_type(rgid)
-                    if rg_type == "Live":
-                        is_live = True
+                    first_release = mb_client.mb_fetch_first_release_for_recording(best_id, out_artist, out_title)
+                    if first_release:
+                        first_release_data = {
+                            "original_album_title": first_release.album_title,
+                            "original_release_date": first_release.original_release_date,
+                            "original_release_year": str(first_release.original_release_year),
+                            "original_release_mbid": first_release.release_mbid,
+                            "original_release_group_mbid": first_release.release_group_mbid,
+                            "original_release_category": first_release.release_category,
+                            "original_release_source": first_release.source,
+                        }
                 except Exception:
                     pass
-            
-            if is_live:
-                version_info = "Live"
         
         result = {
             "artist_suggest": out_artist,
@@ -973,6 +1168,7 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
             "year_suggest": year,
             "duration_suggest": duration,
             "meta_source": "acoustid+musicbrainz",
+            "recording_mbid": best_id,  # CRITICAL: Save recording MBID for debugging
         }
         # Add release_group_id for cover art if available
         if rgid:
@@ -980,6 +1176,44 @@ def lookup_acoustid(fp: str, duration_sec: int) -> Dict[str, str] | None:
         
         # Merge first release data
         result.update(first_release_data)
+        
+        # Try Archive.org for live recordings (duration-based matching)
+        # Archive.org has exact track durations - better for live concerts than MusicBrainz
+        duration_seconds = None
+        try:
+            if isinstance(duration, (int, float)):
+                duration_seconds = float(duration)
+            else:
+                dur_str = (duration or "").strip()
+                if dur_str and ":" in dur_str:
+                    parts = dur_str.split(":")
+                    if len(parts) == 2:
+                        duration_seconds = float(int(parts[0]) * 60 + float(parts[1]))
+        except Exception:
+            duration_seconds = None
+
+        if is_live_recording and out_artist and out_title and duration_seconds:
+            try:
+                logger.debug(f"Searching Archive.org for live: {out_artist} - {out_title} ({duration_seconds}s)")
+                archive_rec = archive_org.search_by_artist_title_duration(
+                    artist=out_artist,
+                    title=out_title,
+                    duration_seconds=duration_seconds,
+                    tolerance_seconds=1.0  # ±1s tolerance for precise duration matching
+                )
+                
+                if archive_rec:
+                    logger.info(f"✓ Archive.org match: {archive_rec.title}")
+                    result["archive_org_identifier"] = archive_rec.identifier
+                    if archive_rec.cover_url:
+                        result["archive_org_cover_url"] = archive_rec.cover_url
+                    # Use Archive.org metadata if better than MusicBrainz
+                    if archive_rec.year and not year:
+                        result["year_suggest"] = archive_rec.year
+                    if archive_rec.title and not album:
+                        result["album_suggest"] = archive_rec.title
+            except Exception as e:
+                logger.debug(f"Archive.org lookup failed: {e}")
         
         return result
     except Exception:
@@ -990,6 +1224,18 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
     """Spróbuj wzbogacić metadane online (AcoustID + MusicBrainz + Beatport + Last.fm).
     Nie rusza BPM/Key. Zwraca uzupełnienia sugerowanych pól albo None.
     """
+    # Read album tag from file for live detection
+    file_album = ""
+    try:
+        from mutagen import File
+        audio = File(path)
+        if audio:
+            album_vals = audio.get("album", audio.get("ALBUM", []))
+            if album_vals:
+                file_album = album_vals[0] if isinstance(album_vals, list) else str(album_vals)
+    except Exception:
+        pass
+    
     # Use full suggest_metadata with enable_online=True
     # This includes AcoustID, MusicBrainz, and fallback to Beatport/Last.fm for year
     tags = {
@@ -999,6 +1245,7 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
         "title": row.get("title", ""),
         "genre": row.get("genre", ""),
         "version_info": row.get("version_suggest", ""),  # Pass version from row to avoid reparsing filename
+        "album": file_album,  # For live detection when MB has incomplete data
     }
     
     return suggest_metadata(path, tags, enable_online=True)
