@@ -71,6 +71,15 @@ def map_genre(genre_suggest: str) -> Optional[str]:
     
     # Try to match each part of genre_suggest
     parts = [p.strip() for p in genre_suggest.split(",") if p.strip()]
+    
+    # HEURISTIC: Prioritize "rockabilly" if present (more specific than "classic rock")
+    # Example: "classic rock, rockabilly, 60s" → should map to "Rock 'n' Roll" not "Rock"
+    for part in parts:
+        normalized = _normalize_genre(part)
+        if normalized == "rockabilly" and normalized in synonym_map:
+            return synonym_map[normalized]
+    
+    # Normal matching: first match wins
     for part in parts:
         normalized = _normalize_genre(part)
         if normalized in synonym_map:
