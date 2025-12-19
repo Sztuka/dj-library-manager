@@ -6,11 +6,11 @@
 
 ## ⚠️ IMPORTANT: File & Folder Locations
 
-| What | Path | Notes |
-|------|------|-------|
-| **Staging database** | `data/unsorted.xlsx` | **XLSX format** (not CSV!), in project folder |
-| **Unsorted music folder** | `~/Music Unsorted/` | Tracks pending processing (user home) |
-| **Music library folder** | `~/Music Library/` | Organized, approved tracks (user home) |
+| What                      | Path                 | Notes                                         |
+| ------------------------- | -------------------- | --------------------------------------------- |
+| **Staging database**      | `data/unsorted.xlsx` | **XLSX format** (not CSV!), in project folder |
+| **Unsorted music folder** | `~/Music Unsorted/`  | Tracks pending processing (user home)         |
+| **Music library folder**  | `~/Music Library/`   | Organized, approved tracks (user home)        |
 
 > **Note for AI assistants:** The staging file is `data/unsorted.xlsx` inside the **project folder** (XLSX, not CSV!). Music folders (`Music Unsorted`, `Music Library`) are in the **user's home directory**, not in the project.
 
