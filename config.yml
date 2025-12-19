@@ -14,6 +14,7 @@ musicbrainz:
   app_name: DJLibraryManager
   app_version: 0.1
   contact: https://github.com/Sztuka/dj-library-manager
+  live_data_feed_token: REDACTED_MB_TOKEN
 
   lastfm_api_key: REDACTED_LASTFM_KEY
   soundcloud_client_id: REDACTED_SOUNDCLOUD_ID
