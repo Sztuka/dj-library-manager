@@ -366,6 +366,9 @@ ROCK_N_ROLL:
     - "rock 'n' roll"
     - "rock'n'roll"
     - "rock and roll"
+    - "rockabilly"
+    - "50s rock"
+    - "50s rock and roll"
 
 NEW_WAVE:
   label: "New Wave"
