@@ -73,9 +73,16 @@ def _get_last_refresh_attempt_ts() -> Optional[float]:
         return None
 
 
-def _set_last_refresh_attempt_ts(ts: float) -> None:
+def _get_last_refresh_failed() -> bool:
+    """Check if last refresh attempt failed."""
+    doc = _load_cache_doc()
+    return bool(doc.get("last_refresh_failed", False))
+
+
+def _set_last_refresh_attempt_ts(ts: float, failed: bool = False) -> None:
     doc = _load_cache_doc()
     doc["last_refresh_attempt_ts"] = ts
+    doc["last_refresh_failed"] = failed
     _save_cache_doc(doc)
 
 
@@ -345,12 +352,19 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
     
     Args:
         max_retries: Maximum number of refresh attempts (default: 2)
+        force_refresh: Skip cooldown check (e.g. when user explicitly requests refresh)
     
     Returns:
         Valid JWT token
     
     Raises:
         Exception if refresh fails or credentials missing
+        
+    Cooldown logic:
+        - Cooldown only applies if LAST refresh attempt FAILED
+        - If token just expired naturally, try to refresh immediately
+        - This prevents retry loops when Beatport servers are down, but allows
+          normal token refresh when token simply expires
     """
     global _REFRESHING
     global _TOKEN_IN_MEMORY
@@ -365,14 +379,15 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
         _TOKEN_IN_MEMORY = token
         return token
 
-    # No valid cached token. Apply cooldown to refresh attempts unless forced.
-    if not force_refresh:
+    # No valid cached token. Apply cooldown ONLY if last refresh FAILED.
+    # If token just expired normally, allow immediate refresh.
+    if not force_refresh and _get_last_refresh_failed():
         last_ts = _get_last_refresh_attempt_ts()
         if last_ts is not None and (_now_ts() - last_ts) < REFRESH_COOLDOWN_SECONDS:
             remaining = int(REFRESH_COOLDOWN_SECONDS - (_now_ts() - last_ts))
             raise Exception(
                 f"Beatport token refresh cooldown active ({remaining}s left). "
-                "Cached token is missing/expired; wait or retry later."
+                "Last refresh attempt failed; wait or use --force-beatport-refresh to retry."
             )
     
     # If another process is already refreshing, wait and retry
@@ -390,8 +405,6 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
     _REFRESHING = True
     
     try:
-        # Record refresh attempt time (cross-process)
-        _set_last_refresh_attempt_ts(_now_ts())
         # Token expired or missing - refresh with retry limit
         last_error = None
         for attempt in range(max_retries):
@@ -399,6 +412,8 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
                 token = _refresh_token_with_playwright()
                 _save_cached_token(token)
                 _TOKEN_IN_MEMORY = token
+                # Clear failed flag on success
+                _set_last_refresh_attempt_ts(_now_ts(), failed=False)
                 return token
             except Exception as e:
                 last_error = e
@@ -409,6 +424,8 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
                 else:
                     print(f"❌ Token refresh failed after {max_retries} attempts")
         
+        # All attempts failed - set cooldown
+        _set_last_refresh_attempt_ts(_now_ts(), failed=True)
         raise Exception(f"Failed to get valid Beatport token: {last_error}")
     finally:
         # Always release lock
