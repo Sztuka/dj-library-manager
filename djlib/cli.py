@@ -834,6 +834,15 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 r["year"] = year_suggest
                 any_change = True
         
+        # Always copy version_suggest to version_info (overwrite if version_suggest has value)
+        # Critical for live recordings to show "(Live)" in filenames and tags
+        version_suggest = (r.get("version_suggest") or "").strip()
+        if version_suggest:
+            current_version = (r.get("version_info") or "").strip()
+            if current_version != version_suggest:
+                r["version_info"] = version_suggest
+                any_change = True
+        
         processed += 1
         status_doc["rows_processed"] = processed
         status_doc["updated"] = changed
