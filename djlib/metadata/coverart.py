@@ -35,34 +35,140 @@ SOUNDCLOUD_MIN_INTERVAL = 0.5  # SoundCloud: 2 req/s
 BEATPORT_MIN_INTERVAL = 1.0  # Beatport: 1 req/s
 
 def has_artwork(filepath: str) -> bool:
-    """Check if MP3 file already has APIC frame (album artwork)."""
+    """Check if audio file already has cover art (supports MP3, FLAC, M4A, AIFF)."""
+    from mutagen import File
+    from pathlib import Path
+    
     try:
-        audio = ID3(filepath)
-        return any(frame.startswith('APIC') for frame in audio.keys())
+        ext = Path(filepath).suffix.lower()
+        audio = File(filepath)
+        
+        if audio is None:
+            return False
+        
+        # MP3 (ID3 tags)
+        if ext == '.mp3':
+            if hasattr(audio, 'tags') and audio.tags:
+                return any(str(k).startswith('APIC') for k in audio.tags.keys())
+            return False
+        
+        # FLAC (Vorbis comments with pictures)
+        if ext == '.flac':
+            return bool(getattr(audio, 'pictures', None))
+        
+        # M4A/AAC (MP4 tags)
+        if ext in ['.m4a', '.mp4', '.aac']:
+            if hasattr(audio, 'tags') and audio.tags:
+                return 'covr' in audio.tags
+            return False
+        
+        # AIFF (ID3 tags like MP3)
+        if ext in ['.aiff', '.aif']:
+            if hasattr(audio, 'tags') and audio.tags:
+                return any(str(k).startswith('APIC') for k in audio.tags.keys())
+            return False
+        
+        return False
     except Exception:
         return False
 
+
 def add_artwork(filepath: str, image_data: bytes, mime_type: str = 'image/jpeg') -> bool:
-    """Add APIC frame to MP3 file. Removes all existing APIC frames first. Returns True if successful."""
+    """Add cover art to audio file. Supports MP3, FLAC, M4A, AIFF.
+    
+    Removes existing cover art first, then adds new one.
+    Returns True if successful.
+    """
+    from mutagen import File
+    from mutagen.flac import FLAC, Picture
+    from mutagen.mp4 import MP4, MP4Cover
+    from pathlib import Path
+    
     try:
-        audio = ID3(filepath)
+        ext = Path(filepath).suffix.lower()
         
-        # Remove ALL existing APIC frames (including APIC:Cover, APIC:SeratoArt, etc.)
-        apic_keys = [key for key in audio.keys() if key.startswith('APIC')]
-        for key in apic_keys:
-            audio.delall(key)
+        # MP3 (ID3 tags)
+        if ext == '.mp3':
+            audio = ID3(filepath)
+            
+            # Remove ALL existing APIC frames
+            apic_keys = [key for key in audio.keys() if key.startswith('APIC')]
+            for key in apic_keys:
+                audio.delall(key)
+            
+            # Add new cover art
+            audio.add(APIC(
+                encoding=3,  # UTF-8
+                mime=mime_type,
+                type=3,  # Front cover
+                desc='Cover',
+                data=image_data
+            ))
+            audio.save(v2_version=3)
+            return True
         
-        # Add new cover art
-        audio.add(APIC(
-            encoding=3,  # UTF-8
-            mime=mime_type,
-            type=3,  # Front cover
-            desc='Cover',
-            data=image_data
-        ))
-        audio.save(v2_version=3)
-        return True
-    except Exception:
+        # FLAC (Vorbis comments with pictures)
+        if ext == '.flac':
+            audio = FLAC(filepath)
+            
+            # Remove existing pictures
+            audio.clear_pictures()
+            
+            # Add new cover art
+            picture = Picture()
+            picture.type = 3  # Front cover
+            picture.mime = mime_type
+            picture.desc = 'Cover'
+            picture.data = image_data
+            audio.add_picture(picture)
+            audio.save()
+            return True
+        
+        # M4A/AAC (MP4 tags)
+        if ext in ['.m4a', '.mp4', '.aac']:
+            audio = MP4(filepath)
+            
+            # Determine image format
+            if 'png' in mime_type.lower():
+                img_format = MP4Cover.FORMAT_PNG
+            else:
+                img_format = MP4Cover.FORMAT_JPEG
+            
+            # Add cover art
+            audio['covr'] = [MP4Cover(image_data, imageformat=img_format)]
+            audio.save()
+            return True
+        
+        # AIFF (ID3 tags like MP3)
+        if ext in ['.aiff', '.aif']:
+            from mutagen.aiff import AIFF
+            audio = AIFF(filepath)
+            
+            if audio.tags is None:
+                audio.add_tags()
+            
+            # Remove existing APIC frames
+            apic_keys = [key for key in audio.tags.keys() if str(key).startswith('APIC')]
+            for key in apic_keys:
+                del audio.tags[key]
+            
+            # Add new cover art
+            audio.tags.add(APIC(
+                encoding=3,
+                mime=mime_type,
+                type=3,
+                desc='Cover',
+                data=image_data
+            ))
+            audio.save()
+            return True
+        
+        # Unsupported format
+        return False
+        
+    except Exception as e:
+        import sys
+        print(f"add_artwork error for {filepath}: {e}", file=sys.stderr)
         return False
 
 def fetch_from_musicbrainz(release_group_id: str, release_mbid: Optional[str] = None) -> Optional[Tuple[bytes, str]]:
