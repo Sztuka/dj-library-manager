@@ -1787,44 +1787,25 @@ def sync_dj_libraries_after_export(
         if original_path and original_path in rekordbox_mapping:
             in_rekordbox = True
             found_rekordbox_id = rekordbox_mapping[original_path]
-            # Always sync - even if path unchanged, tags may have been updated
-            new_for_rekordbox.append({
-                'file_path': file_path,
-                'track_id': track_id,
-                'rekordbox_id': found_rekordbox_id,
-            })
         # Strategy 2: Check by rekordbox_id from tags
         elif rekordbox_id:
             for path, rb_id in rekordbox_mapping.items():
                 if rb_id == rekordbox_id:
                     in_rekordbox = True
-                    # Always sync - tags may have changed
-                    new_for_rekordbox.append({
-                        'file_path': file_path,
-                        'track_id': track_id,
-                        'rekordbox_id': rekordbox_id,
-                    })
+                    found_rekordbox_id = rekordbox_id
                     break
         # Strategy 3: Check by current path
         elif file_path in rekordbox_mapping:
             # File already at this path in DB
             in_rekordbox = True
             found_rekordbox_id = rekordbox_mapping[file_path]
-            # Still sync - tags may have changed
-            new_for_rekordbox.append({
-                'file_path': file_path,
-                'track_id': track_id,
-                'rekordbox_id': found_rekordbox_id,
-            })
         
-        # Strategy 4: Truly new track (not in DB at all)
-        # Strategy 4: Truly new track (not in DB at all)
-        if not in_rekordbox:
-            new_for_rekordbox.append({
-                'file_path': file_path,
-                'track_id': track_id,
-                'rekordbox_id': rekordbox_id if rekordbox_id else '',
-            })
+        # Add to sync list ONCE (either existing or new)
+        new_for_rekordbox.append({
+            'file_path': file_path,
+            'track_id': track_id,
+            'rekordbox_id': found_rekordbox_id if found_rekordbox_id else '',
+        })
         
         # Check if track exists in Traktor
         # All tracks in library.csv should be synced (tags may have changed even if path didn't)
@@ -1835,59 +1816,29 @@ def sync_dj_libraries_after_export(
         if original_path and original_path in traktor_mapping:
             in_traktor = True
             found_traktor_id = traktor_mapping[original_path]
-            # Always sync - even if path unchanged, tags may have been updated
-            new_for_traktor.append({
-                'file_path': file_path,
-                'track_id': track_id,
-                'traktor_id': found_traktor_id,
-                'artist': row.get('artist', ''),
-                'title': row.get('title', ''),
-                'bpm': row.get('bpm', ''),
-                'key': row.get('key_camelot', ''),
-            })
         # Strategy 2: Check by traktor_id from tags
         elif traktor_id:
             for path, tr_id in traktor_mapping.items():
                 if tr_id == traktor_id:
                     in_traktor = True
-                    # Always sync - tags may have changed
-                    new_for_traktor.append({
-                        'file_path': file_path,
-                        'track_id': track_id,
-                        'traktor_id': traktor_id,
-                        'artist': row.get('artist', ''),
-                        'title': row.get('title', ''),
-                        'bpm': row.get('bpm', ''),
-                        'key': row.get('key_camelot', ''),
-                    })
+                    found_traktor_id = traktor_id
                     break
         # Strategy 3: Check by current path
         elif file_path in traktor_mapping:
             # File already at this path in DB
             in_traktor = True
             found_traktor_id = traktor_mapping[file_path]
-            # Still sync - tags may have changed
-            new_for_traktor.append({
-                'file_path': file_path,
-                'track_id': track_id,
-                'traktor_id': found_traktor_id,
-                'artist': row.get('artist', ''),
-                'title': row.get('title', ''),
-                'bpm': row.get('bpm', ''),
-                'key': row.get('key_camelot', ''),
-            })
         
-        # Strategy 4: Truly new track (not in DB at all)
-        if not in_traktor:
-            new_for_traktor.append({
-                'file_path': file_path,
-                'track_id': track_id,
-                'traktor_id': traktor_id if traktor_id else track_id,
-                'artist': row.get('artist', ''),
-                'title': row.get('title', ''),
-                'bpm': row.get('bpm', ''),
-                'key': row.get('key_camelot', ''),
-            })
+        # Add to sync list ONCE (either existing or new)
+        new_for_traktor.append({
+            'file_path': file_path,
+            'track_id': track_id,
+            'traktor_id': found_traktor_id if found_traktor_id else track_id,
+            'artist': row.get('artist', ''),
+            'title': row.get('title', ''),
+            'bpm': row.get('bpm', ''),
+            'key': row.get('key_camelot', ''),
+        })
     
     print(f"🆕 Tracks to add/update in Rekordbox: {len(new_for_rekordbox)}")
     print(f"🆕 Tracks to add/update in Traktor: {len(new_for_traktor)}")

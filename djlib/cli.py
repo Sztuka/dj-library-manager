@@ -1378,8 +1378,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 print(f"      r['year'] = {repr(r.get('year', 'MISSING'))}")
                 print(f"      r['year_suggest'] = {repr(r.get('year_suggest', 'MISSING'))}")
             
-            # ALWAYS clear album tag (DJ libraries don't need compilation names)
-            updates["album"] = ""
+            # Save album from album_suggest (MusicBrainz/enrichment data) - useful for DJ software display
+            album_val = (r.get("album_suggest") or r.get("album") or "").strip()
+            updates["album"] = album_val
             
             if updates:
                 write_tags(dest_path, updates)
