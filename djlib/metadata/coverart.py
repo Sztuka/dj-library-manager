@@ -593,3 +593,39 @@ def fetch_cover_art(
                 return (True, 'soundcloud')
     
     return (False, 'failed')
+
+
+def embed_cover_art_from_file(audio_filepath: str, cover_filepath: str) -> bool:
+    """Embed cover art from a local image file into an audio file.
+    
+    Args:
+        audio_filepath: Path to the audio file (MP3, FLAC, M4A, AIFF)
+        cover_filepath: Path to the cover image file (JPG, PNG)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    from pathlib import Path
+    
+    cover_path = Path(cover_filepath)
+    if not cover_path.exists():
+        return False
+    
+    # Read image data
+    try:
+        with open(cover_path, 'rb') as f:
+            image_data = f.read()
+    except Exception:
+        return False
+    
+    # Determine MIME type
+    ext = cover_path.suffix.lower()
+    if ext in ('.jpg', '.jpeg'):
+        mime_type = 'image/jpeg'
+    elif ext == '.png':
+        mime_type = 'image/png'
+    else:
+        mime_type = 'image/jpeg'  # Default to JPEG
+    
+    # Use existing add_artwork function
+    return add_artwork(audio_filepath, image_data, mime_type)

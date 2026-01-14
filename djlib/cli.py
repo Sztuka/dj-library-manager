@@ -613,6 +613,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                     pass
             
             from djlib.metadata.genre_resolver import resolve as resolve_genres
+            print(f"   🎵 Resolving genres for: {a} - {t}")
             genre_res = resolve_genres(
                 a,
                 t,
@@ -621,6 +622,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 disable_soundcloud=bool(getattr(args, "skip_soundcloud", False)),
                 disable_beatport=bool(getattr(args, "skip_beatport", False)),
             )
+            print(f"      Result: main={genre_res.main if genre_res else None}, conf={genre_res.confidence if genre_res else None}")
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
                 # Ustaw 3 gatunki: main + subs
                 genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
@@ -680,8 +682,9 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         if any_change:
             changed += 1
         
-        # Fetch cover art URLs if --fetch-covers flag is set (doesn't write to MP3 yet)
-        if fetch_covers:
+        # Cover art fetching disabled - user manages their own artwork
+        # Flag --fetch-covers kept for backwards compatibility but does nothing
+        if False and fetch_covers:  # DISABLED
             try:
                 
                 from djlib.metadata.soundcloud import get_valid_client_id
@@ -923,8 +926,9 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             print(f"      - {filename}: '{genre_suggest}'")
         if len(genre_unmapped) > 10:
             print(f"      ... and {len(genre_unmapped) - 10} more")
-    if fetch_covers:
-        print(f"🎨 Okładki URL: found={covers_added}, failed={covers_failed} (zapisane tylko do Excel, nie do MP3)")
+    # Cover art fetching disabled - summary removed
+    # if fetch_covers:
+    #     print(f"🎨 Okładki URL: found={covers_added}, failed={covers_failed}")
     if not _lfm_key_present:
         print("   ⚠ Brak LASTFM_API_KEY (DJLIB_LASTFM_API_KEY) — kolumna genres_lastfm może pozostać pusta.")
     if sc_health_msg:
@@ -1287,58 +1291,28 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 tags_cleaned += 1
                 print(f"   ✅ Cleaned {len(result['removed_tags'])} spam tags")
             
-            # Step 1.5: Apply cover art to file (if cover_art_url exists)
-            cover_url = r.get("cover_art_url", "").strip()
-            cover_action = (r.get("cover_art_action") or "replace").strip().lower()
-            
-            if cover_url and cover_action != "keep":
-                print(f"   Step 1.5: Applying cover art...")
-                try:
-                    from djlib.metadata.coverart import fetch_cover_art
-                    
-                    # Determine if cover should be skipped based on action
-                    skip_existing = (cover_action == "keep")
-                    
-                    # Extract metadata for fetch_cover_art
-                    artist_meta = (r.get("artist_suggest") or r.get("artist") or "").strip()
-                    title_meta = (r.get("title_suggest") or r.get("title") or "").strip()
-                    album_meta = (r.get("album_suggest") or r.get("album") or "").strip()
-                    version_meta = (r.get("version_suggest") or r.get("version_info") or "").strip()
-                    
-                    # Try to fetch/apply cover art
-                    success, source = fetch_cover_art(
-                        filepath=str(dest_path),
-                        artist=artist_meta,
-                        album=album_meta,
-                        title=title_meta,
-                        version=version_meta,
-                        skip_if_exists=skip_existing,
-                        cover_art_url=cover_url  # Use pre-fetched URL from enrich-online
-                    )
-                    
-                    if source == 'exists':
-                        covers_skipped += 1
-                        print(f"   ⏭️  Cover art already exists, skipped")
-                    elif success:
+            # Step 1.5: Apply standard DJ Library cover art
+            print(f"   Step 1.5: Applying DJ Library cover art...")
+            try:
+                from djlib.metadata.coverart import embed_cover_art_from_file
+                
+                # Cover file is in data/ folder relative to project root
+                project_root = Path(__file__).parent.parent
+                cover_file = project_root / "data" / "djlibrary-catalog.jpg"
+                if cover_file.exists():
+                    success = embed_cover_art_from_file(str(dest_path), str(cover_file))
+                    if success:
                         covers_applied += 1
-                        print(f"   ✅ Cover art applied from {source}")
-                        
-                        # Add cover art to Rekordbox database
-                        try:
-                            from djlib.external_sync import refresh_rekordbox_cover_art
-                            if refresh_rekordbox_cover_art(dest_path):
-                                print(f"   🔄 Rekordbox: Cover art added to database")
-                        except Exception:
-                            pass  # Rekordbox refresh is optional, don't fail if it errors
+                        print(f"   ✅ DJ Library cover art applied")
                     else:
                         covers_failed += 1
-                        print(f"   ⚠️  Cover art fetch failed (had URL: {cover_url[:50]}...)")
-                except Exception as e:
+                        print(f"   ⚠️  Failed to embed cover art")
+                else:
                     covers_failed += 1
-                    print(f"   ⚠️  Cover art error: {e}")
-            elif cover_url and cover_action == "keep":
-                covers_skipped += 1
-                print(f"   ⏭️  Cover art: action=keep, preserving existing")
+                    print(f"   ⚠️  Cover file not found: {cover_file}")
+            except Exception as e:
+                covers_failed += 1
+                print(f"   ⚠️  Cover art error: {e}")
             
             # Teraz zapisz właściwe metadane
             print(f"   Step 2: Writing metadata tags...")
@@ -1378,9 +1352,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 print(f"      r['year'] = {repr(r.get('year', 'MISSING'))}")
                 print(f"      r['year_suggest'] = {repr(r.get('year_suggest', 'MISSING'))}")
             
-            # Save album from album_suggest (MusicBrainz/enrichment data) - useful for DJ software display
-            album_val = (r.get("album_suggest") or r.get("album") or "").strip()
-            updates["album"] = album_val
+            # Album intentionally left empty - user manages their own artwork/album organization
+            updates["album"] = ""
             
             if updates:
                 write_tags(dest_path, updates)
@@ -1520,7 +1493,6 @@ def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
 
 def cmd_import_canonical_dump(args: argparse.Namespace) -> None:
     """Import MusicBrainz Canonical Data dump into SQLite database."""
-    from pathlib import Path
     
     db_path = get_canonical_db_path()
     
@@ -2128,6 +2100,9 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     print()
     
     from djlib.external_sync import sync_ratings_to_dj_software
+    
+    rb_updates = 0
+    tr_updates = 0
     
     try:
         rb_updates, tr_updates = sync_ratings_to_dj_software(CSV_PATH, dry_run=dry_run)

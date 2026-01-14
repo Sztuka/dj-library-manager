@@ -41,13 +41,13 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("title_suggest", hidden=True, width=24, locked=True),
     ColumnSpec("version_suggest", hidden=True, width=20, locked=True),
     ColumnSpec("genre_suggest", hidden=False, width=24, locked=True),
-    ColumnSpec("album_suggest", hidden=False, width=32, locked=True),
+    ColumnSpec("album_suggest", hidden=True, width=32, locked=True),  # Hidden - user manages own albums
     ColumnSpec("release_group_id", hidden=True, width=36, locked=True),  # MusicBrainz MBID for cover art
     ColumnSpec("year_suggest", hidden=False, width=12, locked=True),
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
-    ColumnSpec("cover_art_url", hidden=False, width=60, locked=True),  # Link to cover art
-    ColumnSpec("cover_art", hidden=False, width=15, locked=True),  # Thumbnail image
-    ColumnSpec("cover_art_action", hidden=False, width=14),  # replace/keep/auto/custom (editable)
+    ColumnSpec("cover_art_url", hidden=True, width=60, locked=True),  # Hidden - user manages own artwork
+    ColumnSpec("cover_art", hidden=True, width=15, locked=True),  # Hidden - user manages own artwork
+    ColumnSpec("cover_art_action", hidden=True, width=14),  # Hidden - user manages own artwork
     # Genre hints (visible for decision making, but locked)
     ColumnSpec("genres_musicbrainz", width=24, locked=True),
     ColumnSpec("genres_lastfm", width=24, locked=True),
