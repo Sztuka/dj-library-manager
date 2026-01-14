@@ -1190,11 +1190,11 @@ def add_tracks_to_rekordbox(
                                 except (ValueError, TypeError):
                                     pass
                             
-                            # Update BPM
+                            # Update BPM (Rekordbox stores BPM * 100, e.g. 118 BPM = 11800)
                             if file_tags.get('bpm'):
                                 try:
                                     bpm_float = float(file_tags['bpm'])
-                                    content.BPM = bpm_float
+                                    content.BPM = int(bpm_float * 100)
                                 except (ValueError, TypeError):
                                     pass
                             
