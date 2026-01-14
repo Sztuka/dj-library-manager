@@ -500,17 +500,62 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
         if not tracks:
             return None
         
-        # Find best match
-        best_match = tracks[0]
+        # Normalize artist name for comparison
+        def _normalize(s: str) -> str:
+            import re
+            s = (s or "").lower().strip()
+            s = re.sub(r"['\"\-\.]", "", s)  # Remove quotes, apostrophes, hyphens, dots
+            s = re.sub(r"\s+", " ", s)  # Normalize whitespace
+            return s
         
-        # If duration provided, try to find closer match
-        if duration_s and len(tracks) > 1:
-            for track in tracks[:5]:  # Check top 5
+        artist_norm = _normalize(artist)
+        
+        # Find best match WITH artist verification
+        best_match = None
+        for track in tracks[:10]:  # Check top 10
+            track_artists = track.get("artists", [])
+            track_artist_names = [a.get("name", "") for a in track_artists]
+            
+            # Check if any artist matches
+            artist_match = False
+            for ta in track_artist_names:
+                ta_norm = _normalize(ta)
+                # Fuzzy match: one contains the other
+                if artist_norm in ta_norm or ta_norm in artist_norm:
+                    artist_match = True
+                    break
+                # Also check individual words for multi-word artists
+                artist_words = set(artist_norm.split())
+                ta_words = set(ta_norm.split())
+                if artist_words and ta_words and len(artist_words & ta_words) >= 1:
+                    # At least one significant word matches
+                    if any(len(w) > 3 for w in (artist_words & ta_words)):
+                        artist_match = True
+                        break
+            
+            if not artist_match:
+                continue
+            
+            # Artist matches - check duration if provided
+            if duration_s:
                 track_duration_s = track.get("length_ms", 0) // 1000
                 duration_diff = abs(track_duration_s - duration_s)
-                best_duration_diff = abs(best_match.get("length_ms", 0) // 1000 - duration_s)
-                if duration_diff < best_duration_diff and duration_diff < 30:  # Within 30s
+                if duration_diff > 60:  # More than 60s difference - skip
+                    continue
+            
+            # Found good match
+            if best_match is None:
+                best_match = track
+            elif duration_s:
+                # Compare durations to find better match
+                track_duration_s = track.get("length_ms", 0) // 1000
+                best_duration_s = best_match.get("length_ms", 0) // 1000
+                if abs(track_duration_s - duration_s) < abs(best_duration_s - duration_s):
                     best_match = track
+        
+        if best_match is None:
+            # No matching artist found in Beatport results
+            return None
         
         # Extract metadata
         genre = best_match.get("genre", {}).get("name", "")

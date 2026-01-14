@@ -74,10 +74,11 @@ def _is_noise(tag: str) -> bool:
 
 
 def _downweight_factor(tag: str) -> float:
-    """Return a multiplicative factor (0..1] to reduce influence of broad tags.
+    """Return a multiplicative factor (0..1] to reduce influence of overly broad tags.
 
-    Goal: limit over-dominance of generic tags like folk/indie/alternative.
-    Keep them present if truly dominant, but with smaller weight.
+    Only penalize truly problematic broad tags like folk/indie combos.
+    Generic parent genres (rock, pop, electronic) keep weight 1.0 - 
+    they can still win over false positives, but lose to specific subgenres via boost.
     """
     t = _norm(tag)
     if not t:
@@ -89,7 +90,54 @@ def _downweight_factor(tag: str) -> float:
         return 0.40
     if t in {"alternative", "alternative rock"}:
         return 0.60
+    # NOTE: Generic parent genres (rock, pop, electronic, dance) 
+    # are NOT downweighted - they keep 1.0 to beat false positives.
+    # Specific subgenres win via _specificity_boost() instead.
     return 1.0
+
+
+# Specific subgenres that should be boosted over their parent genres
+_SPECIFIC_GENRE_BOOST = {
+    # Rock subgenres
+    "rock and roll": 2.0,
+    "rockabilly": 2.0,
+    "punk rock": 1.8,
+    "hard rock": 1.8,
+    "classic rock": 1.8,
+    "progressive rock": 1.8,
+    "glam rock": 1.8,
+    # Electronic subgenres
+    "tech house": 1.5,
+    "deep house": 1.5,
+    "progressive house": 1.5,
+    "minimal techno": 1.5,
+    "acid house": 1.5,
+    "electro house": 1.5,
+    "melodic techno": 1.5,
+    "afro house": 1.5,
+    # Pop subgenres
+    "synth pop": 1.8,
+    "electropop": 1.8,
+    "dance pop": 1.5,
+    "disco": 1.8,
+    "italo disco": 2.0,
+    "euro disco": 2.0,
+    "nu disco": 1.8,
+    # Other specific genres
+    "funk": 1.5,
+    "soul": 1.5,
+    "r&b": 1.5,
+    "hip hop": 1.5,
+    "reggae": 1.5,
+    "ska": 1.8,
+    "dub": 1.5,
+}
+
+
+def _specificity_boost(tag: str) -> float:
+    """Return boost factor for specific subgenres over generic parents."""
+    t = _norm(tag)
+    return _SPECIFIC_GENRE_BOOST.get(t, 1.0)
 
 
 @dataclass
@@ -134,7 +182,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
                     c = canonical(t)
                     if _is_noise(c):
                         continue
-                    f = _downweight_factor(c)
+                    f = _downweight_factor(c) * _specificity_boost(c)
                     w = bp_w * f
                     if w <= 0:
                         continue
@@ -156,7 +204,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
             c = canonical(t)
             if _is_noise(c):
                 continue
-            f = _downweight_factor(c)
+            f = _downweight_factor(c) * _specificity_boost(c)
             w = mb_w * f
             if w <= 0:
                 continue
@@ -180,7 +228,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
             c = canonical(name)
             if _is_noise(c):
                 continue
-            f = _downweight_factor(c)
+            f = _downweight_factor(c) * _specificity_boost(c)
             w = base * f
             if w <= 0:
                 continue
@@ -200,7 +248,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
                 c = canonical(name)
                 if _is_noise(c):
                     continue
-                f = _downweight_factor(c)
+                f = _downweight_factor(c) * _specificity_boost(c)
                 w = sc_w * f
                 if w <= 0:
                     continue
