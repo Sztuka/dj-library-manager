@@ -2144,20 +2144,22 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
         tags_written = 0
         tags_skipped = 0
         tags_errors = 0
+        error_list = []  # Collect all errors for later review
+        skipped_list = []  # Collect skipped files
         
         def tag_file(row):
             """Tag a single file with DJLIB metadata."""
             file_path_str = row.get('old_full_path', '') or row.get('file_path', '')
             if not file_path_str:
-                return 'skip', None
+                return 'skip', ('no_path', None)
             
             file_path = Path(file_path_str)
             if not file_path.exists():
-                return 'skip', file_path.name
+                return 'skip', ('not_found', file_path.name)
             
             track_id = row.get('track_id', '')
             if not track_id:
-                return 'skip', file_path.name
+                return 'skip', ('no_track_id', file_path.name)
             
             try:
                 # Write all DJLIB tags including external IDs
@@ -2186,18 +2188,55 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                         print(f"  ✓ {tags_written}/{len(library_rows)} tagged...")
                 elif status == 'skip':
                     tags_skipped += 1
+                    if result and result[0] == 'not_found':
+                        skipped_list.append(result[1])
                 elif status == 'error':
                     tags_errors += 1
                     if result:  # result is tuple (filename, error)
-                        filename, error = result
-                        if tags_errors <= 3:  # Show first 3 errors
-                            print(f"  ⚠️  Failed: {filename}: {error}")
+                        error_list.append(result)
         
         print()
         print(f"✅ Tags written: {tags_written}")
-        print(f"⏭️  Skipped (file not found): {tags_skipped}")
+        if tags_skipped > 0:
+            print(f"⏭️  Skipped (file not found): {tags_skipped}")
         if tags_errors > 0:
             print(f"❌ Errors: {tags_errors}")
+        
+        # Log issues to file
+        if error_list or skipped_list:
+            log_path = LOGS_DIR / "tagging_issues.log"
+            with open(log_path, 'w') as f:
+                f.write(f"=== Tagging Issues Log ({datetime.now().isoformat()}) ===\n\n")
+                if skipped_list:
+                    f.write(f"--- SKIPPED ({len(skipped_list)} files not found) ---\n")
+                    for fn in skipped_list:
+                        f.write(f"  {fn}\n")
+                    f.write("\n")
+                if error_list:
+                    f.write(f"--- ERRORS ({len(error_list)} files failed) ---\n")
+                    for fn, err in error_list:
+                        f.write(f"  {fn}: {err}\n")
+            print(f"📋 Issue details saved to: {log_path}")
+        
+        # Offer to show details if there are issues
+        if tags_errors > 0 or tags_skipped > 0:
+            try:
+                show = input("\n⚠️  Show issue details? [y/N]: ").strip().lower()
+                if show == 'y':
+                    if skipped_list:
+                        print(f"\n--- SKIPPED ({len(skipped_list)} files not found) ---")
+                        for fn in skipped_list[:20]:  # Show first 20
+                            print(f"  {fn}")
+                        if len(skipped_list) > 20:
+                            print(f"  ... and {len(skipped_list) - 20} more")
+                    if error_list:
+                        print(f"\n--- ERRORS ({len(error_list)} files failed) ---")
+                        for fn, err in error_list[:20]:  # Show first 20
+                            print(f"  {fn}: {err}")
+                        if len(error_list) > 20:
+                            print(f"  ... and {len(error_list) - 20} more")
+            except EOFError:
+                pass  # Non-interactive mode
     
     # Step 3: Sync ratings to DJ software
     print()

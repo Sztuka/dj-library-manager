@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from mutagen._file import File as MutFile
+from mutagen.aiff import AIFF
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 from mutagen.id3._frames import TXXX
@@ -106,6 +107,10 @@ def write_djlib_tags(
     # Handle WAV (ID3 tags in RIFF)
     elif filepath.suffix.lower() == '.wav':
         _write_wav_tags(filepath, track_id, rekordbox_id, traktor_id, original_path, snapshot_date)
+    
+    # Handle AIFF (ID3 tags)
+    elif filepath.suffix.lower() in ('.aif', '.aiff'):
+        _write_aiff_tags(filepath, track_id, rekordbox_id, traktor_id, original_path, snapshot_date)
     
     else:
         raise ValueError(f"Unsupported audio format: {filepath.suffix}")
@@ -231,6 +236,40 @@ def _write_wav_tags(
         raise ValueError(f"Failed to write WAV tags: {e}")
 
 
+def _write_aiff_tags(
+    filepath: Path,
+    track_id: str,
+    rekordbox_id: Optional[str],
+    traktor_id: Optional[str],
+    original_path: Optional[str],
+    snapshot_date: str,
+) -> None:
+    """Write ID3 tags to AIFF file."""
+    try:
+        audio = AIFF(str(filepath))
+        
+        # Add ID3 tags if they don't exist
+        if audio.tags is None:
+            audio.add_tags()
+        
+        # Write custom TXXX frames (same as MP3/WAV)
+        audio.tags.add(TXXX(encoding=3, desc='DJLIB_TRACK_ID', text=track_id))
+        audio.tags.add(TXXX(encoding=3, desc='DJLIB_SNAPSHOT_DATE', text=snapshot_date))
+        
+        if rekordbox_id:
+            audio.tags.add(TXXX(encoding=3, desc='DJLIB_REKORDBOX_ID', text=rekordbox_id))
+        
+        if traktor_id:
+            audio.tags.add(TXXX(encoding=3, desc='DJLIB_TRAKTOR_ID', text=traktor_id))
+        
+        if original_path:
+            audio.tags.add(TXXX(encoding=3, desc='DJLIB_ORIGINAL_PATH', text=original_path))
+        
+        audio.save()
+    except Exception as e:
+        raise ValueError(f"Failed to write AIFF tags: {e}")
+
+
 def read_djlib_tags(filepath: Path) -> Dict[str, str]:
     """
     Read DJLIB custom tags from audio file.
@@ -277,6 +316,26 @@ def read_djlib_tags(filepath: Path) -> Dict[str, str]:
                     value = audio[mp4_key]
                     if value:
                         tags[key] = value[0].decode('utf-8') if isinstance(value[0], bytes) else str(value[0])
+        
+        # Try WAV (ID3 in RIFF)
+        elif filepath.suffix.lower() == '.wav':
+            audio = WAVE(str(filepath))
+            if audio.tags:
+                for frame in audio.tags.getall('TXXX'):
+                    if frame.desc.startswith('DJLIB_'):
+                        key = frame.desc[6:].lower()
+                        if key in tags:
+                            tags[key] = frame.text[0] if frame.text else ''
+        
+        # Try AIFF (ID3)
+        elif filepath.suffix.lower() in ('.aif', '.aiff'):
+            audio = AIFF(str(filepath))
+            if audio.tags:
+                for frame in audio.tags.getall('TXXX'):
+                    if frame.desc.startswith('DJLIB_'):
+                        key = frame.desc[6:].lower()
+                        if key in tags:
+                            tags[key] = frame.text[0] if frame.text else ''
     
     except Exception:
         # If reading fails, return empty tags (file might not have custom tags yet)
