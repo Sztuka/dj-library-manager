@@ -2017,6 +2017,96 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 raise FileNotFoundError(f"library.csv not found: {CSV_PATH}")
         print(f"   Continuing with existing library.csv...")
     
+    # Step 1.5: Recover "lost" files - tag files in UNSORTED that match Rekordbox by filename
+    print()
+    print("=" * 60)
+    print("STEP 1.5: RECOVER LOST FILES (filename fallback)")
+    print("=" * 60)
+    print()
+    print("Scanning UNSORTED for files that match Rekordbox entries by filename...")
+    print("(This recovers files moved after Rekordbox analysis but before Workflow 0)")
+    print()
+    
+    try:
+        from djlib.external_sync import get_rekordbox_track_ids
+        from djlib.djlib_tags import write_djlib_tags, has_djlib_tags, read_djlib_tags
+        from djlib.config import get_config
+        
+        # Get UNSORTED path from config
+        cfg = get_config()
+        unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
+        
+        if unsorted_path.exists():
+            # Build filename → rekordbox_id map (for files where path no longer exists)
+            rekordbox_mapping = get_rekordbox_track_ids()  # {Path: rb_id}
+            
+            # Create filename → (rb_id, original_path) for files that don't exist at their DB path
+            filename_to_rb: dict[str, tuple[str, Path]] = {}
+            for db_path, rb_id in rekordbox_mapping.items():
+                if not db_path.exists():
+                    # File moved - add to filename fallback
+                    filename_to_rb[db_path.name] = (rb_id, db_path)
+            
+            if filename_to_rb:
+                print(f"📋 Found {len(filename_to_rb)} Rekordbox entries with missing files")
+                
+                # Scan UNSORTED for matching filenames
+                recovered = 0
+                already_tagged = 0
+                
+                audio_extensions = {'.mp3', '.flac', '.m4a', '.aif', '.aiff', '.wav'}
+                for audio_file in unsorted_path.rglob('*'):
+                    if audio_file.suffix.lower() not in audio_extensions:
+                        continue
+                    
+                    if audio_file.name in filename_to_rb:
+                        rb_id, original_path = filename_to_rb[audio_file.name]
+                        
+                        # Check if already tagged with this rekordbox_id
+                        try:
+                            if has_djlib_tags(audio_file):
+                                existing_tags = read_djlib_tags(audio_file)
+                                if existing_tags.get('rekordbox_id') == rb_id:
+                                    already_tagged += 1
+                                    continue
+                        except Exception:
+                            pass
+                        
+                        if dry_run:
+                            print(f"   🔍 Would recover: {audio_file.name}")
+                            print(f"      Rekordbox ID: {rb_id}")
+                            print(f"      Original path: {original_path}")
+                            recovered += 1
+                        else:
+                            try:
+                                from djlib.djlib_tags import generate_track_id
+                                track_id = generate_track_id(audio_file, '', '')  # Will read from file
+                                
+                                write_djlib_tags(
+                                    audio_file,
+                                    track_id=track_id,
+                                    rekordbox_id=rb_id,
+                                    original_path=str(original_path)
+                                )
+                                print(f"   ✅ Recovered: {audio_file.name} → rb_id={rb_id}")
+                                recovered += 1
+                            except Exception as e:
+                                print(f"   ⚠️  Failed to recover {audio_file.name}: {e}")
+                
+                if recovered > 0:
+                    print(f"\n🔄 Recovered {recovered} lost files by filename match")
+                if already_tagged > 0:
+                    print(f"⏭️  Skipped {already_tagged} already tagged files")
+                if recovered == 0 and already_tagged == 0:
+                    print("ℹ️  No lost files found in UNSORTED")
+            else:
+                print("ℹ️  All Rekordbox files exist at their expected paths")
+        else:
+            print(f"⚠️  UNSORTED path not found: {unsorted_path}")
+    except Exception as e:
+        print(f"⚠️  Recovery step failed: {e}")
+        print("   Continuing with normal tagging...")
+    
     # Step 2: Add DJLIB tags to all unique library files (ONE TIME)
     print()
     print("=" * 60)
