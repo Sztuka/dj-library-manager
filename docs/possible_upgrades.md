@@ -183,6 +183,71 @@ Potencjalne przyspieszenie: 30-50%
 
 ---
 
+## 🏷️ WORKFLOW 0 OPTYMALIZACJE
+
+### 10. Skip already-tagged files in STEP 2
+
+**Problem:** STEP 2 (tagowanie DJLIB) przetwarza wszystkie ~5280 plików przy każdym uruchomieniu, nawet jeśli 99% już ma poprawne tagi.
+
+**Propozycja:**
+
+```python
+from djlib.djlib_tags import read_djlib_tags
+
+existing_tags = read_djlib_tags(file_path)
+if existing_tags.get('track_id') == track_id:
+    return 'skip', ('already_tagged', file_path.name)
+```
+
+**Zysk:**
+
+- Workflow 0 z ~30s → ~2s dla kolejnych uruchomień
+- Mniej operacji I/O na dysku
+
+**Priorytet:** Średni (nie blokuje, ale irytuje)
+
+---
+
+### 11. Auto-repair corrupted MP3 files
+
+**Problem:** Niektóre pliki MP3 mają uszkodzone nagłówki MPEG ("can't sync to MPEG frame") i mutagen nie może ich otagować.
+
+**Przyczyna:** Śmieci na początku/końcu pliku, uszkodzone ID3v2, przerwane pobieranie.
+
+**Propozycja:**
+
+```python
+import subprocess
+
+def try_repair_mp3(filepath: Path) -> bool:
+    """Attempt to repair corrupted MP3 using mp3val."""
+    try:
+        result = subprocess.run(
+            ['mp3val', '-f', str(filepath)],
+            capture_output=True, text=True, timeout=30
+        )
+        return 'FIXED' in result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+# W tag_file():
+except Exception as e:
+    if 'sync to MPEG frame' in str(e) and filepath.suffix.lower() == '.mp3':
+        if try_repair_mp3(filepath):
+            # Retry tagging after repair
+            write_djlib_tags(...)
+            return 'ok', (file_path.name, 'repaired')
+    return 'error', (file_path.name, str(e))
+```
+
+**Wymagania:** `brew install mp3val`
+
+**Zysk:** Automatyczna naprawa uszkodzonych MP3 bez interwencji użytkownika
+
+**Priorytet:** Niski (rzadki problem, łatwa ręczna naprawa)
+
+---
+
 ## 🔬 Metryki do monitorowania
 
 1. **Czas per track** (średni, P95)

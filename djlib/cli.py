@@ -2070,6 +2070,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 # Scan UNSORTED for matching filenames
                 recovered = 0
                 already_tagged = 0
+                recovered_paths: dict[str, str] = {}  # old_path → new_path
                 
                 audio_extensions = {'.mp3', '.flac', '.m4a', '.aif', '.aiff', '.wav'}
                 for audio_file in unsorted_path.rglob('*'):
@@ -2078,6 +2079,10 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     
                     if audio_file.name in filename_to_rb:
                         rb_id, original_path = filename_to_rb[audio_file.name]
+                        
+                        # Always track path update (file was found at new location)
+                        if str(audio_file) != str(original_path):
+                            recovered_paths[str(original_path)] = str(audio_file)
                         
                         # Check if already tagged with this rekordbox_id
                         try:
@@ -2112,6 +2117,31 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 
                 if recovered > 0:
                     print(f"\n🔄 Recovered {recovered} lost files by filename match")
+                
+                # Update library.csv with new paths (even for already-tagged files)
+                if not dry_run and recovered_paths:
+                    import csv
+                    
+                    # Read current library.csv
+                    rows = []
+                    with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        fieldnames = reader.fieldnames
+                        for row in reader:
+                            # Check if this row needs path update
+                            old_path = row.get('old_full_path', '')
+                            if old_path in recovered_paths:
+                                row['old_full_path'] = recovered_paths[old_path]
+                            rows.append(row)
+                    
+                    # Write updated library.csv
+                    with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    
+                    print(f"   📝 Updated {len(recovered_paths)} paths in library.csv")
+                
                 if already_tagged > 0:
                     print(f"⏭️  Skipped {already_tagged} already tagged files")
                 if recovered == 0 and already_tagged == 0:
