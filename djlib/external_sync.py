@@ -658,12 +658,13 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
         # Count cue points (indicates track usage)
         cue_count = len(entry.cue_v2) if entry.cue_v2 else 0
         
-        # Get track ID - Traktor uses AUDIO_ID
-        traktor_id = entry.audio_id or ""
-        
-        # Generate our internal track_id
+        # Generate our internal track_id first (needed for fallback)
         file_path_obj = Path(full_path)
         internal_track_id = generate_track_id(file_path_obj, artist, title)
+        
+        # Get track ID - Traktor uses AUDIO_ID, fallback to our track_id if missing
+        # Some tracks in Traktor don't have AUDIO_ID (not analyzed)
+        traktor_id = entry.audio_id or internal_track_id
         
         track_data = {
             'external_source': 'traktor',

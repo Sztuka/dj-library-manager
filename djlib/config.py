@@ -319,7 +319,8 @@ def _get_logs_dir() -> Path:
 
 LOGS_DIR = _get_logs_dir()
 
-CSV_PATH = LIB_ROOT / "library.csv"
+# library.csv stored in repo data/ folder (not in Music Library)
+CSV_PATH = _REPO / "data" / "library.csv"
 
 # UNSORTED_XLSX - computed from config file at runtime, default is ./data/unsorted.xlsx in repo
 def _get_unsorted_xlsx() -> Path:
