@@ -2047,10 +2047,10 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     try:
         from djlib.external_sync import get_rekordbox_track_ids
         from djlib.djlib_tags import write_djlib_tags, has_djlib_tags, read_djlib_tags
-        from djlib.config import get_config
+        from djlib.config import load_config
         
         # Get UNSORTED path from config
-        cfg = get_config()
+        cfg = load_config()
         unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
         
         if unsorted_path.exists():
