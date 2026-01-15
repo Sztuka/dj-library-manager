@@ -248,6 +248,33 @@ except Exception as e:
 
 ---
 
+### 12. Clean empty folders in UNSORTED after export
+
+**Problem:** Po eksporcie plików z UNSORTED do biblioteki (Workflow 3) zostają puste foldery.
+
+**Propozycja:**
+
+```python
+def cleanup_empty_folders(root_path: Path) -> int:
+    """Remove empty directories recursively, bottom-up."""
+    removed = 0
+    for dirpath in sorted(root_path.rglob('*'), key=lambda p: len(p.parts), reverse=True):
+        if dirpath.is_dir() and not any(dirpath.iterdir()):
+            dirpath.rmdir()
+            removed += 1
+    return removed
+
+# Po zakończeniu apply:
+if cleaned := cleanup_empty_folders(unsorted_path):
+    print(f"🧹 Removed {cleaned} empty folders from UNSORTED")
+```
+
+**Zysk:** Czyste UNSORTED bez śmieciowych pustych folderów
+
+**Priorytet:** Niski (kosmetyka)
+
+---
+
 ## 🔬 Metryki do monitorowania
 
 1. **Czas per track** (średni, P95)

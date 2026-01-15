@@ -1930,19 +1930,25 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             
             total_filtered = before_filter - len(df)
             
-            # Merge duplicates intelligently - combine rekordbox_id + traktor_id for same files
+            # Merge duplicates intelligently - PRIMARY key is track_id (from file tags)
+            # This ensures moved files are recognized as same track
             df['old_full_path'] = df['old_full_path'].fillna('').astype(str)
             df['old_full_path_norm'] = df['old_full_path'].str.strip().map(
                 lambda p: os.path.normpath(p) if p else ''
             )
+            df['track_id'] = df['track_id'].fillna('').astype(str)
             
-            # Group by normalized path to merge IDs
+            # Group by track_id FIRST (primary), then by path (fallback for new files)
             before_merge = len(df)
             merged_rows = []
+            seen_track_ids = set()
             
-            for path, group in df.groupby('old_full_path_norm'):
-                if path == '':  # Skip empty paths
-                    continue
+            # First pass: group by track_id (for tagged files)
+            for track_id, group in df.groupby('track_id'):
+                if not track_id or track_id == '':
+                    continue  # Will handle these in second pass
+                
+                seen_track_ids.add(track_id)
                 
                 # Prefer Rekordbox data for metadata (BPM, key, etc) but keep both IDs
                 rb_rows = group[group['external_source'] == 'rekordbox']
@@ -1965,6 +1971,18 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     # Use Traktor if no Rekordbox entry
                     base_row = group.iloc[0].copy()
                 
+                # CRITICAL: Pick the path that actually exists (file may have moved)
+                existing_path = None
+                for _, row in group.iterrows():
+                    path = row.get('old_full_path', '')
+                    if path and Path(path).exists():
+                        existing_path = path
+                        break
+                
+                if existing_path:
+                    base_row['old_full_path'] = existing_path
+                # else: keep whichever path was in base_row (file missing from both)
+                
                 # Merge IDs from both sources
                 rb_id = rb_rows.iloc[0]['rekordbox_id'] if len(rb_rows) > 0 else ''
                 tr_id = tr_rows.iloc[0]['traktor_id'] if len(tr_rows) > 0 else ''
@@ -1981,6 +1999,11 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     base_row['external_source'] = 'traktor'
                 
                 merged_rows.append(base_row)
+            
+            # Second pass: handle rows without track_id (shouldn't happen, but safety)
+            no_track_id_rows = df[df['track_id'] == '']
+            for _, row in no_track_id_rows.iterrows():
+                merged_rows.append(row.copy())
             
             df = pd.DataFrame(merged_rows)
             df = df.drop(columns=['old_full_path_norm'])
@@ -2034,10 +2057,96 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 raise FileNotFoundError(f"library.csv not found: {CSV_PATH}")
         print(f"   Continuing with existing library.csv...")
     
-    # Step 1.5: Recover "lost" files - tag files in UNSORTED that match Rekordbox by filename
+    # Step 1.5a: Track ID reconciliation - find moved files by their DJLIB_TRACK_ID tag
     print()
     print("=" * 60)
-    print("STEP 1.5: RECOVER LOST FILES (filename fallback)")
+    print("STEP 1.5a: TRACK ID RECONCILIATION")
+    print("=" * 60)
+    print()
+    print("Scanning UNSORTED for files with DJLIB_TRACK_ID tags...")
+    print("(This finds files that were tagged before being moved)")
+    print()
+    
+    try:
+        from djlib.djlib_tags import read_djlib_tags
+        from djlib.config import load_config
+        import csv
+        
+        cfg = load_config()
+        unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
+        
+        if unsorted_path.exists():
+            # Build track_id → current_path from library.csv
+            track_id_to_path: dict[str, str] = {}
+            with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    tid = row.get('track_id', '')
+                    path = row.get('old_full_path', '')
+                    if tid and path:
+                        track_id_to_path[tid] = path
+            
+            # Scan UNSORTED for files with DJLIB_TRACK_ID
+            reconciled_paths: dict[str, str] = {}  # old_path → new_path
+            audio_extensions = {'.mp3', '.flac', '.m4a', '.aif', '.aiff', '.wav'}
+            
+            for audio_file in unsorted_path.rglob('*'):
+                if audio_file.suffix.lower() not in audio_extensions:
+                    continue
+                
+                try:
+                    tags = read_djlib_tags(audio_file)
+                    file_track_id = tags.get('track_id', '')
+                    
+                    if file_track_id and file_track_id in track_id_to_path:
+                        csv_path = track_id_to_path[file_track_id]
+                        current_path = str(audio_file)
+                        
+                        # Path changed - needs update
+                        if csv_path != current_path:
+                            reconciled_paths[csv_path] = current_path
+                            if dry_run:
+                                print(f"   🔍 Would reconcile: {audio_file.name}")
+                                print(f"      track_id: {file_track_id}")
+                            else:
+                                print(f"   ✅ Reconciled: {audio_file.name}")
+                except Exception:
+                    pass  # Skip files that can't be read
+            
+            if reconciled_paths:
+                print(f"\n🔄 Found {len(reconciled_paths)} files with changed paths")
+                
+                if not dry_run:
+                    # Update library.csv
+                    rows = []
+                    with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        fieldnames = reader.fieldnames
+                        for row in reader:
+                            old_path = row.get('old_full_path', '')
+                            if old_path in reconciled_paths:
+                                row['old_full_path'] = reconciled_paths[old_path]
+                            rows.append(row)
+                    
+                    with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    
+                    print(f"   📝 Updated {len(reconciled_paths)} paths in library.csv")
+            else:
+                print("ℹ️  All tagged files are at their expected paths")
+        else:
+            print(f"⚠️  UNSORTED path not found: {unsorted_path}")
+    except Exception as e:
+        print(f"⚠️  Track ID reconciliation failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Step 1.5b: Filename fallback for Rekordbox - tag files in UNSORTED that match by filename
+    print()
+    print("=" * 60)
+    print("STEP 1.5b: FILENAME FALLBACK (Rekordbox)")
     print("=" * 60)
     print()
     print("Scanning UNSORTED for files that match Rekordbox entries by filename...")

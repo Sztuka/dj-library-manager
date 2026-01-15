@@ -443,8 +443,20 @@ def import_rekordbox_snapshot(
         artist = getattr(content, 'ArtistName', '')
         title = getattr(content, 'Title', '')  # Fixed: was TrackTitle
         
-        # Generate our internal track_id
-        track_id = generate_track_id(file_path, artist, title)
+        # PRIORITY: Read existing DJLIB_TRACK_ID from file tags (if file exists)
+        # This ensures we use the SAME track_id even if file was moved
+        track_id = ''
+        if file_path.exists():
+            try:
+                from djlib.djlib_tags import read_djlib_tags
+                existing_tags = read_djlib_tags(file_path)
+                track_id = existing_tags.get('track_id', '')
+            except Exception:
+                pass
+        
+        # Fallback: Generate new track_id only if file has no tag
+        if not track_id:
+            track_id = generate_track_id(file_path, artist, title)
         
         # Extract BPM (stored as int * 100 in Rekordbox)
         bpm_raw = getattr(content, 'BPM', None)
@@ -658,9 +670,21 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
         # Count cue points (indicates track usage)
         cue_count = len(entry.cue_v2) if entry.cue_v2 else 0
         
-        # Generate our internal track_id first (needed for fallback)
+        # PRIORITY: Read existing DJLIB_TRACK_ID from file tags (if file exists)
+        # This ensures we use the SAME track_id even if file was moved
         file_path_obj = Path(full_path)
-        internal_track_id = generate_track_id(file_path_obj, artist, title)
+        internal_track_id = ''
+        if file_path_obj.exists():
+            try:
+                from djlib.djlib_tags import read_djlib_tags
+                existing_tags = read_djlib_tags(file_path_obj)
+                internal_track_id = existing_tags.get('track_id', '')
+            except Exception:
+                pass
+        
+        # Fallback: Generate new track_id only if file has no tag
+        if not internal_track_id:
+            internal_track_id = generate_track_id(file_path_obj, artist, title)
         
         # Get track ID - Traktor uses AUDIO_ID, fallback to our track_id if missing
         # Some tracks in Traktor don't have AUDIO_ID (not analyzed)
