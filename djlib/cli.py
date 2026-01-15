@@ -1134,6 +1134,23 @@ def cmd_apply(args: argparse.Namespace) -> None:
         current_rekordbox_id = rekordbox_mapping.get(src, '')
         current_traktor_id = traktor_mapping.get(src, '')
         
+        # Also check file tags for rekordbox_id
+        file_rekordbox_id = r.get("rekordbox_id", "")
+        if not file_rekordbox_id:
+            try:
+                from djlib.djlib_tags import read_djlib_tags
+                djlib_tags = read_djlib_tags(src)
+                file_rekordbox_id = djlib_tags.get("rekordbox_id", "")
+            except Exception:
+                pass
+        
+        # Block export if no rekordbox_id found anywhere
+        final_rekordbox_id = current_rekordbox_id or file_rekordbox_id
+        if not final_rekordbox_id:
+            print(f"[SKIP] Brak rekordbox_id dla: {src.name}")
+            print(f"       Uruchom najpierw 'sync-dj-libraries --write' aby przypisać ID")
+            continue
+        
         if current_rekordbox_id and current_rekordbox_id != r.get("rekordbox_id", ""):
             print(f"   🔧 Updating Rekordbox ID for {src.name}: {r.get('rekordbox_id', '')} → {current_rekordbox_id}")
             r["rekordbox_id"] = current_rekordbox_id
