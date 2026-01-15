@@ -1,214 +1,287 @@
-# Installation
+# Installation Guide
 
-This project supports two paths for audio analysis (Essentia):
-
-- macOS with Homebrew (recommended on macOS)
-- Cross‑platform Conda environment (conda‑forge)
-
-Essentia is optional. The app works without it; BPM/Key/Energy detection will be skipped. When present, analysis results are cached.
-
-Backend modes:
-
-- Python bindings (preferred with Conda): full in-process analysis
-- CLI fallback (works with Homebrew binary): uses `essentia_streaming_extractor_music`/`streaming_extractor_music` to extract features and parse JSON
-- Docker fallback (cross‑platform): runs the Linux CLI extractor in a container, no local install required
-
-## Quick Start
-
-1. **Python venv + dependencies**
-
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -U pip
-   pip install -r requirements.txt
-   pip install -e .
-   ```
-
-2. **Configure library paths + metadata sources**
-
-   ```bash
-   python -m djlib.cli configure
-   ```
-
-   **Smart detection:**
-
-   - Checks for existing `config.local.yml` first
-   - Detects library structure from marker files (`.djlib_root`, `.djlib_inbox`)
-   - Auto-detects taxonomy from existing folder structure
-   - **Prevents accidental overwrite** of existing setup
-
-   **Interactive prompts:**
-
-   - If config exists: `Y/n/edit` to use, skip, or edit paths
-   - If markers detected: `Y/n` to use detected structure
-   - If nothing found: prompts for new paths
-
-   **Optional metadata sources:**
-
-   - Beatport credentials (EDM genre/artwork enrichment)
-   - SoundCloud works out-of-box (auto-refresh client_id)
-
-3. **Install Essentia** (optional, for BPM/Key/Energy detection)
-
-   - See sections below for Homebrew/Conda/Docker
-
-4. **Start workflow**
-
-   ```bash
-   python -m djlib.cli scan --strict
-   python -m djlib.cli enrich-online
-   ```
+**DJ Library Manager** — Complete installation and setup instructions.
 
 ---
 
-## 1) Python venv (base app)
+## Prerequisites
 
-Create a virtualenv and install Python requirements:
+| Requirement    | Version                  | Notes                    |
+| -------------- | ------------------------ | ------------------------ |
+| macOS or Linux | —                        | Windows not tested       |
+| Python         | 3.11+ (3.13 recommended) |                          |
+| Rekordbox      | 6.x                      | For database integration |
+| Essentia       | Optional                 | For audio analysis       |
 
-- VS Code task: "STEP 0 — Setup: create venv & install deps"
-- Or manually:
-  - python3 -m venv .venv
-  - source .venv/bin/activate
-  - pip install -U pip
-  - pip install -r requirements.txt
-  - pip install -e .
+---
 
-## 2) Install Essentia
+## Quick Install
 
-### macOS (Homebrew)
+```bash
+# 1. Clone repository
+git clone https://github.com/Sztuka/dj-library-manager.git
+cd dj-library-manager
 
-- Preferred: use the VS Code task "TOOLS — Install Essentia (Homebrew)". It wraps `scripts/install_essentia.py` and will attempt `brew install essentia`.
-- Alternatively, run:
-  - brew install essentia
+# 2. Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-Note: If Python bindings don’t import in your venv (e.g., Python 3.13), the CLI fallback will still work as long as the extractor binary is installed and on PATH. We auto-detect both `essentia_streaming_extractor_music` and `streaming_extractor_music`.
+# 3. Install dependencies
+pip install -U pip
+pip install -r requirements.txt
+pip install -e .
 
-After installing, verify:
-
-- VS Code task: "TOOLS — Check audio env"
-- Or: `.venv/bin/python -m djlib.cli analyze-audio --check-env`
-
-Expected output fields include:
-
-- `essentia_available`: Python bindings importable
-- `essentia_cli_available`: extractor binary found
-- `cli_binary`: path to the binary if available
-- `essentia_docker_available`: Docker detected on your system
-- `essentia_docker_enabled`: Whether Docker fallback is enabled via env var
-- `docker_image`: Image name configured for Docker fallback
-
-### Cross‑platform (Conda)
-
-If you prefer an isolated environment with Essentia preinstalled:
-
-- Install Miniforge/Mambaforge (recommended)
-- Create the environment from `environment.yml`:
-  - mamba env create -f environment.yml # or: conda env create -f environment.yml
-  - conda activate djlib
-  - pip install -e . # install the local package into the conda env
-
-Note: `environment.yml` installs `essentia`, `ffmpeg`, `chromaprint`, and your base Python deps (via pip -r requirements.txt). This path is the most reliable for Python bindings.
-
-### macOS/Linux/Windows (Docker fallback)
-
-If Homebrew/Conda paths are inconvenient, use Docker to run the streaming extractor:
-
-1. Build the image (one‑time):
-
-```zsh
-docker build -t djlib-essentia:local -f docker/Dockerfile.essentia docker
+# 4. Configure library paths
+python -m djlib.cli configure
 ```
 
-1. Enable Docker fallback for analyze‑audio and set the image name (in your shell):
+**VS Code Task:** `STEP 0 — Setup: create venv & install deps`
 
-```zsh
-export DJLIB_ESSENTIA_DOCKER=1
-export DJLIB_ESSENTIA_IMAGE=djlib-essentia:local
+---
+
+## Configuration
+
+### Interactive Setup
+
+```bash
+python -m djlib.cli configure
 ```
 
-1. Verify:
+This wizard will:
 
-```zsh
-./.venv/bin/python -m djlib.cli analyze-audio --check-env
+- Detect existing `config.local.yml`
+- Prompt for library paths
+- Create required directories
+
+### Manual Configuration
+
+Create `config.local.yml` in project root:
+
+```yaml
+library_root: "/Users/yourname/Music Library"
+inbox_dir: "/Users/yourname/Music Unsorted"
+reject_dir: "/Users/yourname/Music Rejected"
+archive_dir: "/Users/yourname/Music Archive"
 ```
 
-You should see `essentia_docker_available: true`, `essentia_docker_enabled: true`, and `docker_image: djlib-essentia:local`.
-
-With Docker fallback enabled, the backend automatically runs:
-
-```text
-docker run --rm -v <input_audio>:/in/audio:ro -v <tmp_dir>:/out djlib-essentia:local /in/audio /out/features.json
-```
-
-No local Essentia install is needed on the host.
-
-## 3) Run audio analysis
-
-- Check env: "TOOLS — Check audio env"
-- Analyze and cache features: "WORKFLOW 2 — Analyze audio (Essentia)"
-- Generate preview CSV with detected columns:
-  - python scripts/report_preview.py
-
-Analysis results are cached in a SQLite DB. Re‑runs are fast unless you pass `--recompute`.
-
-## 4) Optional pip extra
-
-`pyproject.toml` exposes an optional extra for Essentia:
-
-- pip install -e .[audio]
-
-This may work on some platforms where wheels are available, but Homebrew/Conda are preferred for reliability.
-
-## Troubleshooting
-
-- Essentia not found
-
-  - Ensure `essentia` binaries/libraries are installed and visible (brew/conda)
-  - Reopen terminal/VS Code window so PATH/LD paths are refreshed
-  - Use "TOOLS — Check audio env" to see details
-
-- fpcalc/chromaprint
-
-  - Use the existing tasks: "TOOLS — Install fpcalc (Homebrew)" or vendor script
-
-- Conflicting Python envs
-  - Confirm which interpreter you're using in VS Code (bottom‑left status bar)
-  - `which python`, `which pip`, `python -c "import sys; print(sys.executable)"`
+---
 
 ## Metadata Sources (Optional)
 
-### Beatport
+### Beatport (EDM Genres)
 
-For best EDM genre classification and high-quality artwork (1400x1400):
+Provides highest-quality genre data for electronic music.
 
 ```bash
 python -m djlib.cli setup-beatport
 ```
 
-Or configure during initial setup via `python -m djlib.cli configure`.
+Enter your Beatport credentials. They're stored securely in system keychain.
 
-**How it works:**
+**VS Code Task:** `TOOLS — Setup Beatport credentials`
 
-- Credentials stored in system keyring (macOS Keychain / Windows Credential Manager)
-- JWT tokens auto-refresh via headless browser (Playwright)
-- Token valid for 1 hour, cached in `~/.djlib/beatport_token.json`
-- Zero manual intervention after initial setup
+### Other Sources
 
-**Requirements:**
+| Source      | Setup           | Notes                             |
+| ----------- | --------------- | --------------------------------- |
+| MusicBrainz | None required   | Free API                          |
+| Last.fm     | None required   | Free API                          |
+| SoundCloud  | Auto-configured | Client ID refreshes automatically |
 
-- Valid Beatport account
-- Playwright + Chromium: `pip install playwright && playwright install chromium`
+---
 
-### SoundCloud
+## Essentia (Audio Analysis)
 
-Works out-of-box with auto-refresh client_id:
+Essentia provides BPM, Key, and energy detection. **Optional** — the app works without it.
 
-- No setup required
-- Client ID auto-updates every 30 days
-- Cached in `~/.djlib/soundcloud_client_id.json`
+### Option 1: Homebrew (macOS)
 
-### MusicBrainz & Last.fm
+```bash
+brew install essentia
+```
 
-- **MusicBrainz**: No auth required (respects rate limits)
-- **Last.fm**: Optional API key in `config.yml` (see `config.local.yml` template)
+**VS Code Task:** `TOOLS — Install Essentia (Homebrew)`
+
+### Option 2: Conda (Cross-platform)
+
+```bash
+conda install -c conda-forge essentia
+```
+
+### Verify Installation
+
+```bash
+python -m djlib.cli analyze-audio --check-env
+```
+
+Expected output:
+
+```text
+✅ essentia_available: True
+✅ essentia_cli_available: True
+✅ cli_binary: /opt/homebrew/bin/essentia_streaming_extractor_music
+```
+
+---
+
+## Rekordbox Configuration
+
+For best results, configure Rekordbox:
+
+1. **Preferences → Advanced → Browse**
+
+   - Enable: "Write metadata to files" (Every time)
+
+2. **Preferences → Analysis**
+
+   - Enable: "Advanced Analysis"
+
+3. **Preferences → View**
+   - Set Key notation to **Camelot** (1A-12B)
+
+---
+
+## Traktor Configuration (Optional)
+
+If using Traktor alongside Rekordbox:
+
+1. **Preferences → File Management**
+   - ✅ Enable: "Import track metadata from file tags"
+   - ❌ Disable: "Update file tags when changing track metadata"
+
+This prevents Traktor from overwriting BPM/Key analyzed by Rekordbox.
+
+---
+
+## Directory Structure
+
+After setup, you should have:
+
+```text
+~/Music Unsorted/     # Drop new tracks here
+~/Music Library/      # Organized tracks (by artist)
+~/Music Rejected/     # Rejected tracks (flat)
+~/Music Archive/      # Archived tracks (by artist)
+
+dj-library-manager/
+├── data/
+│   ├── unsorted.xlsx # Staging spreadsheet
+│   └── library.csv   # Master database
+├── LOGS/             # Operation logs
+├── config.local.yml  # Your configuration
+└── ...
+```
+
+---
+
+## Verify Setup
+
+### Check Configuration
+
+```bash
+python -m djlib.cli configure
+# Should show current paths
+```
+
+### Check Audio Environment
+
+```bash
+python -m djlib.cli analyze-audio --check-env
+```
+
+### Test Scan
+
+```bash
+# Put some tracks in ~/Music Unsorted/
+python -m djlib.cli scan
+# Check data/unsorted.xlsx
+```
+
+---
+
+## VS Code Integration
+
+The project includes predefined tasks. Open Command Palette (Cmd+Shift+P) → "Tasks: Run Task":
+
+| Task                       | Description                    |
+| -------------------------- | ------------------------------ |
+| `STEP 0 — Setup`           | Create venv, install deps      |
+| `STEP 1 — Configure`       | Run configuration wizard       |
+| `TOOLS — Setup Beatport`   | Configure Beatport credentials |
+| `TOOLS — Install Essentia` | Install Essentia via Homebrew  |
+| `TOOLS — Check audio env`  | Verify Essentia installation   |
+
+---
+
+## Troubleshooting
+
+### Python Version
+
+```bash
+python3 --version
+# Should be 3.11 or higher
+```
+
+### Virtual Environment
+
+```bash
+# Activate venv
+source .venv/bin/activate
+
+# Check pip packages
+pip list | grep mutagen
+```
+
+### Rekordbox Database Access
+
+The app uses `pyrekordbox` to access Rekordbox database. If you get errors:
+
+1. Close Rekordbox completely
+2. Check database exists: `~/Library/Pioneer/rekordbox/master.db`
+3. Database is encrypted — `pyrekordbox` handles decryption
+
+### Permission Errors
+
+```bash
+# Fix fpcalc permissions (if bundled)
+chmod +x bin/mac/fpcalc
+
+# Remove quarantine attribute (macOS)
+xattr -d com.apple.quarantine bin/mac/fpcalc
+```
+
+### Missing Dependencies
+
+```bash
+# Reinstall all dependencies
+pip install -r requirements.txt --force-reinstall
+```
+
+---
+
+## Updating
+
+```bash
+cd dj-library-manager
+git pull
+pip install -r requirements.txt
+pip install -e .
+```
+
+---
+
+## Uninstalling
+
+```bash
+# Remove virtual environment
+rm -rf .venv
+
+# Remove configuration
+rm config.local.yml
+
+# Remove cache
+rm -rf LOGS/
+rm djlib_http_cache.sqlite
+```
+
+Your music files in `~/Music Library/` etc. are not affected.
