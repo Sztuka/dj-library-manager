@@ -1554,7 +1554,6 @@ def _build_traktor_entry(
     dir_attr: str,
     volume: str,
     volume_id: str,
-    traktor_id: str,
     modified_date: str,
     modified_time: int,
 ) -> Entrytype:
@@ -1581,6 +1580,10 @@ def _build_traktor_entry(
     # Note: We do NOT set musical_key.value_attribute (numeric ID)
     # Traktor will auto-generate it from info.key text when needed
     
+    # NOTE: For NEW tracks, we leave audio_id empty (None) - Traktor will
+    # generate the proper audio fingerprint hash when it analyzes the file.
+    # We only set audio_id for EXISTING tracks (updates).
+    
     return Entrytype(
         location=Locationtype(dir=dir_attr, file=file_path.name, volume=volume, volumeid=volume_id),
         modification_info=ModificationInfotype(author_type='user'),
@@ -1589,7 +1592,7 @@ def _build_traktor_entry(
         musical_key=None,  # Let Traktor generate numeric ID from info.key
         modified_date=modified_date,
         modified_time=modified_time,
-        audio_id=traktor_id,
+        audio_id=None,  # Let Traktor generate fingerprint on analysis
         title=track.get('title', ''),
         artist=track.get('artist', ''),
     )
@@ -1674,12 +1677,10 @@ def add_tracks_to_traktor(
             dir_attr=dir_attr,
             volume=volume,
             volume_id=volume_id,
-            traktor_id=traktor_id,
             modified_date=modified_date,
             modified_time=modified_time,
         )
         collection_root.entry.append(entry)
-        existing_entries[traktor_id] = entry
         added_count += 1
 
     collection_root.entries = len(collection_root.entry)
