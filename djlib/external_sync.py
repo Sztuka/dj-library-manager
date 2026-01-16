@@ -1714,6 +1714,613 @@ def add_tracks_to_traktor(
     return (added_count, updated_count)
 
 
+def find_traktor_duplicates(
+    collection_nml_path: Path,
+) -> List[Tuple[Path, List[Dict[str, Any]]]]:
+    """
+    Find duplicate entries in Traktor collection (same file path, different AUDIO_IDs).
+    
+    Returns:
+        List of tuples: (file_path, [entry_info_dicts])
+        Each entry_info contains: audio_id, playcount, ranking, import_date, title, artist
+    """
+    if not TRAKTOR_UTILS_AVAILABLE:
+        raise RuntimeError("traktor-nml-utils required")
+    if not collection_nml_path.exists():
+        return []
+    
+    collection = TraktorCollection(collection_nml_path)
+    collection_root = collection.nml.collection
+    if collection_root is None:
+        return []
+    
+    # Build path → list of entries mapping
+    path_entries: Dict[str, List[Dict[str, Any]]] = {}
+    
+    for entry in collection_root.entry:
+        if entry.location is None:
+            continue
+        
+        # Reconstruct path
+        dir_attr = entry.location.dir or ""
+        file_name = entry.location.file or ""
+        volume = entry.location.volume or ""
+        
+        parts = [p for p in dir_attr.split('/:') if p]
+        if volume and volume != "Macintosh HD":
+            full_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+        else:
+            full_path = Path("/") / "/".join(parts) / file_name
+        
+        path_str = str(full_path)
+        
+        # Extract metadata
+        playcount = 0
+        ranking = 0
+        import_date = ""
+        if entry.info:
+            playcount = entry.info.playcount or 0
+            ranking = entry.info.ranking or 0
+            import_date = entry.info.import_date or ""
+        
+        entry_info = {
+            'audio_id': entry.audio_id or "",
+            'playcount': playcount,
+            'ranking': ranking,
+            'import_date': import_date,
+            'title': entry.title or "",
+            'artist': entry.artist or "",
+            'entry': entry,  # Keep reference for removal
+        }
+        
+        if path_str not in path_entries:
+            path_entries[path_str] = []
+        path_entries[path_str].append(entry_info)
+    
+    # Find duplicates (paths with more than one entry)
+    duplicates = []
+    for path_str, entries in path_entries.items():
+        if len(entries) > 1:
+            duplicates.append((Path(path_str), entries))
+    
+    return duplicates
+
+
+def remove_traktor_duplicates(
+    collection_nml_path: Path,
+    dry_run: bool = True,
+    interactive: bool = True,
+) -> int:
+    """
+    Find and remove duplicate entries in Traktor collection.
+    
+    When duplicates are found (same path, different AUDIO_IDs), keeps the entry
+    with higher playcount/ranking and removes the other.
+    
+    Args:
+        collection_nml_path: Path to collection.nml
+        dry_run: If True, only report duplicates without removing
+        interactive: If True, ask for confirmation before removing
+        
+    Returns:
+        Number of duplicates removed
+    """
+    duplicates = find_traktor_duplicates(collection_nml_path)
+    
+    if not duplicates:
+        print("ℹ️  No duplicate entries found in Traktor collection")
+        return 0
+    
+    print(f"\n⚠️  Found {len(duplicates)} files with duplicate entries in Traktor:")
+    print()
+    
+    entries_to_remove = []
+    
+    for file_path, entries in duplicates:
+        print(f"📁 {file_path.name}")
+        
+        # Sort by playcount (desc), then ranking (desc), then import_date (asc = older first)
+        sorted_entries = sorted(
+            entries,
+            key=lambda e: (-e['playcount'], -e['ranking'], e['import_date'])
+        )
+        
+        keep = sorted_entries[0]
+        remove = sorted_entries[1:]
+        
+        print(f"   ✅ KEEP: playcount={keep['playcount']}, stars={keep['ranking']//51}, "
+              f"imported={keep['import_date']}, audio_id={keep['audio_id'][:30]}...")
+        
+        for r in remove:
+            print(f"   ❌ REMOVE: playcount={r['playcount']}, stars={r['ranking']//51}, "
+                  f"imported={r['import_date']}, audio_id={r['audio_id'][:30]}...")
+            entries_to_remove.append(r['entry'])
+        
+        print()
+    
+    if dry_run:
+        print(f"🔍 DRY-RUN: Would remove {len(entries_to_remove)} duplicate entries")
+        return 0
+    
+    if interactive:
+        response = input(f"Remove {len(entries_to_remove)} duplicate entries? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("❌ Cancelled by user")
+            return 0
+    
+    # Actually remove duplicates
+    collection = TraktorCollection(collection_nml_path)
+    collection_root = collection.nml.collection
+    
+    removed = 0
+    for entry_to_remove in entries_to_remove:
+        # Find and remove by audio_id
+        for i, entry in enumerate(collection_root.entry):
+            if entry.audio_id == entry_to_remove.audio_id:
+                collection_root.entry.pop(i)
+                removed += 1
+                break
+    
+    collection_root.entries = len(collection_root.entry)
+    
+    _backup_traktor_collection(collection_nml_path)
+    
+    try:
+        collection.save()
+        print(f"✅ Removed {removed} duplicate entries from Traktor collection")
+    except Exception as e:
+        print(f"❌ Failed to save: {e}")
+        return 0
+    
+    return removed
+
+
+def find_traktor_dead_entries(
+    collection_nml_path: Path,
+) -> List[Dict[str, Any]]:
+    """
+    Find entries in Traktor collection where the file no longer exists.
+    
+    Returns:
+        List of entry_info dicts with: path, title, artist, playcount, ranking, audio_id, entry
+    """
+    if not TRAKTOR_UTILS_AVAILABLE:
+        raise RuntimeError("traktor-nml-utils required")
+    if not collection_nml_path.exists():
+        return []
+    
+    collection = TraktorCollection(collection_nml_path)
+    collection_root = collection.nml.collection
+    if collection_root is None:
+        return []
+    
+    dead_entries = []
+    
+    for entry in collection_root.entry:
+        if entry.location is None:
+            continue
+        
+        # Reconstruct path
+        dir_attr = entry.location.dir or ""
+        file_name = entry.location.file or ""
+        volume = entry.location.volume or ""
+        
+        parts = [p for p in dir_attr.split('/:') if p]
+        if volume and volume != "Macintosh HD":
+            full_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+        else:
+            full_path = Path("/") / "/".join(parts) / file_name
+        
+        # Check if file exists
+        if not full_path.exists():
+            playcount = 0
+            ranking = 0
+            import_date = ""
+            if entry.info:
+                playcount = entry.info.playcount or 0
+                ranking = entry.info.ranking or 0
+                import_date = entry.info.import_date or ""
+            
+            dead_entries.append({
+                'path': full_path,
+                'title': entry.title or "",
+                'artist': entry.artist or "",
+                'playcount': playcount,
+                'ranking': ranking,
+                'import_date': import_date,
+                'audio_id': entry.audio_id or "",
+                'entry': entry,
+            })
+    
+    return dead_entries
+
+
+def remove_traktor_dead_entries(
+    collection_nml_path: Path,
+    dry_run: bool = True,
+    interactive: bool = True,
+) -> int:
+    """
+    Find and remove entries in Traktor collection where the file no longer exists.
+    
+    Args:
+        collection_nml_path: Path to collection.nml
+        dry_run: If True, only report dead entries without removing
+        interactive: If True, ask for confirmation before removing
+        
+    Returns:
+        Number of dead entries removed
+    """
+    dead_entries = find_traktor_dead_entries(collection_nml_path)
+    
+    if not dead_entries:
+        print("ℹ️  No dead entries found in Traktor collection (all files exist)")
+        return 0
+    
+    # Separate entries with play history from those without
+    with_history = [e for e in dead_entries if e['playcount'] > 0 or e['ranking'] > 0]
+    without_history = [e for e in dead_entries if e['playcount'] == 0 and e['ranking'] == 0]
+    
+    print(f"\n⚠️  Found {len(dead_entries)} dead entries (files don't exist):")
+    print(f"   📊 {len(with_history)} with play history (playcount/stars)")
+    print(f"   📭 {len(without_history)} without play history")
+    print()
+    
+    if with_history:
+        print("📊 Entries WITH play history (potential data loss if removed):")
+        for e in with_history[:10]:  # Show first 10
+            print(f"   🎵 {e['artist']} - {e['title']}")
+            print(f"      Plays: {e['playcount']}, Stars: {e['ranking']//51}")
+            print(f"      Missing: {e['path']}")
+        if len(with_history) > 10:
+            print(f"   ... and {len(with_history) - 10} more")
+        print()
+    
+    if without_history:
+        print("📭 Entries WITHOUT play history (safe to remove):")
+        for e in without_history[:10]:  # Show first 10
+            print(f"   🎵 {e['artist']} - {e['title']}")
+            print(f"      Missing: {e['path']}")
+        if len(without_history) > 10:
+            print(f"   ... and {len(without_history) - 10} more")
+        print()
+    
+    if dry_run:
+        print(f"🔍 DRY-RUN: Would remove {len(dead_entries)} dead entries")
+        print(f"   Run with --write to actually remove them")
+        return 0
+    
+    if interactive:
+        print("Options:")
+        print("  [a] Remove ALL dead entries (including those with play history)")
+        print("  [s] Remove only entries WITHOUT play history (safe)")
+        print("  [n] Cancel")
+        response = input("Choice [a/s/N]: ").strip().lower()
+        
+        if response == 'a':
+            entries_to_remove = dead_entries
+        elif response == 's':
+            entries_to_remove = without_history
+        else:
+            print("❌ Cancelled by user")
+            return 0
+    else:
+        # Non-interactive: only remove entries without history (safe)
+        entries_to_remove = without_history
+    
+    if not entries_to_remove:
+        print("ℹ️  No entries to remove")
+        return 0
+    
+    # Actually remove entries
+    collection = TraktorCollection(collection_nml_path)
+    collection_root = collection.nml.collection
+    
+    # Build set of paths to remove (more reliable than audio_id which can be empty)
+    paths_to_remove = {str(e['path']) for e in entries_to_remove}
+    
+    # Find indices to remove by matching paths
+    indices_to_remove = []
+    for i, entry in enumerate(collection_root.entry):
+        if entry.location is None:
+            continue
+        
+        # Reconstruct path
+        dir_attr = entry.location.dir or ""
+        file_name = entry.location.file or ""
+        volume = entry.location.volume or ""
+        
+        parts = [p for p in dir_attr.split('/:') if p]
+        if volume and volume != "Macintosh HD":
+            full_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+        else:
+            full_path = Path("/") / "/".join(parts) / file_name
+        
+        if str(full_path) in paths_to_remove:
+            indices_to_remove.append(i)
+    
+    # Remove in reverse order to avoid index shifting
+    removed = 0
+    for i in reversed(indices_to_remove):
+        collection_root.entry.pop(i)
+        removed += 1
+    
+    collection_root.entries = len(collection_root.entry)
+    
+    _backup_traktor_collection(collection_nml_path)
+    
+    try:
+        collection.save()
+        print(f"✅ Removed {removed} dead entries from Traktor collection")
+    except Exception as e:
+        print(f"❌ Failed to save: {e}")
+        return 0
+    
+    return removed
+
+
+def repair_traktor_dead_entries(
+    collection_nml_path: Path,
+    dry_run: bool = True,
+    interactive: bool = True,
+) -> Dict[str, int]:
+    """
+    Find dead entries and repair them by finding live duplicates with same audio_id or filename.
+    
+    This function:
+    1. Finds dead entries (file doesn't exist)
+    2. For each dead entry, searches for a live entry with same audio_id or filename
+    3. If found: Updates dead entry's path to live location, removes duplicate without history
+    4. If not found: Reports as unrepairable
+    
+    Args:
+        collection_nml_path: Path to collection.nml
+        dry_run: If True, only report what would be done
+        interactive: If True, ask for confirmation
+        
+    Returns:
+        Dict with counts: {'repaired': N, 'duplicates_removed': N, 'unrepairable': N}
+    """
+    if not TRAKTOR_UTILS_AVAILABLE:
+        raise RuntimeError("traktor-nml-utils required")
+    if not collection_nml_path.exists():
+        return {'repaired': 0, 'duplicates_removed': 0, 'unrepairable': 0}
+    
+    collection = TraktorCollection(collection_nml_path)
+    collection_root = collection.nml.collection
+    if collection_root is None:
+        return {'repaired': 0, 'duplicates_removed': 0, 'unrepairable': 0}
+    
+    # Build index of all entries
+    all_entries = []
+    for entry in collection_root.entry:
+        if entry.location is None:
+            continue
+        
+        dir_attr = entry.location.dir or ""
+        file_name = entry.location.file or ""
+        volume = entry.location.volume or ""
+        
+        parts = [p for p in dir_attr.split('/:') if p]
+        if volume and volume != "Macintosh HD":
+            full_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+        else:
+            full_path = Path("/") / "/".join(parts) / file_name
+        
+        playcount = 0
+        ranking = 0
+        if entry.info:
+            playcount = entry.info.playcount or 0
+            ranking = entry.info.ranking or 0
+        
+        all_entries.append({
+            'path': full_path,
+            'filename': file_name.lower(),
+            'audio_id': entry.audio_id or "",
+            'playcount': playcount,
+            'ranking': ranking,
+            'title': entry.title or "",
+            'artist': entry.artist or "",
+            'exists': full_path.exists(),
+            'entry': entry,
+        })
+    
+    # Separate dead and live entries
+    dead_entries = [e for e in all_entries if not e['exists']]
+    live_entries = [e for e in all_entries if e['exists']]
+    
+    if not dead_entries:
+        print("ℹ️  No dead entries found - all files exist")
+        return {'repaired': 0, 'duplicates_removed': 0, 'unrepairable': 0}
+    
+    # Build lookup indices for live entries
+    live_by_audio_id = {}
+    live_by_filename = {}
+    for e in live_entries:
+        if e['audio_id']:
+            if e['audio_id'] not in live_by_audio_id:
+                live_by_audio_id[e['audio_id']] = []
+            live_by_audio_id[e['audio_id']].append(e)
+        if e['filename']:
+            if e['filename'] not in live_by_filename:
+                live_by_filename[e['filename']] = []
+            live_by_filename[e['filename']].append(e)
+    
+    # Analyze each dead entry
+    repairable = []  # (dead_entry, live_match, match_type)
+    unrepairable = []
+    
+    for dead in dead_entries:
+        # Try to find match by audio_id first (most reliable)
+        live_match = None
+        match_type = None
+        
+        if dead['audio_id'] and dead['audio_id'] in live_by_audio_id:
+            candidates = live_by_audio_id[dead['audio_id']]
+            if candidates:
+                live_match = candidates[0]
+                match_type = "audio_id"
+        
+        # If no audio_id match, try filename
+        if not live_match and dead['filename'] and dead['filename'] in live_by_filename:
+            candidates = live_by_filename[dead['filename']]
+            if candidates:
+                live_match = candidates[0]
+                match_type = "filename"
+        
+        if live_match:
+            repairable.append((dead, live_match, match_type))
+        else:
+            unrepairable.append(dead)
+    
+    # Report findings
+    print(f"\n📊 Analysis of {len(dead_entries)} dead entries:")
+    print(f"   ✅ {len(repairable)} can be repaired (found live match)")
+    print(f"   ❌ {len(unrepairable)} cannot be repaired (no match found)")
+    print()
+    
+    if repairable:
+        print("🔧 REPAIRABLE entries:")
+        for dead, live, match_type in repairable[:10]:
+            has_history = dead['playcount'] > 0 or dead['ranking'] > 0
+            history_str = f"plays={dead['playcount']}, stars={dead['ranking']//51}" if has_history else "no history"
+            print(f"   🎵 {dead['artist']} - {dead['title']} ({history_str})")
+            print(f"      Dead: {dead['path'].name}")
+            print(f"      Live: {live['path']}")
+            print(f"      Match: {match_type}")
+        if len(repairable) > 10:
+            print(f"   ... and {len(repairable) - 10} more")
+        print()
+    
+    if unrepairable:
+        print("❌ UNREPAIRABLE entries (no live match found):")
+        for dead in unrepairable[:5]:
+            has_history = dead['playcount'] > 0 or dead['ranking'] > 0
+            history_str = f"plays={dead['playcount']}, stars={dead['ranking']//51}" if has_history else "no history"
+            print(f"   🎵 {dead['artist']} - {dead['title']} ({history_str})")
+            print(f"      Missing: {dead['path']}")
+        if len(unrepairable) > 5:
+            print(f"   ... and {len(unrepairable) - 5} more")
+        print()
+    
+    if dry_run:
+        print("🔍 DRY-RUN: Would repair paths and remove duplicates")
+        print("   Run with --write to apply changes")
+        return {
+            'repaired': len(repairable),
+            'duplicates_removed': len(repairable),  # Each repair removes the duplicate
+            'unrepairable': len(unrepairable)
+        }
+    
+    if not repairable:
+        print("ℹ️  Nothing to repair")
+        return {'repaired': 0, 'duplicates_removed': 0, 'unrepairable': len(unrepairable)}
+    
+    if interactive:
+        response = input(f"Repair {len(repairable)} entries? [y/N]: ").strip().lower()
+        if response != 'y':
+            print("❌ Cancelled by user")
+            return {'repaired': 0, 'duplicates_removed': 0, 'unrepairable': len(unrepairable)}
+    
+    # Actually perform repairs
+    # We need to reload collection to make changes
+    collection = TraktorCollection(collection_nml_path)
+    collection_root = collection.nml.collection
+    
+    repaired = 0
+    duplicates_removed = 0
+    
+    # Build audio_id to entry index mapping
+    audio_id_to_indices = {}
+    for i, entry in enumerate(collection_root.entry):
+        aid = entry.audio_id or ""
+        if aid not in audio_id_to_indices:
+            audio_id_to_indices[aid] = []
+        audio_id_to_indices[aid].append(i)
+    
+    entries_to_remove = set()
+    
+    for dead, live, match_type in repairable:
+        dead_audio_id = dead['audio_id']
+        live_audio_id = live['audio_id']
+        
+        # Find the dead entry and update its path
+        if dead_audio_id in audio_id_to_indices:
+            for idx in audio_id_to_indices[dead_audio_id]:
+                entry = collection_root.entry[idx]
+                # Check if this is the dead one (path doesn't exist)
+                dir_attr = entry.location.dir or ""
+                file_name = entry.location.file or ""
+                parts = [p for p in dir_attr.split('/:') if p]
+                volume = entry.location.volume or ""
+                if volume and volume != "Macintosh HD":
+                    check_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+                else:
+                    check_path = Path("/") / "/".join(parts) / file_name
+                
+                if not check_path.exists():
+                    # This is the dead entry - update its path to live location
+                    new_path = live['path']
+                    
+                    # Convert path to Traktor format
+                    path_parts = list(new_path.parts)
+                    if path_parts[0] == '/':
+                        path_parts = path_parts[1:]
+                    
+                    # Set new location
+                    entry.location.dir = "/:" + "/:".join(path_parts[:-1]) + "/:"
+                    entry.location.file = path_parts[-1]
+                    entry.location.volume = "Macintosh HD"
+                    entry.location.volumeid = "Macintosh HD"
+                    
+                    repaired += 1
+                    break
+        
+        # Mark the live duplicate for removal (it has no history, we kept the dead one's history)
+        if live_audio_id in audio_id_to_indices:
+            for idx in audio_id_to_indices[live_audio_id]:
+                entry = collection_root.entry[idx]
+                # Check if this is the live one (path exists) and has no history
+                dir_attr = entry.location.dir or ""
+                file_name = entry.location.file or ""
+                parts = [p for p in dir_attr.split('/:') if p]
+                volume = entry.location.volume or ""
+                if volume and volume != "Macintosh HD":
+                    check_path = Path("/Volumes") / volume / "/".join(parts) / file_name
+                else:
+                    check_path = Path("/") / "/".join(parts) / file_name
+                
+                playcount = entry.info.playcount if entry.info else 0
+                ranking = entry.info.ranking if entry.info else 0
+                
+                # Only remove if it's the live path and has no history
+                if check_path.exists() and (playcount or 0) == 0 and (ranking or 0) == 0:
+                    entries_to_remove.add(idx)
+                    break
+    
+    # Remove duplicates (in reverse order to preserve indices)
+    for idx in sorted(entries_to_remove, reverse=True):
+        collection_root.entry.pop(idx)
+        duplicates_removed += 1
+    
+    collection_root.entries = len(collection_root.entry)
+    
+    _backup_traktor_collection(collection_nml_path)
+    
+    try:
+        collection.save()
+        print(f"✅ Repaired {repaired} entries, removed {duplicates_removed} duplicates")
+    except Exception as e:
+        print(f"❌ Failed to save: {e}")
+        return {'repaired': 0, 'duplicates_removed': 0, 'unrepairable': len(unrepairable)}
+    
+    return {
+        'repaired': repaired,
+        'duplicates_removed': duplicates_removed,
+        'unrepairable': len(unrepairable)
+    }
+
+
 def sync_rekordbox_paths(path_map_file: Path, write: bool = False) -> None:
     """
     Update Rekordbox database with new file paths.

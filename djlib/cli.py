@@ -2263,6 +2263,126 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
         print(f"⚠️  Recovery step failed: {e}")
         print("   Continuing with normal tagging...")
     
+    # Step 1.5c: Filename fallback for Traktor - tag files in UNSORTED that match by filename
+    print()
+    print("=" * 60)
+    print("STEP 1.5c: FILENAME FALLBACK (Traktor)")
+    print("=" * 60)
+    print()
+    print("Scanning UNSORTED for files that match Traktor entries by filename...")
+    print("(This recovers files moved after Traktor analysis but before Workflow 0)")
+    print()
+    
+    try:
+        from djlib.external_sync import get_traktor_track_ids
+        from djlib.djlib_tags import write_djlib_tags, has_djlib_tags, read_djlib_tags
+        from djlib.config import load_config
+        
+        # Get UNSORTED path from config
+        cfg = load_config()
+        unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
+        
+        if unsorted_path.exists():
+            # Build filename → traktor_id map (for files where path no longer exists)
+            traktor_mapping = get_traktor_track_ids()  # {Path: tr_id}
+            
+            # Create filename → (tr_id, original_path) for files that don't exist at their DB path
+            filename_to_tr: dict[str, tuple[str, Path]] = {}
+            for db_path, tr_id in traktor_mapping.items():
+                if not db_path.exists():
+                    # File moved - add to filename fallback
+                    filename_to_tr[db_path.name] = (tr_id, db_path)
+            
+            if filename_to_tr:
+                print(f"📋 Found {len(filename_to_tr)} Traktor entries with missing files")
+                
+                # Scan UNSORTED for matching filenames
+                recovered = 0
+                already_tagged = 0
+                recovered_paths: dict[str, str] = {}  # old_path → new_path
+                
+                audio_extensions = {'.mp3', '.flac', '.m4a', '.aif', '.aiff', '.wav'}
+                for audio_file in unsorted_path.rglob('*'):
+                    if audio_file.suffix.lower() not in audio_extensions:
+                        continue
+                    
+                    if audio_file.name in filename_to_tr:
+                        tr_id, original_path = filename_to_tr[audio_file.name]
+                        
+                        # Always track path update (file was found at new location)
+                        if str(audio_file) != str(original_path):
+                            recovered_paths[str(original_path)] = str(audio_file)
+                        
+                        # Check if already tagged with this traktor_id
+                        try:
+                            if has_djlib_tags(audio_file):
+                                existing_tags = read_djlib_tags(audio_file)
+                                if existing_tags.get('traktor_id') == tr_id:
+                                    already_tagged += 1
+                                    continue
+                        except Exception:
+                            pass
+                        
+                        if dry_run:
+                            print(f"   🔍 Would recover: {audio_file.name}")
+                            print(f"      Traktor ID: {tr_id[:50]}..." if len(tr_id) > 50 else f"      Traktor ID: {tr_id}")
+                            print(f"      Original path: {original_path}")
+                            recovered += 1
+                        else:
+                            try:
+                                from djlib.djlib_tags import generate_track_id
+                                track_id = generate_track_id(audio_file, '', '')  # Will read from file
+                                
+                                write_djlib_tags(
+                                    audio_file,
+                                    track_id=track_id,
+                                    traktor_id=tr_id,
+                                    original_path=str(original_path)
+                                )
+                                print(f"   ✅ Recovered: {audio_file.name} → traktor_id")
+                                recovered += 1
+                            except Exception as e:
+                                print(f"   ⚠️  Failed to recover {audio_file.name}: {e}")
+                
+                if recovered > 0:
+                    print(f"\n🔄 Recovered {recovered} lost Traktor files by filename match")
+                
+                # Update library.csv with new paths (even for already-tagged files)
+                if not dry_run and recovered_paths:
+                    import csv
+                    
+                    # Read current library.csv
+                    rows = []
+                    with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        fieldnames = reader.fieldnames
+                        for row in reader:
+                            # Check if this row needs path update
+                            old_path = row.get('old_full_path', '')
+                            if old_path in recovered_paths:
+                                row['old_full_path'] = recovered_paths[old_path]
+                            rows.append(row)
+                    
+                    # Write updated library.csv
+                    with open(CSV_PATH, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                    
+                    print(f"   📝 Updated {len(recovered_paths)} paths in library.csv")
+                
+                if already_tagged > 0:
+                    print(f"⏭️  Skipped {already_tagged} already tagged files")
+                if recovered == 0 and already_tagged == 0:
+                    print("ℹ️  No lost Traktor files found in UNSORTED")
+            else:
+                print("ℹ️  All Traktor files exist at their expected paths")
+        else:
+            print(f"⚠️  UNSORTED path not found: {unsorted_path}")
+    except Exception as e:
+        print(f"⚠️  Traktor recovery step failed: {e}")
+        print("   Continuing with normal tagging...")
+    
     # Step 2: Add DJLIB tags to all unique library files (ONE TIME)
     print()
     print("=" * 60)
@@ -2673,6 +2793,150 @@ def cmd_setup_beatport(args: argparse.Namespace) -> None:
         print(f"\n❌ Setup failed: {e}")
 
 
+def cmd_traktor_dedup(args: argparse.Namespace) -> None:
+    """Find and remove duplicate entries in Traktor collection."""
+    from djlib.external_sync import remove_traktor_duplicates
+    from djlib.config import load_config
+    
+    dry_run = not args.write
+    
+    print("\n" + "=" * 60)
+    print("TRAKTOR DUPLICATE FINDER")
+    if dry_run:
+        print("         (DRY-RUN MODE)")
+    else:
+        print("         ⚠️  WRITE MODE - WILL MODIFY TRAKTOR DB!")
+    print("=" * 60)
+    print()
+    
+    collection_path = _get_traktor_collection_path()
+    if not collection_path:
+        return
+    
+    print(f"📁 Collection: {collection_path}")
+    print()
+    
+    try:
+        removed = remove_traktor_duplicates(
+            collection_path,
+            dry_run=dry_run,
+            interactive=True,  # Always ask for confirmation
+        )
+        
+        if removed > 0 and not dry_run:
+            print(f"\n✅ Removed {removed} duplicate entries")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def _get_traktor_collection_path() -> Optional[Path]:
+    """Helper to get Traktor collection.nml path from config or default."""
+    from djlib.config import load_config
+    
+    cfg = load_config()
+    traktor_cfg = cfg.get('traktor', {})
+    collection_path_str = traktor_cfg.get('collection_nml', '')
+    collection_path = Path(collection_path_str).expanduser() if collection_path_str else None
+    
+    if not collection_path or not collection_path.exists():
+        # Try default location
+        docs = Path.home() / "Documents" / "Native Instruments"
+        collection_path = None
+        for traktor_dir in docs.glob("Traktor*"):
+            nml = traktor_dir / "collection.nml"
+            if nml.exists():
+                collection_path = nml
+                break
+    
+    if not collection_path or not collection_path.exists():
+        print("❌ Traktor collection.nml not found")
+        print("   Configure traktor.collection_nml in config.local.yml")
+        return None
+    
+    return collection_path
+
+
+def cmd_traktor_cleanup(args: argparse.Namespace) -> None:
+    """Find and remove dead entries (missing files) from Traktor collection."""
+    from djlib.external_sync import remove_traktor_dead_entries
+    
+    dry_run = not args.write
+    
+    print("\n" + "=" * 60)
+    print("TRAKTOR DEAD ENTRY CLEANUP")
+    if dry_run:
+        print("         (DRY-RUN MODE)")
+    else:
+        print("         ⚠️  WRITE MODE - WILL MODIFY TRAKTOR DB!")
+    print("=" * 60)
+    print()
+    
+    collection_path = _get_traktor_collection_path()
+    if not collection_path:
+        return
+    
+    print(f"📁 Collection: {collection_path}")
+    print(f"🔍 Scanning for entries where file no longer exists...")
+    print()
+    
+    try:
+        removed = remove_traktor_dead_entries(
+            collection_path,
+            dry_run=dry_run,
+            interactive=True,  # Always ask for confirmation
+        )
+        
+        if removed > 0 and not dry_run:
+            print(f"\n✅ Cleaned up {removed} dead entries")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def cmd_traktor_repair(args: argparse.Namespace) -> None:
+    """Find dead entries and repair them by finding live duplicates."""
+    from djlib.external_sync import repair_traktor_dead_entries
+    
+    dry_run = not args.write
+    
+    print("\n" + "=" * 60)
+    print("TRAKTOR DEAD ENTRY REPAIR")
+    if dry_run:
+        print("         (DRY-RUN MODE)")
+    else:
+        print("         ⚠️  WRITE MODE - WILL MODIFY TRAKTOR DB!")
+    print("=" * 60)
+    print()
+    
+    collection_path = _get_traktor_collection_path()
+    if not collection_path:
+        return
+    
+    print(f"📁 Collection: {collection_path}")
+    print(f"🔍 Scanning for dead entries with live duplicates...")
+    print()
+    
+    try:
+        result = repair_traktor_dead_entries(
+            collection_path,
+            dry_run=dry_run,
+            interactive=True,
+        )
+        
+        if not dry_run and result['repaired'] > 0:
+            print(f"\n✅ Repaired {result['repaired']} entries")
+            print(f"   Removed {result['duplicates_removed']} duplicates")
+        if result['unrepairable'] > 0:
+            print(f"\n⚠️  {result['unrepairable']} entries could not be repaired (no live match)")
+            print("   Use 'traktor-cleanup' to remove them if desired")
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 # ============ PARSER ============
 
@@ -2731,6 +2995,21 @@ def build_parser() -> argparse.ArgumentParser:
     arb = sp.add_parser("add-to-rekordbox", help="Add tracks from unsorted.xlsx to Rekordbox database")
     arb.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
     arb.set_defaults(func=cmd_add_to_rekordbox)
+    
+    # Remove duplicate entries from Traktor
+    tdd = sp.add_parser("traktor-dedup", help="Find and remove duplicate entries in Traktor collection")
+    tdd.add_argument("--write", action="store_true", help="Actually remove duplicates (default is dry-run)")
+    tdd.set_defaults(func=cmd_traktor_dedup)
+    
+    # Remove dead entries (missing files) from Traktor
+    tcl = sp.add_parser("traktor-cleanup", help="Find and remove dead entries (missing files) from Traktor")
+    tcl.add_argument("--write", action="store_true", help="Actually remove dead entries (default is dry-run)")
+    tcl.set_defaults(func=cmd_traktor_cleanup)
+    
+    # Repair dead entries by finding live duplicates
+    trp = sp.add_parser("traktor-repair", help="Repair dead entries by finding live duplicates (preserves play history)")
+    trp.add_argument("--write", action="store_true", help="Actually repair entries (default is dry-run)")
+    trp.set_defaults(func=cmd_traktor_repair)
     
     # ========== END EXTERNAL INTEGRATION ==========
     
