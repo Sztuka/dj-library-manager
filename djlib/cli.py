@@ -162,6 +162,10 @@ def cmd_scan(args: argparse.Namespace) -> None:
     known_hashes.update({r.get("file_hash", "") for r in staging_rows if r.get("file_hash")})
     known_fps.update({r.get("fingerprint", "") for r in staging_rows if r.get("fingerprint")})
     
+    # Also track known file paths to prevent duplicates when tags change
+    known_paths = {r.get("file_path", "") for r in library_rows if r.get("file_path")}
+    known_paths.update({r.get("file_path", "") for r in staging_rows if r.get("file_path")})
+    
     # Get current Rekordbox track IDs for auto-tagging
     from djlib.external_sync import get_rekordbox_track_ids, get_traktor_track_ids
     rekordbox_mapping = get_rekordbox_track_ids()
@@ -229,6 +233,21 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
     new_rows: List[Dict[str, str]] = []
     for p in all_files:
+        # Skip if file path already in staging or library (prevents duplicates when tags change)
+        if str(p) in known_paths:
+            processed += 1
+            _write_status(
+                {
+                    "state": "running",
+                    "total": total,
+                    "processed": processed,
+                    "added": added,
+                    "errors": errors,
+                    "last_file": str(p),
+                }
+            )
+            continue
+        
         fhash = file_sha256(p)
         if fhash in known_hashes:
             processed += 1
@@ -1536,6 +1555,41 @@ def cmd_dupes(_: argparse.Namespace) -> None:
                 w.writerow([fp, r.get("track_id",""), r.get("artist",""), r.get("title",""),
                             r.get("file_path",""), r.get("final_path",""), r.get("file_hash","")])
     print(f"Zapisano raport duplikatów: {out}")
+
+
+def cmd_fix_unsorted_dupes(args: argparse.Namespace) -> None:
+    """Remove duplicate entries from unsorted.xlsx (keeps first occurrence)."""
+    rows = _load_unsorted()
+    if not rows:
+        print("unsorted.xlsx is empty")
+        return
+    
+    seen_paths: set[str] = set()
+    unique_rows: List[Dict[str, str]] = []
+    removed = 0
+    
+    for r in rows:
+        path = r.get("file_path", "")
+        if path in seen_paths:
+            removed += 1
+            print(f"  DUPE: {Path(path).name}")
+        else:
+            seen_paths.add(path)
+            unique_rows.append(r)
+    
+    if removed == 0:
+        print("✅ No duplicates found in unsorted.xlsx")
+        return
+    
+    print(f"\nFound {removed} duplicate entries")
+    
+    if args.write:
+        write_unsorted_rows(UNSORTED_XLSX, unique_rows, [])  # bucket_choices ignored
+        print(f"✅ Removed {removed} duplicates, {len(unique_rows)} entries remain")
+    else:
+        print(f"\n📝 DRY-RUN: Would remove {removed} duplicates")
+        print(f"   Run with --write to apply changes")
+
 
 def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
     """DEPRECATED: Essentia analysis is now cache-only and does not write to tags or unsorted.xlsx.
@@ -3138,6 +3192,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
+    fud = sp.add_parser("fix-unsorted-dupes", help="Remove duplicate entries from unsorted.xlsx")
+    fud.add_argument("--write", action="store_true", help="Actually remove duplicates (default is dry-run)")
+    fud.set_defaults(func=cmd_fix_unsorted_dupes)
     sap = sp.add_parser("sync-audio-metrics")
     sap.add_argument("--force", action="store_true")
     sap.add_argument("--write-tags", action="store_true", help="Zapisz metadane (BPM/Key) do plików audio")
