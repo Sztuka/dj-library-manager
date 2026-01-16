@@ -1119,6 +1119,20 @@ def cmd_apply(args: argparse.Namespace) -> None:
     from djlib.external_sync import get_rekordbox_track_ids, get_traktor_track_ids
     rekordbox_mapping = get_rekordbox_track_ids()
     traktor_mapping = get_traktor_track_ids()
+    
+    # Build library index for duplicate detection when exporting to library
+    from djlib.dedup import get_audio_info, normalize_for_match, format_quality, format_duration
+    from djlib.config import load_config
+    _cfg = load_config()
+    _library_path = Path(_cfg.get("LIB_ROOT", "")).expanduser()
+    library_index: Dict[str, Any] = {}  # match_key -> AudioInfo
+    if _library_path and _library_path.exists():
+        _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
+        for _ext in _audio_exts:
+            for _path in _library_path.rglob(f"*{_ext}"):
+                _info = get_audio_info(_path)
+                if _info and _info.artist and _info.title:
+                    library_index[_info.match_key] = _info
 
     for r in ready:
         # Determine destination path (new model or legacy fallback)
@@ -1208,6 +1222,41 @@ def cmd_apply(args: argparse.Namespace) -> None:
         )
         
         artist = r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or ""
+        title = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
+        
+        # Check for duplicates in library when exporting to library
+        if destination == "library" and library_index:
+            match_key = normalize_for_match(artist, title)
+            if match_key in library_index:
+                existing = library_index[match_key]
+                src_info = get_audio_info(src)
+                
+                print(f"\n⚠️  DUPLICATE DETECTED for: {artist} - {title}")
+                print(f"   EXISTING in library:")
+                print(f"      {format_quality(existing)}, {format_duration(existing.duration)}")
+                print(f"      {existing.path}")
+                if src_info:
+                    print(f"   NEW (exporting):")
+                    print(f"      {format_quality(src_info)}, {format_duration(src_info.duration)}")
+                    print(f"      {src}")
+                    
+                    # Quality comparison
+                    if src_info.quality_score > existing.quality_score:
+                        print(f"   📈 NEW is BETTER quality ({src_info.quality_score} vs {existing.quality_score})")
+                    elif src_info.quality_score < existing.quality_score:
+                        print(f"   📉 EXISTING is BETTER quality ({existing.quality_score} vs {src_info.quality_score})")
+                    else:
+                        print(f"   ⚖️  Same quality score ({src_info.quality_score})")
+                    
+                    # Duration check
+                    dur_diff = abs(src_info.duration - existing.duration)
+                    if dur_diff > 3:
+                        print(f"   ⏱️  Duration differs by {dur_diff:.0f}s - might be different edits!")
+                
+                choice = input("   Continue anyway? [y/N]: ").strip().lower()
+                if choice != 'y':
+                    print("   → Skipped")
+                    continue
         
         # Determine destination path
         dest_path: Path | None = None
@@ -2938,6 +2987,61 @@ def cmd_traktor_repair(args: argparse.Namespace) -> None:
         traceback.print_exc()
 
 
+def cmd_library_dedup(args: argparse.Namespace) -> None:
+    """Find and handle duplicate tracks in LIBRARY based on artist+title."""
+    from djlib.config import load_config
+    from djlib.dedup import find_duplicates_in_library, interactive_dedup
+    
+    dry_run = not args.write
+    
+    print("\n" + "=" * 60)
+    print("LIBRARY DUPLICATE FINDER")
+    if dry_run:
+        print("         (DRY-RUN MODE)")
+    else:
+        print("         ⚠️  WRITE MODE - MAY MOVE FILES!")
+    print("=" * 60)
+    print()
+    
+    cfg = load_config()
+    library_path = Path(cfg.get("LIB_ROOT", "")).expanduser()
+    
+    if not library_path or not library_path.exists():
+        print("❌ Library path not configured or doesn't exist")
+        print("   Run 'djlib configure' to set up paths")
+        return
+    
+    print(f"📁 Library: {library_path}")
+    print(f"🔍 Scanning for duplicates (artist + title match)...")
+    print()
+    
+    try:
+        duplicates = find_duplicates_in_library(library_path)
+        
+        if not duplicates:
+            print("✅ No duplicates found!")
+            return
+        
+        print(f"Found {len(duplicates)} duplicate groups.\n")
+        
+        stats = interactive_dedup(duplicates, dry_run=dry_run)
+        
+        print("\n" + "=" * 60)
+        print("SUMMARY")
+        print("=" * 60)
+        print(f"  Kept:    {stats['kept']}")
+        print(f"  Removed: {stats['removed']}")
+        print(f"  Skipped: {stats['skipped']}")
+        
+        if dry_run and stats['removed'] > 0:
+            print(f"\n📝 Run with --write to apply changes")
+            
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3010,6 +3114,11 @@ def build_parser() -> argparse.ArgumentParser:
     trp = sp.add_parser("traktor-repair", help="Repair dead entries by finding live duplicates (preserves play history)")
     trp.add_argument("--write", action="store_true", help="Actually repair entries (default is dry-run)")
     trp.set_defaults(func=cmd_traktor_repair)
+    
+    # Library deduplication by quality
+    ldp = sp.add_parser("library-dedup", help="Find and handle duplicate tracks in LIBRARY (artist+title match)")
+    ldp.add_argument("--write", action="store_true", help="Actually move files (default is dry-run)")
+    ldp.set_defaults(func=cmd_library_dedup)
     
     # ========== END EXTERNAL INTEGRATION ==========
     
