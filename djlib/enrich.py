@@ -186,6 +186,10 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
         if not raw:
             return ""
         
+        # Remove track number prefix (e.g., "09. One Direction" -> "One Direction")
+        # Pattern: digits followed by dot/dash and optional space at start
+        raw = re.sub(r"^\d{1,3}[\.\-]\s*", "", raw)
+        
         # Normalize key for lookup: remove spaces, underscores, dots
         key = re.sub(r"[ _\.]+", "", raw).lower()
         if key in SPECIAL_ARTISTS:
@@ -314,6 +318,10 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
     title = _sanitize_title(tags.get("title", ""))
     version = _sanitize_version(tags.get("version_info", ""))
 
+    # FIRST: Normalize featuring info BEFORE splitting title/version
+    # This prevents "(feat. Carol)" from being treated as version info
+    artist, title = _normalize_features(artist, title)
+
     # Split title field to extract version info (handles "Title - Mix/Edit/etc" patterns)
     if title:
         title_split, version_split = split_title_and_version(title)
@@ -360,9 +368,6 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
     # Apply title case normalization for all-lowercase or all-uppercase
     if title and (title.islower() or title.isupper()):
         title = title.title()
-    
-    # Normalize featuring information (extract from artist, consolidate in title)
-    artist, title = _normalize_features(artist, title)
 
     return artist.strip(), title.strip(), version.strip()
 
