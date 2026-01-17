@@ -35,10 +35,12 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
     
     Recognizes version info in:
     1. Parentheses/brackets: "Title (Extended Mix)" → "Title", "Extended Mix"
+       BUT only if content contains version keywords (Mix, Edit, Remix, etc.)
+       "(Hear Me Tonight)" is NOT a version - it's part of the title!
     2. Dash separator: "Title - Extended Mix" → "Title", "Extended Mix"
     
-    For dash separator, only splits if right side ends with:
-    Mix, Edit, Version, Remix, Dub, VIP, Bootleg, Rework, Remaster, etc.
+    For both patterns, only splits if content contains version keywords:
+    Mix, Edit, Version, Remix, Dub, VIP, Bootleg, Rework, Remaster, Live, Acoustic, etc.
     
     Returns:
         tuple[str, str]: (base_title, version_info)
@@ -47,7 +49,22 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
     if not s:
         return "", ""
     
-    # First, extract all parentheses/brackets from the entire title
+    # Version indicators - content must contain one of these to be considered a version
+    # Case-insensitive matching
+    VERSION_KEYWORDS = [
+        "mix", "edit", "version", "remix", "dub", "vip",
+        "bootleg", "rework", "remaster", "remastered",
+        "rub", "flip", "refix", "revamp",
+        "live", "acoustic", "unplugged", "instrumental", "acapella", "a capella",
+        "radio", "extended", "original", "club", "single",
+    ]
+    
+    def _is_version_content(content: str) -> bool:
+        """Check if parenthesis content looks like version info."""
+        c = content.lower()
+        return any(kw in c for kw in VERSION_KEYWORDS)
+    
+    # First, extract ONLY version-like content from parentheses/brackets at the end
     parenthesis_tokens: list[str] = []
     while True:
         # Match parentheses (), square brackets [], or curly braces {} at the end
@@ -57,8 +74,14 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
         content = m.group(1).strip()
         if not content:
             break
-        parenthesis_tokens.append(content)
-        s = s[: m.start()].strip()
+        
+        # Only extract if it looks like version info
+        if _is_version_content(content):
+            parenthesis_tokens.append(content)
+            s = s[: m.start()].strip()
+        else:
+            # Not a version - stop extracting (keep it as part of title)
+            break
     parenthesis_tokens.reverse()
     
     # Now check for dash separator with version keywords in remaining text
@@ -143,14 +166,37 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
 
     dash_pattern = r"\s+-\s+" if " - " in cleaned else r"\s*-\s*"
 
+    # Version keywords - content must contain one of these to be considered version info
+    VERSION_KEYWORDS = [
+        "mix", "edit", "version", "remix", "dub", "vip",
+        "bootleg", "rework", "remaster", "remastered",
+        "rub", "flip", "refix", "revamp",
+        "live", "acoustic", "unplugged", "instrumental", "acapella", "a capella",
+        "radio", "extended", "original", "club", "single",
+    ]
+    
+    def _is_version_content(content: str) -> bool:
+        """Check if parenthesis content looks like version info."""
+        c = content.lower()
+        return any(kw in c for kw in VERSION_KEYWORDS)
+
     # 2) próba dopasowania z wieloma nawiasami: Artist - Title (V1) (V2) ...
     m_multi = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*(\(.+\))\s*$", cleaned)
     if m_multi:
         a, t, tail = m_multi.groups()
         # wyciągnij wszystkie grupy nawiasów
         parts = re.findall(r"\(([^)]+)\)", tail)
-        version_combined = ", ".join(p.strip() for p in parts if p.strip())
-        return a.strip(), t.strip(), version_combined.strip()
+        # ONLY include parts that look like version info
+        version_parts = [p.strip() for p in parts if p.strip() and _is_version_content(p)]
+        # Non-version parts should be appended back to title
+        title_parts = [p.strip() for p in parts if p.strip() and not _is_version_content(p)]
+        
+        full_title = t.strip()
+        if title_parts:
+            full_title = full_title + " " + " ".join(f"({p})" for p in title_parts)
+        
+        version_combined = ", ".join(version_parts)
+        return a.strip(), full_title.strip(), version_combined.strip()
 
     # 2b) próba dopasowania: Artist - Title - Version (bez nawiasów, 3 segmenty)
     m_three = re.match(rf"^\s*(.+?){dash_pattern}(.+?){dash_pattern}(.+?)\s*$", cleaned)

@@ -29,6 +29,76 @@ MB_ENDPOINT = "https://musicbrainz.org/ws/2/recording"
 MB_UA = "DJLibraryManager/0.1 (+https://github.com/Sztuka/dj-library-manager)"
 
 
+def _normalize_title_from_canonical(local_title: str, canonical_title: str) -> Tuple[str, bool]:
+    """
+    Compare local title with MusicBrainz canonical title and normalize if appropriate.
+    
+    Normalization happens when:
+    - Local title is a prefix of canonical (e.g., "Lady" vs "Lady (Hear Me Tonight)")
+    - Canonical has additional parenthetical info that's NOT a version/remix
+    
+    Returns:
+        Tuple of (normalized_title, was_normalized)
+    
+    Examples:
+        "Lady" vs "Lady (Hear Me Tonight)" -> ("Lady (Hear Me Tonight)", True)
+        "One Way or Another" vs "One Way or Another (Teenage Kicks)" -> normalized
+        "Billie Jean" vs "Billie Jean (Live)" -> NOT normalized (Live is a version)
+        "Song" vs "Song (Remix)" -> NOT normalized (Remix is a version)
+    """
+    local = (local_title or "").strip()
+    canonical = (canonical_title or "").strip()
+    
+    if not local or not canonical:
+        return local_title, False
+    
+    # If titles are identical (case-insensitive), no normalization needed
+    if local.lower() == canonical.lower():
+        return local_title, False
+    
+    # Check if local is a prefix of canonical
+    # e.g., "Lady" is prefix of "Lady (Hear Me Tonight)"
+    canonical_lower = canonical.lower()
+    local_lower = local.lower()
+    
+    if not canonical_lower.startswith(local_lower):
+        return local_title, False
+    
+    # Get the extra part from canonical
+    extra = canonical[len(local):].strip()
+    if not extra:
+        return local_title, False
+    
+    # Check if extra part starts with parenthesis
+    if not extra.startswith("("):
+        return local_title, False
+    
+    # Extract content inside parentheses
+    match = re.match(r"\(([^)]+)\)", extra)
+    if not match:
+        return local_title, False
+    
+    paren_content = match.group(1).lower()
+    
+    # DON'T normalize if parenthetical content is a version/remix indicator
+    # These indicate different versions, not canonical title variants
+    version_indicators = [
+        "remix", "rework", "bootleg", "dub", "vip",
+        "live", "acoustic", "unplugged", "concert",
+        "radio edit", "extended", "club mix", "original mix",
+        "remaster", "remastered", "version", "edit", "mix",
+        "instrumental", "acapella", "a capella",
+    ]
+    
+    for indicator in version_indicators:
+        if indicator in paren_content:
+            return local_title, False
+    
+    # Parenthetical content is NOT a version - it's part of the canonical title
+    # e.g., "(Hear Me Tonight)", "(Teenage Kicks)" - these are title additions
+    return canonical, True
+
+
 def get_audio_duration(path: Path) -> int:
     """
     Get audio file duration in seconds using mutagen.
@@ -746,9 +816,11 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
     Strategy:
     1. Try Canonical MusicBrainz Data lookup (instant, no API calls)
     2. Fallback to live MusicBrainz API search
+    3. Normalize title if local is prefix of canonical (e.g., "Lady" -> "Lady (Hear Me Tonight)")
     """
     artist = (artist or "").strip()
-    title = (title or "").strip()
+    original_title = (title or "").strip()  # Keep original for comparison
+    title = original_title
     if not title and not artist:
         return None
     
@@ -769,14 +841,27 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
                 canonical_data = None
             else:
                 # Got canonical data - prioritize it!
+                # Try to get MB title for normalization (canonical lookup uses recording name)
+                canonical_title = title  # Default to input title
+                was_normalized = False
+                try:
+                    match = mb_client.search_recording(artist, title)
+                    if match and match.title:
+                        normalized_title, was_normalized = _normalize_title_from_canonical(original_title, match.title)
+                        if was_normalized:
+                            canonical_title = normalized_title
+                except Exception:
+                    pass
+                
                 result = {
                     "artist_suggest": canonical_data['artist_name'],
-                    "title_suggest": title,
+                    "title_suggest": canonical_title,
                     "album_suggest": canonical_data['album_title'],
                     "original_album_title": canonical_data['album_title'],
                     "original_release_mbid": canonical_data['release_mbid'],
                     "recording_mbid": canonical_data['recording_mbid'],
                     "meta_source": "musicbrainz_canonical",
+                    "title_normalized": "yes" if was_normalized else "",
                 }
                 # Add year if available
                 if 'release_year' in canonical_data:
@@ -893,9 +978,13 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
             except Exception:
                 pass
 
+        # Check if MB title is more complete than local (e.g., "Lady" vs "Lady (Hear Me Tonight)")
+        normalized_title, was_normalized = _normalize_title_from_canonical(original_title, out_title)
+        final_title = normalized_title if was_normalized else out_title
+
         result = {
             "artist_suggest": out_artist,
-            "title_suggest": out_title,
+            "title_suggest": final_title,
             "version_suggest": "",
             "genre_suggest": genre,
             "album_suggest": album,
@@ -903,6 +992,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
             "duration_suggest": duration,
             "meta_source": "musicbrainz",
             "release_group_id": release_group_id_filtered or match.release_group_id or "",  # Prefer filtered (studio) over raw recording RG
+            "title_normalized": "yes" if was_normalized else "",
         }
         
         # Merge first release data (non-invasive, only adds new fields)

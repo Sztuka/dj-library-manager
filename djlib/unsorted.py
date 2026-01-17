@@ -39,6 +39,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("tag_key_original", hidden=True, width=14, locked=True),
     ColumnSpec("artist_suggest", hidden=True, width=24, locked=True),
     ColumnSpec("title_suggest", hidden=True, width=24, locked=True),
+    ColumnSpec("title_normalized", hidden=False, width=12, locked=True),  # "yes" if title was normalized from MB canonical
     ColumnSpec("version_suggest", hidden=True, width=20, locked=True),
     ColumnSpec("genre_suggest", hidden=False, width=24, locked=True),
     ColumnSpec("album_suggest", hidden=True, width=32, locked=True),  # Hidden - user manages own albums

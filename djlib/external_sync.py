@@ -1246,6 +1246,106 @@ def refresh_traktor_cover_art(file_path: Path, collection_nml_path: Optional[Pat
         return False
 
 
+# ============ REMOVE TRACKS FROM DJ SOFTWARE ============
+
+def remove_tracks_from_rekordbox(
+    rekordbox_ids: List[str],
+    dry_run: bool = True
+) -> int:
+    """
+    Remove tracks from Rekordbox database by their IDs.
+    
+    ⚠️ NOTE: pyrekordbox does not fully support track deletion.
+    This function will print a warning - user should remove tracks manually in Rekordbox.
+    
+    Args:
+        rekordbox_ids: List of Rekordbox track IDs to remove
+        dry_run: If True (default), don't write changes. If False, apply.
+    
+    Returns:
+        int: Number of tracks removed (always 0 - not implemented)
+    """
+    if not rekordbox_ids:
+        return 0
+    
+    # pyrekordbox doesn't have reliable track deletion support
+    # User should manually remove rejected/archived tracks from Rekordbox
+    print(f"⚠️  Rekordbox: {len(rekordbox_ids)} tracks need manual removal")
+    print(f"   (pyrekordbox doesn't support track deletion)")
+    print(f"   IDs to remove: {', '.join(rekordbox_ids[:5])}{'...' if len(rekordbox_ids) > 5 else ''}")
+    print(f"   💡 Tip: In Rekordbox, filter by these files and delete them from Collection")
+    
+    return 0
+
+
+def remove_tracks_from_traktor(
+    traktor_ids: List[str],
+    collection_nml_path: Optional[Path] = None,
+    dry_run: bool = True
+) -> int:
+    """
+    Remove tracks from Traktor collection by their audio IDs.
+    
+    Args:
+        traktor_ids: List of Traktor audio IDs to remove
+        collection_nml_path: Path to collection.nml (auto-detected if None)
+        dry_run: If True (default), don't write changes. If False, apply.
+    
+    Returns:
+        int: Number of tracks removed
+    """
+    if not traktor_ids:
+        return 0
+    
+    if not TRAKTOR_UTILS_AVAILABLE:
+        print("⚠️  traktor-nml-utils not available - cannot remove from Traktor")
+        return 0
+    
+    if collection_nml_path is None:
+        from djlib.config import load_config
+        cfg = load_config()
+        collection_nml_path = Path(cfg.get("TRAKTOR_COLLECTION", "")).expanduser()
+    
+    if not collection_nml_path or not collection_nml_path.exists():
+        print(f"⚠️  Traktor collection not found: {collection_nml_path}")
+        return 0
+    
+    if dry_run:
+        print(f"🔍 DRY-RUN: Would remove {len(traktor_ids)} tracks from Traktor")
+        return 0
+    
+    try:
+        collection = TraktorCollection(collection_nml_path)
+        collection_root = collection.nml.collection
+        
+        if collection_root is None:
+            print("⚠️  Traktor collection is empty")
+            return 0
+        
+        # Create set for fast lookup
+        ids_to_remove = set(traktor_ids)
+        
+        removed = 0
+        # Iterate in reverse to safely remove while iterating
+        for i in range(len(collection_root.entry) - 1, -1, -1):
+            entry = collection_root.entry[i]
+            if entry.audio_id in ids_to_remove:
+                collection_root.entry.pop(i)
+                removed += 1
+                print(f"   🗑️  Removed from Traktor: {entry.audio_id[:30]}...")
+        
+        if removed > 0:
+            collection_root.entries = len(collection_root.entry)
+            _backup_traktor_collection(collection_nml_path)
+            collection.save()
+            print(f"✅ Removed {removed} tracks from Traktor collection")
+        
+        return removed
+    except Exception as e:
+        print(f"⚠️  Error removing from Traktor: {e}")
+        return 0
+
+
 def add_tracks_to_rekordbox(
     tracks: List[Dict[str, Any]],
     dry_run: bool = True,

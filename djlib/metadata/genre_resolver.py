@@ -162,40 +162,16 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         return None
 
     # Detect if this is a TRUE remix (another artist/producer reworked it)
-    # NOT remix: Radio Edit, Album Version, Original Mix, Extended Mix, Remastered, Live, Acoustic
-    # IS remix: "X Remix", "X Mix", "X Rework", "X Bootleg", "X Edit" (where X is a name)
+    # INVERTED LOGIC: Default is NOT remix. Only explicit remix keywords make it a remix.
+    # This prevents "(Hear Me Tonight)", "(Remastered)", "(Version 1)" from being treated as remixes.
     is_remix = False
     version_lower = (version or "").strip().lower()
     if version_lower:
-        # These are NOT remixes - just variants of the original
-        non_remix_keywords = [
-            "radio edit", "radio version", "radio mix",
-            "album version", "album mix",
-            "original mix", "original version", "original",
-            "extended mix", "extended version", "extended edit", "extended",
-            "club mix", "club version", "club edit",  # generic club mix without artist name
-            "remaster", "remastered",
-            "live", "acoustic", "unplugged",
-            "instrumental", "a]capella", "acapella",
-            "single version", "single edit", "single mix",
-            "edit",  # just "Edit" without artist name is usually radio/single edit
-        ]
-        # Check if version is just a non-remix variant
-        is_non_remix = any(kw in version_lower for kw in non_remix_keywords)
-        
-        # True remix indicators: contains "remix", "rework", "bootleg", "dub" 
-        # OR has an artist/producer name before "mix/edit" (e.g. "Tiësto Remix", "Bob's Edit")
-        remix_indicators = ["remix", "rework", "bootleg", "dub mix", "vip mix", "vip edit"]
-        has_remix_keyword = any(kw in version_lower for kw in remix_indicators)
-        
-        # If it has remix keyword, it's a remix regardless of other keywords
-        # If it doesn't have non-remix keywords but has version info, check if it looks like artist remix
-        if has_remix_keyword:
-            is_remix = True
-        elif not is_non_remix and version_lower:
-            # Has version info that's not a known non-remix type - might be artist remix
-            # e.g. "Tiësto Mix", "Purple Disco Machine Edit"
-            is_remix = True
+        # Explicit remix indicators - ONLY these make it a remix
+        remix_keywords = ["remix", "rework", "bootleg", "dub mix", "vip mix", "vip edit"]
+        is_remix = any(kw in version_lower for kw in remix_keywords)
+        # Edge case: "radio edit" contains "edit" but is NOT a remix
+        # Already handled: "edit" alone is not in remix_keywords, only "vip edit"
     
     scores: Dict[str, float] = {}
     parts: List[Tuple[str, float, Dict[str, float]]] = []

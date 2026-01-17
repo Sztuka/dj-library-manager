@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, LOGS_DIR, CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
+    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
 )
 from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
@@ -977,7 +977,13 @@ def cmd_apply(args: argparse.Namespace) -> None:
         print("Brak wierszy z oznaczeniem done=TRUE.")
         return
     library_rows = load_records(CSV_PATH)
+    archive_rows = load_records(ARCHIVE_CSV_PATH)  # Load archive for duplicate checking
     processed_ids: set[str] = set()
+    # Track DJ software IDs to remove for rejected/archived files
+    rejected_rekordbox_ids: List[str] = []
+    rejected_traktor_ids: List[str] = []
+    archived_rekordbox_ids: List[str] = []
+    archived_traktor_ids: List[str] = []
     tags_written = 0
     tags_errors = 0
     tags_cleaned = 0
@@ -997,17 +1003,32 @@ def cmd_apply(args: argparse.Namespace) -> None:
     traktor_mapping = get_traktor_track_ids()
     
     # Build library index for duplicate detection when exporting to library
+    # Includes both active library AND archive
     from djlib.dedup import get_audio_info, normalize_for_match, format_quality, format_duration
     from djlib.config import load_config
     _cfg = load_config()
     _library_path = Path(_cfg.get("LIB_ROOT", "")).expanduser()
+    _archive_path = Path(_cfg.get("ARCHIVE_ROOT", "")).expanduser()
     library_index: Dict[str, Any] = {}  # match_key -> AudioInfo
+    
+    # Scan library folder
     if _library_path and _library_path.exists():
         _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
         for _ext in _audio_exts:
             for _path in _library_path.rglob(f"*{_ext}"):
                 _info = get_audio_info(_path)
                 if _info and _info.artist and _info.title:
+                    library_index[_info.match_key] = _info
+    
+    # Scan archive folder for duplicates too
+    if _archive_path and _archive_path.exists():
+        _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
+        for _ext in _audio_exts:
+            for _path in _archive_path.rglob(f"*{_ext}"):
+                _info = get_audio_info(_path)
+                if _info and _info.artist and _info.title:
+                    # Mark archive entries with a note
+                    _info.notes = "IN ARCHIVE"
                     library_index[_info.match_key] = _info
 
     for r in ready:
@@ -1020,58 +1041,61 @@ def cmd_apply(args: argparse.Namespace) -> None:
             print(f"[WARN] Nie znaleziono pliku: {src}")
             continue
         
-        # ✅ VALIDATE & FIX DJ software IDs before moving
-        current_rekordbox_id = rekordbox_mapping.get(src, '')
-        current_traktor_id = traktor_mapping.get(src, '')
-        
-        # Also check file tags for rekordbox_id
-        file_rekordbox_id = r.get("rekordbox_id", "")
-        if not file_rekordbox_id:
-            try:
-                from djlib.djlib_tags import read_djlib_tags
-                djlib_tags = read_djlib_tags(src)
-                file_rekordbox_id = djlib_tags.get("rekordbox_id", "")
-            except Exception:
-                pass
-        
-        # Block export if no rekordbox_id found anywhere
-        final_rekordbox_id = current_rekordbox_id or file_rekordbox_id
-        if not final_rekordbox_id:
-            print(f"[SKIP] Brak rekordbox_id dla: {src.name}")
-            print(f"       Uruchom najpierw 'sync-dj-libraries --write' aby przypisać ID")
-            continue
-        
-        if current_rekordbox_id and current_rekordbox_id != r.get("rekordbox_id", ""):
-            print(f"   🔧 Updating Rekordbox ID for {src.name}: {r.get('rekordbox_id', '')} → {current_rekordbox_id}")
-            r["rekordbox_id"] = current_rekordbox_id
-            # Update tag in file
-            try:
-                from djlib.djlib_tags import write_djlib_tags
-                write_djlib_tags(
-                    src,
-                    track_id=r.get("track_id", ""),
-                    rekordbox_id=current_rekordbox_id,
-                    traktor_id=r.get("traktor_id") or None,
-                    original_path=str(src)
-                )
-            except Exception as e:
-                print(f"⚠️  Could not update tags for {src.name}: {e}")
-        
-        if current_traktor_id and current_traktor_id != r.get("traktor_id", ""):
-            print(f"   🔧 Updating Traktor ID for {src.name}: {r.get('traktor_id', '')} → {current_traktor_id}")
-            r["traktor_id"] = current_traktor_id
-            # Update tag in file
-            try:
-                from djlib.djlib_tags import write_djlib_tags
-                write_djlib_tags(
-                    src,
-                    track_id=r.get("track_id", ""),
-                    rekordbox_id=r.get("rekordbox_id") or None,
-                    traktor_id=current_traktor_id,
-                    original_path=str(src)
-                )
-            except Exception as e:
-                print(f"⚠️  Could not update tags for {src.name}: {e}")
+        # Skip DJ software ID validation for rejected files
+        # Rejected files are just moved to reject folder, no DJ software sync needed
+        if destination != "reject":
+            # ✅ VALIDATE & FIX DJ software IDs before moving
+            current_rekordbox_id = rekordbox_mapping.get(src, '')
+            current_traktor_id = traktor_mapping.get(src, '')
+            
+            # Also check file tags for rekordbox_id
+            file_rekordbox_id = r.get("rekordbox_id", "")
+            if not file_rekordbox_id:
+                try:
+                    from djlib.djlib_tags import read_djlib_tags
+                    djlib_tags = read_djlib_tags(src)
+                    file_rekordbox_id = djlib_tags.get("rekordbox_id", "")
+                except Exception:
+                    pass
+            
+            # Block export if no rekordbox_id found anywhere
+            final_rekordbox_id = current_rekordbox_id or file_rekordbox_id
+            if not final_rekordbox_id:
+                print(f"[SKIP] Brak rekordbox_id dla: {src.name}")
+                print(f"       Uruchom najpierw 'sync-dj-libraries --write' aby przypisać ID")
+                continue
+            
+            if current_rekordbox_id and current_rekordbox_id != r.get("rekordbox_id", ""):
+                print(f"   🔧 Updating Rekordbox ID for {src.name}: {r.get('rekordbox_id', '')} → {current_rekordbox_id}")
+                r["rekordbox_id"] = current_rekordbox_id
+                # Update tag in file
+                try:
+                    from djlib.djlib_tags import write_djlib_tags
+                    write_djlib_tags(
+                        src,
+                        track_id=r.get("track_id", ""),
+                        rekordbox_id=current_rekordbox_id,
+                        traktor_id=r.get("traktor_id") or None,
+                        original_path=str(src)
+                    )
+                except Exception as e:
+                    print(f"⚠️  Could not update tags for {src.name}: {e}")
+            
+            if current_traktor_id and current_traktor_id != r.get("traktor_id", ""):
+                print(f"   🔧 Updating Traktor ID for {src.name}: {r.get('traktor_id', '')} → {current_traktor_id}")
+                r["traktor_id"] = current_traktor_id
+                # Update tag in file
+                try:
+                    from djlib.djlib_tags import write_djlib_tags
+                    write_djlib_tags(
+                        src,
+                        track_id=r.get("track_id", ""),
+                        rekordbox_id=r.get("rekordbox_id") or None,
+                        traktor_id=current_traktor_id,
+                        original_path=str(src)
+                    )
+                except Exception as e:
+                    print(f"⚠️  Could not update tags for {src.name}: {e}")
 
         # Build final filename
         title_candidate = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
@@ -1178,7 +1202,26 @@ def cmd_apply(args: argparse.Namespace) -> None:
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
         
-        # Update record
+        # Track rejected/archived files for DJ software removal
+        if destination == "reject":
+            if r.get("rekordbox_id"):
+                rejected_rekordbox_ids.append(r.get("rekordbox_id"))
+                print(f"   📌 Will remove from Rekordbox: {r.get('rekordbox_id')}")
+            if r.get("traktor_id"):
+                rejected_traktor_ids.append(r.get("traktor_id"))
+                print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
+            print(f"   🚫 Rejected: {dest_path.name} (moved to reject folder, no further processing)")
+            continue
+        
+        if destination == "archive":
+            if r.get("rekordbox_id"):
+                archived_rekordbox_ids.append(r.get("rekordbox_id"))
+                print(f"   📌 Will remove from Rekordbox: {r.get('rekordbox_id')}")
+            if r.get("traktor_id"):
+                archived_traktor_ids.append(r.get("traktor_id"))
+                print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
+        
+        # Update record (only for library/mixes destinations OR archive for archive CSV)
         record = {
             "track_id": r.get("track_id", ""),
             "file_path": str(dest_path),
@@ -1209,19 +1252,34 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "target_subfolder": target_subfolder or "",
         }
         
-        # Update existing record or append new one (avoid duplicates by track_id)
-        existing_idx = None
-        for idx, lib_row in enumerate(library_rows):
-            if lib_row.get("track_id") == record["track_id"]:
-                existing_idx = idx
-                break
-        
-        if existing_idx is not None:
-            # Update existing record (file was moved/renamed)
-            library_rows[existing_idx] = record
+        # Decide which CSV to update based on destination
+        if destination == "archive":
+            # Archive goes to library-archive.csv, not library.csv
+            existing_idx = None
+            for idx, arch_row in enumerate(archive_rows):
+                if arch_row.get("track_id") == record["track_id"]:
+                    existing_idx = idx
+                    break
+            
+            if existing_idx is not None:
+                archive_rows[existing_idx] = record
+            else:
+                archive_rows.append(record)
+            print(f"   📦 Archived: {dest_path.name} (will be saved to library-archive.csv)")
         else:
-            # Add new record
-            library_rows.append(record)
+            # Library/mixes goes to library.csv
+            existing_idx = None
+            for idx, lib_row in enumerate(library_rows):
+                if lib_row.get("track_id") == record["track_id"]:
+                    existing_idx = idx
+                    break
+            
+            if existing_idx is not None:
+                # Update existing record (file was moved/renamed)
+                library_rows[existing_idx] = record
+            else:
+                # Add new record
+                library_rows.append(record)
         
         # Po udanym przeniesieniu wyczyść spam tagi i zapisz zaakceptowane metadane
         print(f"\n🔧 Processing tags for: {dest_path.name}")
@@ -1342,13 +1400,54 @@ def cmd_apply(args: argparse.Namespace) -> None:
     remaining = [r for r in rows if r.get("track_id") not in processed_ids]
     _save_unsorted(remaining)
     save_records(CSV_PATH, library_rows)
-    print(f"Przeniesiono {len(processed_ids)} pozycji do biblioteki.")
+    
+    # Save archive records if any were added
+    archived_count = len(archived_rekordbox_ids) + len(archived_traktor_ids)
+    if archived_rekordbox_ids or archived_traktor_ids:
+        save_records(ARCHIVE_CSV_PATH, archive_rows)
+        print(f"📦 Zapisano {len(archive_rows)} rekordów do library-archive.csv")
+    
+    # Count actual library additions (not archive/reject)
+    rejected_count = len(rejected_rekordbox_ids) + len(rejected_traktor_ids)
+    # Use max of rekordbox/traktor IDs for count since track may have both or one
+    rejected_tracks = max(len(rejected_rekordbox_ids), len(rejected_traktor_ids), 
+                         len([r for r in ready if (r.get("destination") or "").lower().strip() == "reject"]))
+    archived_tracks = max(len(archived_rekordbox_ids), len(archived_traktor_ids),
+                         len([r for r in ready if (r.get("destination") or "").lower().strip() == "archive"]))
+    library_added = len(processed_ids) - rejected_tracks - archived_tracks
+    print(f"Przeniesiono: {library_added} do biblioteki, {archived_tracks} do archiwum, {rejected_tracks} do odrzuconych.")
     print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")
     print(f"🎨 Okładki: applied={covers_applied}, skipped={covers_skipped}, failed={covers_failed}")
     print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
     
-    # Auto-sync with DJ software libraries (Rekordbox + Traktor)
-    if not args.dry_run and processed_ids:
+    # Remove rejected/archived tracks from DJ software
+    all_rekordbox_to_remove = rejected_rekordbox_ids + archived_rekordbox_ids
+    all_traktor_to_remove = rejected_traktor_ids + archived_traktor_ids
+    
+    if not args.dry_run and (all_rekordbox_to_remove or all_traktor_to_remove):
+        print()
+        print("=" * 60)
+        print("🗑️  REMOVING REJECTED/ARCHIVED FROM DJ SOFTWARE")
+        print("=" * 60)
+        print()
+        
+        try:
+            from djlib.external_sync import remove_tracks_from_rekordbox, remove_tracks_from_traktor
+            
+            if all_rekordbox_to_remove:
+                removed_rb = remove_tracks_from_rekordbox(all_rekordbox_to_remove, dry_run=False)
+                if removed_rb > 0:
+                    print(f"✅ Removed {removed_rb} tracks from Rekordbox")
+            
+            if all_traktor_to_remove:
+                removed_tk = remove_tracks_from_traktor(all_traktor_to_remove, dry_run=False)
+                if removed_tk > 0:
+                    print(f"✅ Removed {removed_tk} tracks from Traktor")
+        except Exception as e:
+            print(f"⚠️  Error removing from DJ software: {e}")
+    
+    # Auto-sync with DJ software libraries (Rekordbox + Traktor) - only for library tracks
+    if not args.dry_run and library_added > 0:
         print()
         print("=" * 60)
         print("🔄 SYNCING WITH DJ SOFTWARE LIBRARIES")
