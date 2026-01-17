@@ -75,7 +75,7 @@
     {
       "label": "WORKFLOW 2 — Enrich online",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli enrich-online --fetch-covers",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli enrich-online",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []

@@ -42,12 +42,11 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("version_suggest", hidden=True, width=20, locked=True),
     ColumnSpec("genre_suggest", hidden=False, width=24, locked=True),
     ColumnSpec("album_suggest", hidden=True, width=32, locked=True),  # Hidden - user manages own albums
-    ColumnSpec("release_group_id", hidden=True, width=36, locked=True),  # MusicBrainz MBID for cover art
+    ColumnSpec("release_group_id", hidden=True, width=36, locked=True),  # MusicBrainz MBID (kept for reference)
     ColumnSpec("year_suggest", hidden=False, width=12, locked=True),
     ColumnSpec("duration_suggest", hidden=True, width=16, locked=True),
-    ColumnSpec("cover_art_url", hidden=True, width=60, locked=True),  # Hidden - user manages own artwork
-    ColumnSpec("cover_art", hidden=True, width=15, locked=True),  # Hidden - user manages own artwork
-    ColumnSpec("cover_art_action", hidden=True, width=14),  # Hidden - user manages own artwork
+    # Cover art fetching removed - we use standard DJ Library cover embedded during apply
+    # See djlib/legacy/coverart_fetch.py for the original implementation
     # Genre hints (visible for decision making, but locked)
     ColumnSpec("genres_musicbrainz", width=24, locked=True),
     ColumnSpec("genres_lastfm", width=24, locked=True),
@@ -87,7 +86,6 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
 DONE_CHOICES = ("TRUE", "FALSE")
 STATUS_CHOICES = ("accept", "reject", "review", "")
 DESTINATION_CHOICES = ("library", "reject", "archive", "mixes", "")
-COVER_ART_ACTION_CHOICES = ("replace", "keep", "auto", "custom", "")
 
 
 def _as_str(val: object | None) -> str:
@@ -104,8 +102,6 @@ def normalize_unsorted_row(row: Mapping[str, str | None]) -> Dict[str, str]:
         out[col.name] = _as_str(row.get(col.name, ""))
     if not out.get("done"):
         out["done"] = "FALSE"
-    if not out.get("cover_art_action"):
-        out["cover_art_action"] = "replace"  # Default: always replace covers
     
     # Compute final_filename preview
     artist = out.get("artist", "")
@@ -225,11 +221,6 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
                     f'&" ["&{key_letter}{row_idx}&" "&ROUND({bpm_letter}{row_idx},0)&"].{ext}"'
                 )
                 cell = ws.cell(row=row_idx, column=col_idx, value=formula)
-            # Special handling for cover_art_url - make it a clickable hyperlink
-            elif spec.name == "cover_art_url" and cell_value:
-                cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
-                cell.hyperlink = str(cell_value)
-                cell.font = Font(color="0000FF", underline="single", size=16)  # Blue underlined link
             else:
                 cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
             
@@ -269,36 +260,10 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
                 cell.protection = Protection(locked=False)
                 cell.font = red_font if use_red else editable_font
                 cell.border = editable_border
-        ws.row_dimensions[row_idx].height = 80  # Increased height for cover art thumbnails
+        ws.row_dimensions[row_idx].height = 30  # Standard row height
 
-    # Insert cover art images
-    cover_art_col_idx = next((i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "cover_art"), None)
-    cover_art_url_col_idx = next((i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "cover_art_url"), None)
-    
-    if cover_art_col_idx and cover_art_url_col_idx:
-        for row_idx, data in enumerate(normalized_rows, start=2):
-            cover_url = data.get("cover_art_url", "").strip()
-            if cover_url:
-                try:
-                    # Download image
-                    response = requests.get(cover_url, timeout=5)
-                    if response.status_code == 200:
-                        img_data = BytesIO(response.content)
-                        img = XLImage(img_data)
-                        
-                        # Resize to fit cell (approx 100x100 pixels)
-                        img.width = 100
-                        img.height = 100
-                        
-                        # Get cell reference for cover_art column
-                        cell_ref = f"{get_column_letter(cover_art_col_idx)}{row_idx}"
-                        
-                        # Anchor image to cell
-                        img.anchor = cell_ref
-                        ws.add_image(img)
-                except Exception:
-                    # Silently skip if image download fails
-                    pass
+    # Cover art image insertion removed - we use standard DJ Library cover
+    # See djlib/legacy/coverart_fetch.py for the original implementation
 
     # Column formatting
     for idx, spec in enumerate(UNSORTED_COLUMNS, start=1):
@@ -343,9 +308,7 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
     lists_ws.cell(row=1, column=4, value=DONE_CHOICES[0])
     lists_ws.cell(row=2, column=4, value=DONE_CHOICES[1])
     
-    # Cover art action choices
-    for idx, choice in enumerate(COVER_ART_ACTION_CHOICES, start=1):
-        lists_ws.cell(row=idx, column=5, value=choice)
+    # Cover art action choices removed - we use standard DJ Library cover
     
     # Legacy bucket choices (if provided, for backward compatibility)
     if bucket_choices:
@@ -403,19 +366,6 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
         dv_done.errorTitle = "Invalid value"
         ws.add_data_validation(dv_done)
         dv_done.add(f"{done_letter}2:{done_letter}1048576")
-    except Exception:
-        pass
-    
-    # Data validation for cover_art_action column
-    try:
-        cover_action_idx = [i for i, spec in enumerate(UNSORTED_COLUMNS, start=1) if spec.name == "cover_art_action"][0]
-        cover_action_letter = get_column_letter(cover_action_idx)
-        dv_cover = DataValidation(type="list", formula1=f"'_lists'!$E$1:$E${len(COVER_ART_ACTION_CHOICES)}", 
-                                  allow_blank=True, showDropDown=False)
-        dv_cover.error = "Use replace/keep/auto/custom"
-        dv_cover.errorTitle = "Invalid cover action"
-        ws.add_data_validation(dv_cover)
-        dv_cover.add(f"{cover_action_letter}2:{cover_action_letter}1048576")
     except Exception:
         pass
     

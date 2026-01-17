@@ -429,20 +429,15 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
-    
-    Opcjonalnie pobiera okładki albumów (--fetch-covers) z MusicBrainz/Last.fm/SoundCloud.
     """
     rows = _load_unsorted()
     force_genres = bool(getattr(args, "force_genres", False))
-    fetch_covers = bool(getattr(args, "fetch_covers", False))
     todo = [r for r in rows if not is_done(r.get("done"))]
     total = len(todo)
     processed = 0
     changed = 0
     mb_set = 0
     lfm_set = 0
-    covers_added = 0
-    covers_failed = 0
     # Check API credentials presence for diagnostics
     try:
         from djlib.config import get_lastfm_api_key
@@ -701,146 +696,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         if any_change:
             changed += 1
         
-        # Cover art fetching disabled - user manages their own artwork
-        # Flag --fetch-covers kept for backwards compatibility but does nothing
-        if False and fetch_covers:  # DISABLED
-            try:
-                
-                from djlib.metadata.soundcloud import get_valid_client_id
-                
-                # Get API keys
-                soundcloud_id = get_valid_client_id() if not getattr(args, "skip_soundcloud", False) else None
-                
-                # Extract metadata for cover fetching
-                artist = (r.get("artist_suggest") or r.get("artist") or "").strip()
-                title = (r.get("title_suggest") or r.get("title") or "").strip()
-                album = (r.get("album_suggest") or r.get("album") or "").strip()
-                version = (r.get("version_suggest") or r.get("version_info") or "").strip()
-                
-                # Try to get MusicBrainz release_group_id from online enrichment
-                # Skip MusicBrainz for remixes (returns original cover, not remix)
-                release_group_id = None
-                release_mbid = None
-                if not version:
-                    if online:
-                        release_group_id = online.get("release_group_id")
-                        # Prefer canonical first release MBID if available (from online OR existing in Excel)
-                        release_mbid = online.get("original_release_mbid") or r.get("original_release_mbid")
-                    else:
-                        # Even if online is None (e.g., mismatch detection rejected AcoustID),
-                        # try to use existing original_release_mbid from Excel
-                        release_mbid = r.get("original_release_mbid")
-                    
-                    # If we have release_mbid but no release_group_id, fetch it from MB
-                    # (moved outside else block to handle canonical data which has release_mbid but no RG)
-                    if release_mbid and not release_group_id:
-                        try:
-                            from djlib.metadata import mb_client
-                            rel_data = mb_client._get_release_by_id(release_mbid)
-                            rel = rel_data.get("release", {})
-                            if "release-group" in rel:
-                                release_group_id = rel["release-group"]["id"]
-                                # Save to Excel for future use
-                                r["release_group_id"] = release_group_id
-                                any_change = True  # Mark as changed so it gets saved
-                        except Exception:
-                            pass
-                
-                # Try to get Beatport artwork URL
-                # ONLY for remixes - Beatport has covers for specific remixes
-                # For originals, prefer MusicBrainz/Last.fm (more reliable album matching)
-                beatport_artwork_url = None
-                if version and not getattr(args, "skip_beatport", False):
-                    try:
-                        from djlib.metadata.beatport import search_track as bp_search
-                        dur_s = None
-                        if r.get("duration_suggest"):
-                            try:
-                                dur_parts = r["duration_suggest"].split(":")
-                                if len(dur_parts) == 2:
-                                    dur_s = int(dur_parts[0]) * 60 + int(dur_parts[1])
-                            except Exception:
-                                pass
-                        
-                        # For remixes, include version in search to find specific remix
-                        search_title = f"{title} {version}"
-                        
-                        bp_result = bp_search(artist, search_title, dur_s)
-                        if bp_result:
-                            # Verify Beatport match (artist + title + version)
-                            bp_title = bp_result.get("title", "").lower()
-                            bp_artist = bp_result.get("artist", "").lower()
-                            bp_version = (bp_result.get("version") or "").lower()
-                            
-                            # Check artist match (fuzzy: AC/DC vs ACDC vs AC DC)
-                            artist_lower = artist.lower().replace("/", "").replace(" ", "")
-                            bp_artist_normalized = bp_artist.replace("/", "").replace(" ", "")
-                            artist_match = artist_lower in bp_artist_normalized or bp_artist_normalized in artist_lower
-                            
-                            # Check title match (fuzzy: T.N.T. vs TNT)
-                            title_lower = title.lower().replace(".", "").replace(" ", "")
-                            bp_title_normalized = bp_title.replace(".", "").replace(" ", "")
-                            title_match = title_lower in bp_title_normalized or bp_title_normalized in title_lower
-                            
-                            # Verify version/remix info
-                            version_lower = version.lower()
-                            version_found = (
-                                version_lower in bp_title or
-                                version_lower in bp_version or
-                                any(word in bp_version for word in version_lower.split() if len(word) > 3)
-                            )
-                            # Accept only if artist + title + version all match
-                            if artist_match and title_match and version_found:
-                                beatport_artwork_url = bp_result.get("artwork_url")
-                    except Exception:
-                        pass
-                
-                if artist and title:
-                    # Get cover art URL for Excel preview (doesn't write to MP3)
-                    from djlib.metadata.coverart import get_cover_art_url
-
-                    # Archive.org (if online enrichment found it or if already stored in Excel)
-                    archive_org_identifier = None
-                    archive_org_cover_url = None
-                    try:
-                        if online:
-                            archive_org_identifier = online.get("archive_org_identifier")
-                            archive_org_cover_url = online.get("archive_org_cover_url")
-                    except Exception:
-                        pass
-                    archive_org_identifier = archive_org_identifier or r.get("archive_org_identifier")
-                    archive_org_cover_url = archive_org_cover_url or r.get("archive_org_cover_url")
-                    
-                    # Get Last.fm API key if available
-                    lastfm_key = None
-                    try:
-                        from djlib.metadata.lastfm import get_lastfm_api_key
-                        lastfm_key = get_lastfm_api_key()
-                    except Exception:
-                        pass
-                    
-                    cover_url = get_cover_art_url(
-                        artist=artist,
-                        title=title,
-                        version=version,
-                        album=album,
-                        release_group_id=release_group_id,
-                        release_mbid=release_mbid,
-                        archive_org_identifier=archive_org_identifier,
-                        archive_org_cover_url=archive_org_cover_url,
-                        beatport_artwork_url=beatport_artwork_url,
-                        soundcloud_client_id=soundcloud_id,
-                        lastfm_api_key=lastfm_key,
-                    )
-                    if cover_url:
-                        r["cover_art_url"] = cover_url
-                        any_change = True  # Mark as changed
-                        covers_added += 1
-                    else:
-                        covers_failed += 1
-            except Exception as e:
-                covers_failed += 1
-                print(f"   ⚠ Cover art URL error for {p.name}: {e}")
+        # Cover art fetching removed - we use standard DJ Library cover embedded during apply
+        # See djlib/legacy/coverart_fetch.py for the original implementation
         
         # Auto-fill artist/title if still empty and we now have suggest values (quality-of-life)
         if not (r.get("artist") or "").strip() and (r.get("artist_suggest") or "").strip():
@@ -1389,6 +1246,25 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     if success:
                         covers_applied += 1
                         print(f"   ✅ DJ Library cover art applied")
+                        
+                        # Refresh cover art in DJ software caches
+                        try:
+                            from djlib.external_sync import (
+                                refresh_rekordbox_cover_art,
+                                refresh_traktor_cover_art,
+                                PYREKORDBOX_AVAILABLE,
+                                TRAKTOR_UTILS_AVAILABLE,
+                            )
+                            
+                            if PYREKORDBOX_AVAILABLE:
+                                if refresh_rekordbox_cover_art(dest_path):
+                                    print(f"   ✅ Rekordbox cover art cache updated")
+                            
+                            if TRAKTOR_UTILS_AVAILABLE:
+                                if refresh_traktor_cover_art(dest_path):
+                                    print(f"   ✅ Traktor cover art cache updated")
+                        except Exception as e:
+                            print(f"   ⚠️  DJ software cover art sync: {e}")
                     else:
                         covers_failed += 1
                         print(f"   ⚠️  Failed to embed cover art")
@@ -3204,7 +3080,6 @@ def build_parser() -> argparse.ArgumentParser:
     ep = sp.add_parser("enrich-online")
     ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm nawet jeśli już wypełnione")
     ep.add_argument("--skip-soundcloud", action="store_true", help="Pomiń źródło SoundCloud nawet jeśli client_id jest ustawiony")
-    ep.add_argument("--fetch-covers", action="store_true", help="Pobierz okładki albumów (MusicBrainz → Last.fm → SoundCloud)")
     ep.set_defaults(func=cmd_enrich_online)
 
     # analyze-audio

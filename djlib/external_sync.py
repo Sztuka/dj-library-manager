@@ -1061,6 +1061,191 @@ def refresh_rekordbox_cover_art(file_path: Path) -> bool:
     except Exception:
         return False
 
+
+def generate_traktor_coverart_id() -> str:
+    """
+    Generate a unique Traktor COVERARTID.
+    
+    Traktor uses a custom ID format: 28 uppercase alphanumeric characters.
+    The folder is determined by a hash of the ID (3 digits, 000-127).
+    
+    Returns:
+        str: Full coverartid in format "folder/id" e.g. "042/KFZPHOCVLMIJOBDP411DD1AMPVFB"
+    """
+    import random
+    import string
+    
+    # Generate 28 character alphanumeric ID (uppercase letters + digits, no 0/O confusion)
+    charset = string.ascii_uppercase + string.digits
+    cover_id = ''.join(random.choices(charset, k=28))
+    
+    # Folder is hash of ID mod 128, formatted as 3-digit string
+    folder_num = sum(ord(c) for c in cover_id) % 128
+    folder = f"{folder_num:03d}"
+    
+    return f"{folder}/{cover_id}"
+
+
+def create_traktor_coverart_file(image_data: bytes, output_path: Path, size: int = 125) -> bool:
+    """
+    Create a Traktor coverart cache file from image data.
+    
+    Traktor stores coverart as raw BGRA pixel data with a 9-byte header:
+    - Byte 0: type (0x08)
+    - Byte 1: width
+    - Bytes 2-4: padding (0x000000)
+    - Byte 5: height  
+    - Bytes 6-8: padding (0x000000)
+    - Remaining: BGRA pixel data (width * height * 4 bytes)
+    
+    Args:
+        image_data: Raw image data (JPEG/PNG bytes)
+        output_path: Where to save the Traktor coverart file
+        size: Image size (Traktor uses 125=000, 75=001, 56=002)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        from PIL import Image
+        import io
+        import struct
+        
+        # Load and resize image
+        img = Image.open(io.BytesIO(image_data))
+        
+        # Resize to target size with high-quality resampling
+        if img.size != (size, size):
+            img = img.resize((size, size), Image.Resampling.LANCZOS)
+        
+        # Convert to RGBA first, then swap to BGRA (Traktor format)
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        
+        # Split into channels and recombine as BGRA
+        r, g, b, a = img.split()
+        img_bgra = Image.merge('RGBA', (b, g, r, a))
+        
+        # Get raw pixel data (now in BGRA order)
+        pixel_data = img_bgra.tobytes()
+        
+        # Create 9-byte header: type(1) + width(1) + pad(3) + height(1) + pad(3)
+        header = struct.pack('>BB3sB3s', 8, size, b'\x00\x00\x00', size, b'\x00\x00\x00')
+        
+        # Write to file
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open('wb') as f:
+            f.write(header)
+            f.write(pixel_data)
+        
+        return True
+        
+    except Exception:
+        return False
+
+
+def refresh_traktor_cover_art(file_path: Path, collection_nml_path: Optional[Path] = None) -> bool:
+    """
+    Extract cover art from audio file and add to Traktor cache.
+    
+    Traktor stores cover art as cached files in ~/Documents/Native Instruments/Traktor X.X/Coverart/
+    with a COVERARTID reference in collection.nml. This function:
+    1. Extracts APIC frame from audio file
+    2. Converts to Traktor's raw RGBA format (125x125)
+    3. Generates unique COVERARTID
+    4. Saves to Traktor Coverart directory
+    5. Updates collection.nml with new COVERARTID
+    
+    Args:
+        file_path: Absolute path to the audio file
+        collection_nml_path: Optional path to collection.nml (auto-detected if None)
+        
+    Returns:
+        True if successfully added cover art to Traktor, False otherwise
+    """
+    if not TRAKTOR_UTILS_AVAILABLE:
+        return False
+    
+    # Find Traktor directory
+    traktor_dirs = list(Path.home().glob("Documents/Native Instruments/Traktor*"))
+    if not traktor_dirs:
+        return False
+    traktor_dir = sorted(traktor_dirs)[-1]  # Use latest version
+    
+    if collection_nml_path is None:
+        collection_nml_path = traktor_dir / "collection.nml"
+    
+    if not collection_nml_path.exists():
+        return False
+    
+    coverart_dir = traktor_dir / "Coverart"
+    
+    try:
+        # 1. Extract cover art from audio file
+        from mutagen.id3 import ID3
+        audio = ID3(str(file_path))
+        
+        # Find APIC frame
+        apic_data = None
+        for key in audio.keys():
+            if key.startswith('APIC'):
+                apic_data = audio[key].data
+                break
+        
+        if not apic_data:
+            # No cover art in file
+            return False
+        
+        # 2. Generate unique COVERARTID
+        coverart_id = generate_traktor_coverart_id()
+        folder, base_id = coverart_id.split('/')
+        
+        # 3. Create coverart files (Traktor sizes: 000=125x125, 001=75x75, 002=56x56)
+        sizes = [(125, '000'), (75, '001'), (56, '002')]
+        for size, suffix in sizes:
+            output_path = coverart_dir / folder / f"{base_id}{suffix}"
+            if not create_traktor_coverart_file(apic_data, output_path, size):
+                return False
+        
+        # 4. Update collection.nml with new COVERARTID
+        assert TraktorCollection is not None
+        tc = TraktorCollection(path=collection_nml_path)
+        
+        # Find track by path - Traktor uses /:Users/:name/:... format
+        file_path_str = str(file_path)
+        traktor_path = "/:" + file_path_str[1:].replace("/", "/:")  # /Users/x -> /:Users/:x
+        
+        found = False
+        for entry in tc.nml.collection.entry:
+            if entry.location:
+                # Reconstruct full path from VOLUME + DIR + FILE
+                entry_dir = getattr(entry.location, 'dir', '') or ''
+                entry_file = getattr(entry.location, 'file', '') or ''
+                entry_full = entry_dir + entry_file
+                
+                if entry_full == traktor_path or entry_full.endswith(file_path.name):
+                    # Found the track
+                    if entry.info is None:
+                        entry.info = Infotype()
+                    entry.info.coverartid = coverart_id
+                    found = True
+                    break
+        
+        if not found:
+            # Track not in collection yet - that's OK, coverart files are created
+            # Traktor will pick them up when track is imported
+            pass
+        
+        # Save collection.nml
+        tc.save()
+        return True
+        
+    except Exception as e:
+        import sys
+        print(f"refresh_traktor_cover_art error: {e}", file=sys.stderr)
+        return False
+
+
 def add_tracks_to_rekordbox(
     tracks: List[Dict[str, Any]],
     dry_run: bool = True,
