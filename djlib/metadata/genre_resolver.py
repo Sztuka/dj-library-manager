@@ -140,6 +140,42 @@ def _specificity_boost(tag: str) -> float:
     return _SPECIFIC_GENRE_BOOST.get(t, 1.0)
 
 
+# Beatport-authoritative electronic genres (if BP returns these, trust it over Last.fm)
+# These are specific enough that Beatport classification is reliable
+BEATPORT_ELECTRONIC_GENRES = {
+    # House variants
+    "house", "tech house", "deep house", "progressive house", "afro house",
+    "melodic house", "funky house", "jackin house", "tribal house", "soulful house",
+    "bass house", "electro house", "future house", "g-house", "minimal house",
+    "acid house", "chicago house", "uk garage", "garage", "speed garage",
+    # Techno variants
+    "techno", "melodic techno", "minimal techno", "hard techno", "peak time techno",
+    "driving techno", "dub techno", "detroit techno", "industrial techno",
+    # Trance
+    "trance", "progressive trance", "psytrance", "uplifting trance", "vocal trance",
+    # Bass music
+    "drum and bass", "dnb", "liquid dnb", "jungle", "dubstep", "bass", "future bass",
+    "breakbeat", "breaks", "uk bass",
+    # Other electronic
+    "electro", "electronica", "edm", "nu disco", "disco", "italo disco",
+    "synthwave", "downtempo", "ambient", "chillout", "lounge",
+    "hardstyle", "hardcore", "gabber", "happy hardcore",
+}
+
+
+def _is_beatport_electronic(genre: str) -> bool:
+    """Check if Beatport genre is a specific electronic genre (not generic Dance/Pop)."""
+    g = _norm(genre)
+    # Direct match
+    if g in BEATPORT_ELECTRONIC_GENRES:
+        return True
+    # Partial match for compound genres like "Techno (Peak Time / Driving)"
+    for eg in BEATPORT_ELECTRONIC_GENRES:
+        if eg in g or g.startswith(eg):
+            return True
+    return False
+
+
 @dataclass
 class GenreResolution:
     main: str
@@ -178,6 +214,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
 
     # Beatport (gold standard for EDM - highest weight)
     # Reduced weight for remixes (Beatport often returns original's genre, not remix-specific)
+    # BOOST: If Beatport returns specific electronic genre, increase weight to dominate over Last.fm
+    beatport_is_electronic = False
     if not disable_beatport:
         bp_w = 8.0 if is_remix else 10.0
         try:
@@ -187,6 +225,14 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
                 local: Dict[str, float] = {}
                 # Beatport returns precise genres like "Techno (Peak Time / Driving)"
                 bp_genres = [g.strip() for g in bp_result["genre"].split(",")]
+                
+                # Check if Beatport returned a specific electronic genre (not generic Dance/Pop)
+                for t in bp_genres:
+                    if _is_beatport_electronic(t):
+                        beatport_is_electronic = True
+                        bp_w = 15.0 if is_remix else 25.0  # BOOST: dominate over Last.fm log(count)
+                        break
+                
                 for t in bp_genres:
                     c = canonical(t)
                     if _is_noise(c):
@@ -226,7 +272,13 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # Zwiększona waga (podniesiona z 4.0 → 6.0) aby Last.fm częściej dominowało w wynikach przy szerokim zestawie tagów.
     # Reduced weight for remixes (LFM returns data for original track, not remix)
     # Further reduced 3.0 → 0.5 to prevent high-playcount indie/pop tags from dominating remix-specific genres
-    lfm_w = 0.5 if is_remix else 6.0
+    # ALSO reduce if Beatport found specific electronic genre (Beatport is authoritative for EDM)
+    if is_remix:
+        lfm_w = 0.5
+    elif beatport_is_electronic:
+        lfm_w = 2.0  # Reduced: trust Beatport for electronic music
+    else:
+        lfm_w = 6.0
     tags_lfm = lastfm.top_tags(artist, title)
     if tags_lfm:
         local: Dict[str, float] = {}

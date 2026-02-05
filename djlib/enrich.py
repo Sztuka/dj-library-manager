@@ -244,6 +244,46 @@ def _normalize_features(artist: str, title: str) -> Tuple[str, str]:
     return artist, title_cleaned
 
 
+def _split_artist_title_from_combined(text: str) -> Tuple[str, str]:
+    """
+    Split combined 'Artist - Title' or 'Artist feat. X - Title' string into (artist, title).
+    
+    Handles patterns like:
+    - "Major Lazer feat. Sean Paul - Come On To Me" → ("Major Lazer feat. Sean Paul", "Come On To Me")
+    - "Seb Skalski - My Religion" → ("Seb Skalski", "My Religion")
+    - "Just Title" → ("", "Just Title")
+    
+    Returns:
+        Tuple of (artist, title). If no dash found, returns ("", original_text).
+    """
+    text = (text or "").strip()
+    if not text:
+        return "", ""
+    
+    # Look for " - " separator (canonical artist-title split)
+    # But NOT inside parentheses (e.g., "Title (Some - Mix)" should not split on inner dash)
+    if " - " in text:
+        # Find the first " - " that's not inside parentheses
+        depth = 0
+        for i, char in enumerate(text):
+            if char == '(':
+                depth += 1
+            elif char == ')':
+                depth = max(0, depth - 1)
+            elif char == '-' and depth == 0:
+                # Check if it's " - " pattern
+                if i > 0 and i < len(text) - 1:
+                    before = text[i-1:i]
+                    after = text[i+1:i+2]
+                    if before == ' ' and after == ' ':
+                        artist_part = text[:i-1].strip()
+                        title_part = text[i+2:].strip()
+                        if artist_part and title_part:
+                            return artist_part, title_part
+    
+    return "", text
+
+
 def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, str]:
     """
     Normalize and derive artist, title, version from audio tags and filename.
@@ -312,6 +352,11 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
         if not val:
             return ""
         s = val.replace("_", " ").replace("–", "-").replace("—", "-")
+        
+        # Remove track number prefix (e.g., "66. Artist - Title" or "01. Title")
+        # Pattern: digits followed by dot/dash and optional space at start
+        s = re.sub(r"^\d{1,3}[\.\-]\s*", "", s)
+        
         s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
         s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
         s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
@@ -387,6 +432,17 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
     artist = _sanitize_artist(tags.get("artist", ""))
     title = _sanitize_title(tags.get("title", ""))
     version = _sanitize_version(tags.get("version_info", ""))
+
+    # CHECK: If title contains "Artist - Title" pattern (tracklist dump), split it
+    # This handles cases like title="66. Major Lazer feat. Sean Paul - Come On To Me"
+    # where the track number was stripped but artist-title combo remains
+    if title and " - " in title and (not artist or artist.lower() in title.lower()):
+        extracted_artist, extracted_title = _split_artist_title_from_combined(title)
+        if extracted_artist and extracted_title:
+            # Use extracted values
+            if not artist:
+                artist = _sanitize_artist(extracted_artist)
+            title = extracted_title
 
     # FIRST: Normalize featuring info BEFORE splitting title/version
     # This prevents "(feat. Carol)" from being treated as version info
