@@ -318,8 +318,18 @@ DANCE:
     - "dance music"
     - "club"
     - "club music"
-    - "eurodance"
+
+EURODANCE:
+  label: "Eurodance"
+  synonyms:
     - "Eurodance"
+    - "eurodance"
+    - "euro dance"
+    - "euro-dance"
+    - "90s dance"
+    - "90s eurodance"
+    - "hands up"
+    - "happy hardcore"
 
 ROCK:
   label: "Rock"
