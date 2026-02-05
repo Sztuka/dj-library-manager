@@ -3,5 +3,6 @@
   "pythonPlatform": "Darwin",
   "typeCheckingMode": "basic",
   "reportPrivateImportUsage": "none",
-  "reportMissingTypeStubs": "none"
+  "reportMissingTypeStubs": "none",
+  "ignore": ["djlib/external_sync.py"]
 }

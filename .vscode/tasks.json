@@ -122,6 +122,13 @@
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Clear HTTP cache",
+      "type": "shell",
+      "command": "rm -f ${workspaceFolder}/djlib_http_cache* && echo '✅ HTTP cache cleared (MusicBrainz, Last.fm, Beatport)'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }

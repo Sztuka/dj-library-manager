@@ -141,6 +141,8 @@ def add_artwork(filepath: str, image_data: bytes, mime_type: str = 'image/jpeg')
             if audio.tags is None:
                 audio.add_tags()
             
+            assert audio.tags is not None, "Failed to add tags to AIFF file"
+            
             # Remove existing APIC frames
             apic_keys = [key for key in audio.tags.keys() if str(key).startswith('APIC')]
             for key in apic_keys:

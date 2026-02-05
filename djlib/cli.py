@@ -2,7 +2,7 @@ from __future__ import annotations
 import argparse, csv, time, os, json, shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import warnings
 
 # Suppress Python 3.13 deprecation warnings from audioread (aifc/sunau modules)
@@ -1027,8 +1027,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             for _path in _archive_path.rglob(f"*{_ext}"):
                 _info = get_audio_info(_path)
                 if _info and _info.artist and _info.title:
-                    # Mark archive entries with a note
-                    _info.notes = "IN ARCHIVE"
+                    # Archive entries indexed for duplicate detection
                     library_index[_info.match_key] = _info
 
     for r in ready:
@@ -1205,20 +1204,20 @@ def cmd_apply(args: argparse.Namespace) -> None:
         # Track rejected/archived files for DJ software removal
         if destination == "reject":
             if r.get("rekordbox_id"):
-                rejected_rekordbox_ids.append(r.get("rekordbox_id"))
+                rejected_rekordbox_ids.append(str(r.get("rekordbox_id") or ""))
                 print(f"   📌 Will remove from Rekordbox: {r.get('rekordbox_id')}")
             if r.get("traktor_id"):
-                rejected_traktor_ids.append(r.get("traktor_id"))
+                rejected_traktor_ids.append(str(r.get("traktor_id") or ""))
                 print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
             print(f"   🚫 Rejected: {dest_path.name} (moved to reject folder, no further processing)")
             continue
         
         if destination == "archive":
             if r.get("rekordbox_id"):
-                archived_rekordbox_ids.append(r.get("rekordbox_id"))
+                archived_rekordbox_ids.append(str(r.get("rekordbox_id") or ""))
                 print(f"   📌 Will remove from Rekordbox: {r.get('rekordbox_id')}")
             if r.get("traktor_id"):
-                archived_traktor_ids.append(r.get("traktor_id"))
+                archived_traktor_ids.append(str(r.get("traktor_id") or ""))
                 print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
         
         # Update record (only for library/mixes destinations OR archive for archive CSV)
@@ -2087,6 +2086,62 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             df = df.drop(columns=['old_full_path_norm'])
             duplicates_merged = before_merge - len(df)
             
+            # Third pass: deduplicate by traktor_id (audio fingerprint)
+            # This catches files that were re-imported with different track_ids
+            before_fp_dedup = len(df)
+            df['traktor_id'] = df['traktor_id'].fillna('').astype(str)
+            
+            # Group by traktor_id and pick best row (prefer existing file path)
+            fp_groups: dict[str, list] = {}
+            no_fp_rows = []
+            
+            for _, row in df.iterrows():
+                traktor_id = row.get('traktor_id', '')
+                if traktor_id and len(traktor_id) > 50:
+                    if traktor_id not in fp_groups:
+                        fp_groups[traktor_id] = []
+                    fp_groups[traktor_id].append(row)
+                else:
+                    no_fp_rows.append(row)
+            
+            fp_merged_rows = []
+            for traktor_id, rows in fp_groups.items():
+                if len(rows) == 1:
+                    fp_merged_rows.append(rows[0])
+                else:
+                    # Multiple rows with same audio fingerprint - pick best one
+                    # Priority: 1) file exists, 2) has rekordbox_id, 3) first one
+                    best_row = None
+                    for r in rows:
+                        path = r.get('old_full_path', '')
+                        if path and Path(path).exists():
+                            # Merge all IDs into this row
+                            if best_row is None:
+                                best_row = r.copy()
+                            # Merge rekordbox_id if missing
+                            if not best_row.get('rekordbox_id') and r.get('rekordbox_id'):
+                                best_row['rekordbox_id'] = r['rekordbox_id']
+                            # Update track_id from the file that exists
+                            best_row['track_id'] = r.get('track_id', best_row.get('track_id', ''))
+                            break
+                    
+                    if best_row is None:
+                        # No existing file - use first row
+                        best_row = rows[0].copy()
+                        # But merge IDs from all rows
+                        for r in rows[1:]:
+                            if not best_row.get('rekordbox_id') and r.get('rekordbox_id'):
+                                best_row['rekordbox_id'] = r['rekordbox_id']
+                    
+                    fp_merged_rows.append(best_row)
+            
+            # Add rows without fingerprint
+            fp_merged_rows.extend(no_fp_rows)
+            
+            df = pd.DataFrame(fp_merged_rows)
+            fp_duplicates_merged = before_fp_dedup - len(df)
+            duplicates_merged += fp_duplicates_merged
+            
             CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(CSV_PATH, index=False)
             print(f"✅ Merged {len(df)} unique tracks into library.csv")
@@ -2199,7 +2254,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     rows = []
                     with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
                         reader = csv.DictReader(f)
-                        fieldnames = reader.fieldnames
+                        fieldnames = reader.fieldnames or []
                         for row in reader:
                             old_path = row.get('old_full_path', '')
                             if old_path in reconciled_paths:
@@ -2313,7 +2368,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     rows = []
                     with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
                         reader = csv.DictReader(f)
-                        fieldnames = reader.fieldnames
+                        fieldnames = reader.fieldnames or []
                         for row in reader:
                             # Check if this row needs path update
                             old_path = row.get('old_full_path', '')
@@ -2433,7 +2488,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     rows = []
                     with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
                         reader = csv.DictReader(f)
-                        fieldnames = reader.fieldnames
+                        fieldnames = reader.fieldnames or []
                         for row in reader:
                             # Check if this row needs path update
                             old_path = row.get('old_full_path', '')

@@ -352,10 +352,20 @@ INDIE_ROCK:
     - "indie-rock"
     - "indie"
     - "Indie"
-    - "indie pop"
-    - "Indie Pop"
     - "indie alternative"
+
+INDIE_POP:
+  label: "Indie Pop"
+  synonyms:
+    - "Indie Pop"
+    - "indie pop"
     - "indiepop"
+    - "indie-pop"
+    - "chamber pop"
+    - "dream pop"
+    - "twee pop"
+    - "bedroom pop"
+    - "art pop"
 
 ROCK_N_ROLL:
   label: "Rock 'n' Roll"
