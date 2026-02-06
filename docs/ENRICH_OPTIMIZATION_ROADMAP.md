@@ -1,7 +1,8 @@
 # 🚀 ENRICH OPTIMIZATION ROADMAP
 
-**Status:** Draft  
+**Status:** Ready for Phase 1  
 **Created:** 2026-02-05  
+**Updated:** 2026-02-06  
 **Author:** CTO/Product Owner Analysis  
 **Priority:** High — enrich is the most time-consuming workflow
 
@@ -19,6 +20,36 @@ System `enrich-online` to obecnie najbardziej czasochłonny workflow w DJ Librar
 | Czas per track (worst case) | 15-25s        | 8-10s        | **~60%**    |
 | MB requests per track       | 3-6           | 1-2          | **~70%**    |
 | 100 tracks processing       | 15-40 min     | 5-10 min     | **~70%**    |
+
+---
+
+## 📋 Progress Tracking
+
+### Current Sprint
+_No active optimization sprint. All previous work was bugfixes, now merged to main._
+
+### Backlog — Phase 1: Quick Wins (1 day)
+- [ ] 3.1.1 Add LRU cache to MB Client (`djlib/metadata/mb_client.py`)
+- [ ] 3.1.2 Skip genre_resolver when MB already has genres (`djlib/enrich.py`)
+
+### Backlog — Phase 2: Parallel Processing (2-3 days)
+- [ ] 3.2.1 Parallel API calls in genre_resolver
+- [ ] 3.2.2 Early exit for Beatport EDM matches
+
+### Backlog — Phase 3: Advanced (3-5 days)
+- [ ] 3.3.1 SoundCloud query optimization
+- [ ] 3.3.2 Batch MB prefetching
+
+### Done (Bugfixes — merged to main 2026-02-06)
+- [x] Fix: SWING genre merged into ROCK_N_ROLL
+- [x] Fix: "mezcla" recognized as version keyword
+- [x] Fix: Radio Edit is NOT a remix
+- [x] Fix: Strip track number prefix from artist
+- [x] Fix: Indie Pop as separate genre
+- [x] Fix: EURODANCE as separate genre
+- [x] Fix: Expanded genre specificity boosts
+- [x] Fix: Separate handling for reject/archive destinations
+- [x] Add: Clean empty folders task in VS Code
 
 ---
 
@@ -471,6 +502,7 @@ DJLIB_DEBUG_MB=1 python -m djlib.cli enrich-online
 
 ## Changelog
 
-| Date       | Author       | Change        |
-| ---------- | ------------ | ------------- |
-| 2026-02-05 | CTO Analysis | Initial draft |
+| Date       | Author       | Change                                          |
+| ---------- | ------------ | ----------------------------------------------- |
+| 2026-02-05 | CTO Analysis | Initial draft                                   |
+| 2026-02-06 | CTO          | Added Progress Tracking, merged bugfixes to main |
