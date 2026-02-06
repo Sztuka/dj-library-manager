@@ -27,6 +27,8 @@ ALIASES = {
     "techno house": "tech house",
     "d n b": "drum and bass",
     "d&b": "drum and bass",
+    # Beatport compound genre names
+    "nu disco / disco": "nu disco",  # Beatport ID 50
 }
 
 
