@@ -82,6 +82,7 @@ def _get_recording_by_id_with_releases(rid: str) -> dict:
     return musicbrainzngs.get_recording_by_id(rid, includes=["releases"])  # type: ignore[arg-type]
 
 @retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
+@retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
 def _get_release_by_id(release_mbid: str) -> dict:
     _throttle_mb()
     return musicbrainzngs.get_release_by_id(release_mbid, includes=["release-groups"])  # type: ignore[arg-type]
@@ -90,6 +91,16 @@ def _get_release_by_id(release_mbid: str) -> dict:
 def _get_release_group_by_id(rgid: str) -> dict:
     _throttle_mb()
     return musicbrainzngs.get_release_group_by_id(rgid, includes=["tags", "releases"])  # type: ignore[arg-type]
+
+@retry(wait=wait_exponential_jitter(initial=1, max=10), stop=stop_after_attempt(5), reraise=True)
+def _browse_releases_by_recording(recording_mbid: str) -> dict:
+    """Browse releases for a recording."""
+    _throttle_mb()
+    return musicbrainzngs.browse_releases(
+        recording=recording_mbid,
+        limit=100,
+        includes=['release-groups']
+    )  # type: ignore
 
 
 # ============================================================================
@@ -120,6 +131,16 @@ def _cached_search_release_groups(q: str, limit: int = 10) -> dict:
     """Cached wrapper for _search_release_groups."""
     return _search_release_groups(q, limit)
 
+@lru_cache(maxsize=500)
+def _cached_get_release_by_id(release_mbid: str) -> dict:
+    """Cached wrapper for _get_release_by_id."""
+    return _get_release_by_id(release_mbid)
+
+@lru_cache(maxsize=500)
+def _cached_browse_releases(recording_mbid: str) -> dict:
+    """Cached wrapper for browse_releases by recording."""
+    return _browse_releases_by_recording(recording_mbid)
+
 def clear_mb_cache() -> None:
     """Clear all MusicBrainz API caches. Call between batch runs if needed."""
     _cached_get_recording_by_id.cache_clear()
@@ -127,6 +148,8 @@ def clear_mb_cache() -> None:
     _cached_search_recordings.cache_clear()
     _cached_search_release_groups.cache_clear()
     _cached_get_artist_by_id.cache_clear()
+    _cached_get_release_by_id.cache_clear()
+    _cached_browse_releases.cache_clear()
 
 def get_mb_cache_stats() -> dict:
     """Get cache hit/miss statistics for debugging."""
@@ -136,6 +159,8 @@ def get_mb_cache_stats() -> dict:
         "search_recordings": _cached_search_recordings.cache_info()._asdict(),
         "search_release_groups": _cached_search_release_groups.cache_info()._asdict(),
         "artist_by_id": _cached_get_artist_by_id.cache_info()._asdict(),
+        "release_by_id": _cached_get_release_by_id.cache_info()._asdict(),
+        "browse_releases": _cached_browse_releases.cache_info()._asdict(),
     }
 
 
@@ -153,7 +178,7 @@ def get_release_year(release_mbid: str) -> Optional[str]:
         Original release year as string (e.g. "1975") or None if not found
     """
     try:
-        release_data = _get_release_by_id(release_mbid)
+        release_data = _cached_get_release_by_id(release_mbid)
         release = (release_data or {}).get("release", {})
         
         # Try to get first-release-date from release-group (original year)
@@ -446,12 +471,7 @@ def mb_fetch_first_release_for_recording(recording_mbid: str, artist: str = "", 
             return None
         
         # Step 2: Get releases for this recording using browse (more complete than search)
-        _throttle_mb()
-        browse_result = musicbrainzngs.browse_releases(
-            recording=recording_mbid, 
-            limit=100, 
-            includes=['release-groups']
-        )  # type: ignore
+        browse_result = _cached_browse_releases(recording_mbid)
         releases = browse_result.get("release-list", [])
         
         if not releases:
