@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import List, Optional, Tuple
 import os
 import time
@@ -91,6 +92,46 @@ def _get_release_group_by_id(rgid: str) -> dict:
     return musicbrainzngs.get_release_group_by_id(rgid, includes=["tags", "releases"])  # type: ignore[arg-type]
 
 
+# ============================================================================
+# LRU CACHE LAYER - Avoids redundant API calls within same session
+# ============================================================================
+# These wrap the low-level functions to cache results by ID.
+# Cache is per-session (cleared on restart). Max 500 entries per cache.
+
+@lru_cache(maxsize=500)
+def _cached_get_recording_by_id(rid: str) -> dict:
+    """Cached wrapper for _get_recording_by_id."""
+    return _get_recording_by_id(rid)
+
+@lru_cache(maxsize=500)
+def _cached_get_release_group_by_id(rgid: str) -> dict:
+    """Cached wrapper for _get_release_group_by_id."""
+    return _get_release_group_by_id(rgid)
+
+@lru_cache(maxsize=500)
+def _cached_search_recordings(q: str, limit: int = 5) -> tuple:
+    """Cached wrapper for _search_recordings. Returns tuple for hashability."""
+    result = _search_recordings(q, limit)
+    # Convert to immutable structure for caching (recording-list as tuple of tuples)
+    return result  # dict is actually fine for lru_cache as long as we don't modify it
+
+def clear_mb_cache() -> None:
+    """Clear all MusicBrainz API caches. Call between batch runs if needed."""
+    _cached_get_recording_by_id.cache_clear()
+    _cached_get_release_group_by_id.cache_clear()
+    _cached_search_recordings.cache_clear()
+    _cached_get_artist_by_id.cache_clear()
+
+def get_mb_cache_stats() -> dict:
+    """Get cache hit/miss statistics for debugging."""
+    return {
+        "recording_by_id": _cached_get_recording_by_id.cache_info()._asdict(),
+        "release_group_by_id": _cached_get_release_group_by_id.cache_info()._asdict(),
+        "search_recordings": _cached_search_recordings.cache_info()._asdict(),
+        "artist_by_id": _cached_get_artist_by_id.cache_info()._asdict(),
+    }
+
+
 def get_release_year(release_mbid: str) -> Optional[str]:
     """
     Get ORIGINAL release year from MusicBrainz release MBID.
@@ -114,7 +155,7 @@ def get_release_year(release_mbid: str) -> Optional[str]:
         
         if rg_id:
             try:
-                rg_data = _get_release_group_by_id(rg_id)
+                rg_data = _cached_get_release_group_by_id(rg_id)
                 rg_full = (rg_data or {}).get("release-group", {})
                 first_date = rg_full.get("first-release-date", "")
                 if first_date and len(first_date) >= 4:
@@ -134,7 +175,7 @@ def get_release_year(release_mbid: str) -> Optional[str]:
 def get_release_group_type(rgid: str) -> Optional[str]:
     """Get primary-type of a release-group (Album, Single, EP, Live, Compilation, etc.)."""
     try:
-        rg_data = _get_release_group_by_id(rgid)
+        rg_data = _cached_get_release_group_by_id(rgid)
         rg = (rg_data or {}).get("release-group", {})
         return rg.get("primary-type")
     except Exception:
@@ -144,6 +185,11 @@ def get_release_group_type(rgid: str) -> Optional[str]:
 def _get_artist_by_id(aid: str) -> dict:
     _throttle_mb()
     return musicbrainzngs.get_artist_by_id(aid, includes=["tags","aliases"])  # type: ignore[arg-type]
+
+@lru_cache(maxsize=500)
+def _cached_get_artist_by_id(aid: str) -> dict:
+    """Cached wrapper for _get_artist_by_id."""
+    return _get_artist_by_id(aid)
 
 
 def search_recording(artist: str, title: str, duration: Optional[int] = None) -> Optional[RecordingMatch]:
@@ -160,7 +206,7 @@ def search_recording(artist: str, title: str, duration: Optional[int] = None) ->
         pass  # could add approx duration to query once WS supports; we score locally
     q = " AND ".join(q_parts)
     try:
-        data = _search_recordings(q, limit=5)
+        data = _cached_search_recordings(q, limit=5)
         recs = (data or {}).get("recording-list") or []
         best: Optional[RecordingMatch] = None
         best_score_val: float = -1.0
@@ -238,10 +284,13 @@ def _tags_to_list(tags: list) -> List[str]:
 
 
 def get_recording_genres(recording_id: str, *, release_group_id: Optional[str] = None, artist_id: Optional[str] = None) -> List[str]:
-    """Collect tags/genres from recording -> release-group -> artist."""
+    """Collect tags/genres from recording -> release-group -> artist.
+    
+    Uses cached API calls to avoid redundant requests within same session.
+    """
     genres: List[str] = []
     try:
-        r = _get_recording_by_id(recording_id)
+        r = _cached_get_recording_by_id(recording_id)
         rec = (r or {}).get("recording", {})
         genres.extend(_tags_to_list(rec.get("tag-list", [])))
         # genres key (WS2+) may be present depending on entity
@@ -256,7 +305,7 @@ def get_recording_genres(recording_id: str, *, release_group_id: Optional[str] =
         pass
     try:
         if release_group_id:
-            rg = _get_release_group_by_id(release_group_id)
+            rg = _cached_get_release_group_by_id(release_group_id)
             ent = (rg or {}).get("release-group", {})
             genres.extend(_tags_to_list(ent.get("tag-list", [])))
             genres.extend(_tags_to_list(ent.get("genre-list", [])))
@@ -264,7 +313,7 @@ def get_recording_genres(recording_id: str, *, release_group_id: Optional[str] =
         pass
     try:
         if artist_id:
-            a = _get_artist_by_id(artist_id)
+            a = _cached_get_artist_by_id(artist_id)
             ent = (a or {}).get("artist", {})
             genres.extend(_tags_to_list(ent.get("tag-list", [])))
             genres.extend(_tags_to_list(ent.get("genre-list", [])))
@@ -416,7 +465,7 @@ def mb_fetch_first_release_for_recording(recording_mbid: str, artist: str = "", 
         studio_rgs = []
         for rg_id in rg_ids:
             try:
-                rg_data = _get_release_group_by_id(rg_id)
+                rg_data = _cached_get_release_group_by_id(rg_id)
                 rg = (rg_data or {}).get("release-group", {})
                 
                 primary_type = rg.get("primary-type", "")
