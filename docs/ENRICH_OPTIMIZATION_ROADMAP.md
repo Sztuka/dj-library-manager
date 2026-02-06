@@ -471,13 +471,13 @@ class EnrichStats:
 
 ## 6. Risks & Mitigations
 
-| Risk                                     | Impact | Probability | Mitigation                       |
-| ---------------------------------------- | ------ | ----------- | -------------------------------- |
-| Parallel calls cause rate limit issues   | High   | Medium      | Add per-API semaphores           |
+| Risk                                      | Impact   | Probability   | Mitigation                       |
+| ----------------------------------------- | -------- | ------------- | -------------------------------- |
+| Parallel calls cause rate limit issues    | High     | Medium        | Add per-API semaphores           |
 | **requests_cache SQLite not thread-safe** | **High** | **Confirmed** | **Use async/aiohttp or locking** |
-| Cache invalidation issues                | Medium | Low         | Clear cache between runs         |
-| Beatport early-exit misses non-EDM       | Medium | Low         | Keep full resolution as fallback |
-| SoundCloud fewer queries = worse results | Low    | Medium      | A/B test before full rollout     |
+| Cache invalidation issues                 | Medium   | Low           | Clear cache between runs         |
+| Beatport early-exit misses non-EDM        | Medium   | Low           | Keep full resolution as fallback |
+| SoundCloud fewer queries = worse results  | Low      | Medium        | A/B test before full rollout     |
 
 ---
 
@@ -502,6 +502,7 @@ sqlite3.ProgrammingError: Cannot operate on a closed database.
 ### Solution Options
 
 1. **Switch to thread-safe cache backend** (memory/filesystem)
+
    ```python
    import requests_cache
    requests_cache.install_cache('http_cache', backend='filesystem')
@@ -512,10 +513,11 @@ sqlite3.ProgrammingError: Cannot operate on a closed database.
    - More idiomatic for I/O-bound parallelism
 
 3. **Add threading lock around cached HTTP calls**
+
    ```python
    import threading
    _cache_lock = threading.Lock()
-   
+
    def cached_request(url):
        with _cache_lock:
            return session.get(url)
@@ -570,8 +572,8 @@ DJLIB_DEBUG_MB=1 python -m djlib.cli enrich-online
 
 ## Changelog
 
-| Date       | Author       | Change                                           |
-| ---------- | ------------ | ------------------------------------------------ |
-| 2026-02-05 | CTO Analysis | Initial draft                                    |
-| 2026-02-06 | CTO          | Added Progress Tracking, merged bugfixes to main |
+| Date       | Author       | Change                                                                                |
+| ---------- | ------------ | ------------------------------------------------------------------------------------- |
+| 2026-02-05 | CTO Analysis | Initial draft                                                                         |
+| 2026-02-06 | CTO          | Added Progress Tracking, merged bugfixes to main                                      |
 | 2026-02-06 | CTO          | Phase 2 attempt: ThreadPoolExecutor failed due to requests_cache SQLite thread-safety |

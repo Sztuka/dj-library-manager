@@ -14,6 +14,7 @@ Token Management:
 """
 from __future__ import annotations
 from typing import Optional, Dict, List, Tuple
+import re
 import requests
 import time
 import json
@@ -24,6 +25,15 @@ from datetime import datetime, timezone
 # Rate limiting
 _LAST_REQUEST = 0.0
 MIN_INTERVAL = 1.0  # Beatport: 1 req/s
+
+# Version matching constants
+_MIN_REMIXER_NAME_LEN = 4  # Minimum length for remixer name to be meaningful
+_MIN_WORD_LEN = 4  # Minimum word length to be "significant"
+_MIN_LONG_WORD_LEN = 6  # Length for single-word remixer name matching
+_REMIX_SUFFIX_PATTERN = re.compile(
+    r'\s*(extended\s*)?(club\s*)?(radio\s*)?(original\s*)?(remix|mix|edit|dub|version)\s*$',
+    re.IGNORECASE
+)
 
 # Token refresh lock (prevents concurrent refresh attempts)
 _REFRESHING = False
@@ -432,13 +442,14 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
         _REFRESHING = False
 
 
-def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> Optional[Dict]:
+def search_track(artist: str, title: str, duration_s: Optional[int] = None, version: Optional[str] = None) -> Optional[Dict]:
     """Search Beatport for track metadata.
     
     Args:
         artist: Artist name
         title: Track title
         duration_s: Track duration in seconds (for better matching)
+        version: Version/mix name (e.g., "Bob Sinclar Extended Mix") for remix matching
     
     Returns:
         Dict with: genre, release_date, artwork_url, bpm, key_camelot, mix_name
@@ -461,7 +472,15 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
     if elapsed < MIN_INTERVAL:
         time.sleep(MIN_INTERVAL - elapsed)
     
+    # Build search query - include remixer name from version if present
     query = f"{artist} {title}".strip()
+    if version:
+        # Extract remixer name from versions like "Bob Sinclar Extended Mix"
+        # by stripping standard mix type suffixes
+        remixer_part = _REMIX_SUFFIX_PATTERN.sub('', version.strip()).strip()
+        # Only add if it's a meaningful name (not already in query)
+        if remixer_part and len(remixer_part) >= _MIN_REMIXER_NAME_LEN and remixer_part.lower() not in query.lower():
+            query = f"{remixer_part} {query}"
     
     try:
         _LAST_REQUEST = time.time()
@@ -500,21 +519,70 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
         if not tracks:
             return None
         
-        # Normalize artist name for comparison
+        # Normalize string for comparison
         def _normalize(s: str) -> str:
-            import re
             s = (s or "").lower().strip()
             s = re.sub(r"['\"\-\.]", "", s)  # Remove quotes, apostrophes, hyphens, dots
             s = re.sub(r"\s+", " ", s)  # Normalize whitespace
             return s
         
+        def _version_matches(track_mix_name: str, search_version: str) -> int:
+            """Score how well track's mix_name matches the searched version.
+            
+            Returns:
+                3 = exact match
+                2 = one contains the other (same remix/mix type)
+                1 = significant word overlap
+                0 = no match
+            """
+            if not search_version:
+                return 0
+            mix_norm = _normalize(track_mix_name)
+            ver_norm = _normalize(search_version)
+            if not mix_norm or not ver_norm:
+                return 0
+            
+            # Exact match - highest score
+            if mix_norm == ver_norm:
+                return 3
+            
+            # Check for remix/mix type mismatch ("mix" vs "remix" are different!)
+            ver_has_remix = "remix" in ver_norm
+            mix_has_remix = "remix" in mix_norm
+            remix_type_matches = (ver_has_remix == mix_has_remix)
+            
+            # If remix types match, check containment
+            if remix_type_matches and (mix_norm in ver_norm or ver_norm in mix_norm):
+                return 2
+            
+            # Word overlap matching for remixer attribution
+            ver_words = set(ver_norm.split())
+            mix_words = set(mix_norm.split())
+            common = ver_words & mix_words
+            significant_common = [w for w in common if len(w) >= _MIN_WORD_LEN]
+            
+            # Remix type mismatch requires stronger word evidence
+            if not remix_type_matches:
+                return 1 if len(significant_common) >= 3 else 0
+            
+            # Standard word overlap matching
+            if len(significant_common) >= 2:
+                return 1
+            # Single long remixer name match (e.g., "Sinclar" in both)
+            if significant_common and any(len(w) >= _MIN_LONG_WORD_LEN for w in significant_common):
+                return 1
+            return 0
+        
         artist_norm = _normalize(artist)
         
-        # Find best match WITH artist verification
+        # Find best match WITH artist verification and version matching
         best_match = None
-        for track in tracks[:10]:  # Check top 10
+        best_version_score = 0  # Track version match quality (0-3)
+        
+        for track in tracks[:15]:  # Check top 15 (more for remix matching)
             track_artists = track.get("artists", [])
             track_artist_names = [a.get("name", "") for a in track_artists]
+            track_mix_name = track.get("mix_name", "")
             
             # Check if any artist matches
             artist_match = False
@@ -543,15 +611,29 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None) -> O
                 if duration_diff > 60:  # More than 60s difference - skip
                     continue
             
-            # Found good match
+            # Check if version matches (remix/mix name matching) - returns score 0-3
+            this_version_score = _version_matches(track_mix_name, version) if version else 0
+            
+            # Selection logic:
+            # 1. Prefer tracks with higher version match score
+            # 2. Among same version score, prefer better duration match
             if best_match is None:
                 best_match = track
+                best_version_score = this_version_score
+            elif this_version_score > best_version_score:
+                # This track has better version match - prefer it
+                best_match = track
+                best_version_score = this_version_score
+            elif this_version_score < best_version_score:
+                # Previous has better version match - keep previous
+                pass
             elif duration_s:
-                # Compare durations to find better match
+                # Same version score - compare durations
                 track_duration_s = track.get("length_ms", 0) // 1000
                 best_duration_s = best_match.get("length_ms", 0) // 1000
                 if abs(track_duration_s - duration_s) < abs(best_duration_s - duration_s):
                     best_match = track
+                    best_version_score = this_version_score
         
         if best_match is None:
             # No matching artist found in Beatport results

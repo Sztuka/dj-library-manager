@@ -227,12 +227,12 @@ def _is_beatport_electronic(genre: str) -> bool:
 # FETCH HELPERS - Used for parallel API calls
 # ============================================================================
 
-def _fetch_beatport(artist: str, title: str, duration_s: Optional[int]) -> Optional[Dict[str, object]]:
+def _fetch_beatport(artist: str, title: str, duration_s: Optional[int], version: str = "") -> Optional[Dict[str, object]]:
     """Fetch genre data from Beatport. Returns dict with 'genre' key or None."""
     try:
         from djlib.metadata.beatport import search_track as bp_search
-        result = bp_search(artist, title, duration_s)
-        log.debug("Beatport: %s - %s → %s", artist, title, result.get('genre') if result else None)
+        result = bp_search(artist, title, duration_s, version=version)
+        log.debug("Beatport: %s - %s (%s) → %s", artist, title, version or "original", result.get('genre') if result else None)
         return result
     except Exception as e:
         log.warning("Beatport fetch failed for %s - %s: %s", artist, title, e)
@@ -369,7 +369,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # Fetch Beatport (gold standard for EDM)
     bp_result = None
     if not disable_beatport:
-        bp_result = _fetch_beatport(artist, title, duration_s)
+        bp_result = _fetch_beatport(artist, title, duration_s, version=version)
     
     # Fetch Last.fm
     lfm_result = _fetch_lastfm(artist, title)
