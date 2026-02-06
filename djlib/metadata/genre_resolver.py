@@ -227,7 +227,7 @@ class GenreResolution:
     breakdown: List[Tuple[str, float, Dict[str, float]]]
 
 
-def resolve(artist: str, title: str, version: str = "", *, duration_s: int | None = None, disable_soundcloud: bool = False, disable_beatport: bool = False, mb_recording: "mb_client.RecordingMatch | None" = None) -> GenreResolution | None:
+def resolve(artist: str, title: str, version: str = "", *, duration_s: int | None = None, disable_soundcloud: bool = False, disable_beatport: bool = False, disable_mb: bool = False, mb_recording: "mb_client.RecordingMatch | None" = None) -> GenreResolution | None:
     """Resolve genres using Beatport -> Last.fm -> MB (+ optional SoundCloud) with scoring.
 
     Version info (remix names) helps SoundCloud queries disambiguate edits.
@@ -238,6 +238,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     Args:
         mb_recording: Pre-fetched MusicBrainz RecordingMatch to avoid redundant API calls.
                       If provided, skips search_recording call.
+        disable_mb: Skip MusicBrainz lookups entirely (useful for remixes where MB data is 
+                    misleading - returns original track, not remix-specific info).
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
@@ -301,24 +303,26 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
 
     # MusicBrainz
     # Reduced weight for remixes (MB returns data for original track, not remix)
-    mb_w = WEIGHT_MB_REMIX if is_remix else WEIGHT_MB_BASE
-    # Use pre-fetched MB data if provided, otherwise search
-    rec = mb_recording if mb_recording else mb_client.search_recording(artist, title, duration=duration_s)
-    if rec:
-        tags = mb_client.get_recording_genres(rec.recording_id, release_group_id=rec.release_group_id, artist_id=rec.artist_id)
-        local: Dict[str, float] = {}
-        for t in tags:
-            c = canonical(t)
-            if _is_noise(c):
-                continue
-            f = _downweight_factor(c) * _specificity_boost(c)
-            w = mb_w * f
-            if w <= 0:
-                continue
-            scores[c] = scores.get(c, 0.0) + w
-            local[c] = local.get(c, 0.0) + w
-        if local:
-            parts.append(("musicbrainz", mb_w, local))
+    # Skip entirely if disable_mb=True (e.g., for remixes where MB data is misleading)
+    if not disable_mb:
+        mb_w = WEIGHT_MB_REMIX if is_remix else WEIGHT_MB_BASE
+        # Use pre-fetched MB data if provided, otherwise search
+        rec = mb_recording if mb_recording else mb_client.search_recording(artist, title, duration=duration_s)
+        if rec:
+            tags = mb_client.get_recording_genres(rec.recording_id, release_group_id=rec.release_group_id, artist_id=rec.artist_id)
+            local: Dict[str, float] = {}
+            for t in tags:
+                c = canonical(t)
+                if _is_noise(c):
+                    continue
+                f = _downweight_factor(c) * _specificity_boost(c)
+                w = mb_w * f
+                if w <= 0:
+                    continue
+                scores[c] = scores.get(c, 0.0) + w
+                local[c] = local.get(c, 0.0) + w
+            if local:
+                parts.append(("musicbrainz", mb_w, local))
 
     # Last.fm (stronger influence to reflect community tags importance)
     # Weights tuned to balance: LFM has good coverage but can be noisy for EDM
