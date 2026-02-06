@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import List, Optional, Tuple
@@ -108,59 +109,86 @@ def _browse_releases_by_recording(recording_mbid: str) -> dict:
 # ============================================================================
 # These wrap the low-level functions to cache results by ID.
 # Cache is per-session (cleared on restart). Max 500 entries per cache.
+#
+# IMPORTANT: All cached wrappers return deepcopy to prevent callers from
+# accidentally mutating cached data. This is a safety trade-off:
+# - Slight memory/CPU overhead for copy
+# - Prevents subtle bugs where mutations corrupt cache for all callers
 
 @lru_cache(maxsize=500)
-def _cached_get_recording_by_id(rid: str) -> dict:
-    """Cached wrapper for _get_recording_by_id."""
+def _cached_get_recording_by_id_raw(rid: str) -> dict:
+    """Internal cached fetch - DO NOT USE DIRECTLY."""
     return _get_recording_by_id(rid)
 
+def _cached_get_recording_by_id(rid: str) -> dict:
+    """Cached wrapper for _get_recording_by_id. Returns deepcopy to prevent mutation."""
+    return copy.deepcopy(_cached_get_recording_by_id_raw(rid))
+
 @lru_cache(maxsize=500)
-def _cached_get_release_group_by_id(rgid: str) -> dict:
-    """Cached wrapper for _get_release_group_by_id."""
+def _cached_get_release_group_by_id_raw(rgid: str) -> dict:
+    """Internal cached fetch - DO NOT USE DIRECTLY."""
     return _get_release_group_by_id(rgid)
 
-@lru_cache(maxsize=500)
-def _cached_search_recordings(q: str, limit: int = 5) -> tuple:
-    """Cached wrapper for _search_recordings. Returns tuple for hashability."""
-    result = _search_recordings(q, limit)
-    # Convert to immutable structure for caching (recording-list as tuple of tuples)
-    return result  # dict is actually fine for lru_cache as long as we don't modify it
+def _cached_get_release_group_by_id(rgid: str) -> dict:
+    """Cached wrapper for _get_release_group_by_id. Returns deepcopy to prevent mutation."""
+    return copy.deepcopy(_cached_get_release_group_by_id_raw(rgid))
 
 @lru_cache(maxsize=500)
-def _cached_search_release_groups(q: str, limit: int = 10) -> dict:
-    """Cached wrapper for _search_release_groups."""
+def _cached_search_recordings_raw(q: str, limit: int = 5) -> dict:
+    """Internal cached fetch - DO NOT USE DIRECTLY."""
+    return _search_recordings(q, limit)
+
+def _cached_search_recordings(q: str, limit: int = 5) -> dict:
+    """Cached wrapper for _search_recordings. Returns deepcopy to prevent mutation."""
+    return copy.deepcopy(_cached_search_recordings_raw(q, limit))
+
+@lru_cache(maxsize=500)
+def _cached_search_release_groups_raw(q: str, limit: int = 10) -> dict:
+    """Internal cached fetch - DO NOT USE DIRECTLY."""
     return _search_release_groups(q, limit)
 
-@lru_cache(maxsize=500)
-def _cached_get_release_by_id(release_mbid: str) -> dict:
-    """Cached wrapper for _get_release_by_id."""
-    return _get_release_by_id(release_mbid)
+def _cached_search_release_groups(q: str, limit: int = 10) -> dict:
+    """Cached wrapper for _search_release_groups. Returns deepcopy to prevent mutation."""
+    return copy.deepcopy(_cached_search_release_groups_raw(q, limit))
 
 @lru_cache(maxsize=500)
-def _cached_browse_releases(recording_mbid: str) -> dict:
-    """Cached wrapper for browse_releases by recording."""
+def _cached_get_release_by_id_raw(release_mbid: str) -> dict:
+    """Internal cached fetch - DO NOT USE DIRECTLY."""
+    return _get_release_by_id(release_mbid)
+
+def _cached_get_release_by_id(release_mbid: str) -> dict:
+    """Cached wrapper for _get_release_by_id. Returns deepcopy to prevent mutation."""
+    return copy.deepcopy(_cached_get_release_by_id_raw(release_mbid))
+
+@lru_cache(maxsize=500)
+def _cached_browse_releases_raw(recording_mbid: str) -> dict:
+    """Internal cached fetch - DO NOT USE DIRECTLY."""
     return _browse_releases_by_recording(recording_mbid)
+
+def _cached_browse_releases(recording_mbid: str) -> dict:
+    """Cached wrapper for browse_releases by recording. Returns deepcopy to prevent mutation."""
+    return copy.deepcopy(_cached_browse_releases_raw(recording_mbid))
 
 def clear_mb_cache() -> None:
     """Clear all MusicBrainz API caches. Call between batch runs if needed."""
-    _cached_get_recording_by_id.cache_clear()
-    _cached_get_release_group_by_id.cache_clear()
-    _cached_search_recordings.cache_clear()
-    _cached_search_release_groups.cache_clear()
-    _cached_get_artist_by_id.cache_clear()
-    _cached_get_release_by_id.cache_clear()
-    _cached_browse_releases.cache_clear()
+    _cached_get_recording_by_id_raw.cache_clear()
+    _cached_get_release_group_by_id_raw.cache_clear()
+    _cached_search_recordings_raw.cache_clear()
+    _cached_search_release_groups_raw.cache_clear()
+    _cached_get_artist_by_id_raw.cache_clear()
+    _cached_get_release_by_id_raw.cache_clear()
+    _cached_browse_releases_raw.cache_clear()
 
 def get_mb_cache_stats() -> dict:
     """Get cache hit/miss statistics for debugging."""
     return {
-        "recording_by_id": _cached_get_recording_by_id.cache_info()._asdict(),
-        "release_group_by_id": _cached_get_release_group_by_id.cache_info()._asdict(),
-        "search_recordings": _cached_search_recordings.cache_info()._asdict(),
-        "search_release_groups": _cached_search_release_groups.cache_info()._asdict(),
-        "artist_by_id": _cached_get_artist_by_id.cache_info()._asdict(),
-        "release_by_id": _cached_get_release_by_id.cache_info()._asdict(),
-        "browse_releases": _cached_browse_releases.cache_info()._asdict(),
+        "recording_by_id": _cached_get_recording_by_id_raw.cache_info()._asdict(),
+        "release_group_by_id": _cached_get_release_group_by_id_raw.cache_info()._asdict(),
+        "search_recordings": _cached_search_recordings_raw.cache_info()._asdict(),
+        "search_release_groups": _cached_search_release_groups_raw.cache_info()._asdict(),
+        "artist_by_id": _cached_get_artist_by_id_raw.cache_info()._asdict(),
+        "release_by_id": _cached_get_release_by_id_raw.cache_info()._asdict(),
+        "browse_releases": _cached_browse_releases_raw.cache_info()._asdict(),
     }
 
 
@@ -219,9 +247,13 @@ def _get_artist_by_id(aid: str) -> dict:
     return musicbrainzngs.get_artist_by_id(aid, includes=["tags","aliases"])  # type: ignore[arg-type]
 
 @lru_cache(maxsize=500)
-def _cached_get_artist_by_id(aid: str) -> dict:
-    """Cached wrapper for _get_artist_by_id."""
+def _cached_get_artist_by_id_raw(aid: str) -> dict:
+    """Internal cached fetch - DO NOT USE DIRECTLY."""
     return _get_artist_by_id(aid)
+
+def _cached_get_artist_by_id(aid: str) -> dict:
+    """Cached wrapper for _get_artist_by_id. Returns deepcopy to prevent mutation."""
+    return copy.deepcopy(_cached_get_artist_by_id_raw(aid))
 
 
 def search_recording(artist: str, title: str, duration: Optional[int] = None) -> Optional[RecordingMatch]:
