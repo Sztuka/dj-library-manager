@@ -664,10 +664,15 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
             from djlib.metadata import lastfm, beatport
             
             dur_s = dur_sec if dur_sec else None
+            # For remixes (not live): disable MB in resolver - we intentionally skipped MB 
+            # earlier because it returns original track data, not remix-specific info.
+            # For originals: MB lookup may still help even if lookup_musicbrainz failed.
+            is_remix_not_live = bool(version and not is_live)
             genre_res = resolve_genres(
                 artist, title, version=version, duration_s=dur_s,
                 disable_soundcloud=False,
-                disable_beatport=False
+                disable_beatport=False,
+                disable_mb=is_remix_not_live
             )
             
             # For remixes: try Beatport first (might have specific remix release date)
