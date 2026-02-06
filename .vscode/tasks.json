@@ -129,6 +129,13 @@
       "command": "rm -f ${workspaceFolder}/djlib_http_cache* && echo '✅ HTTP cache cleared (MusicBrainz, Last.fm, Beatport)'",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Clean empty folders in UNSORTED",
+      "type": "shell",
+      "command": "find ~/Music\\ Unsorted -name '.DS_Store' -delete && find ~/Music\\ Unsorted -depth -type d -empty -print -delete && echo '✅ Empty folders removed from Music Unsorted'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }

@@ -244,21 +244,21 @@ def _normalize_features(artist: str, title: str) -> Tuple[str, str]:
     return artist, title_cleaned
 
 
-def _split_artist_title_from_combined(text: str) -> Tuple[str, str]:
+def _split_artist_title_from_combined(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Split combined 'Artist - Title' or 'Artist feat. X - Title' string into (artist, title).
     
     Handles patterns like:
     - "Major Lazer feat. Sean Paul - Come On To Me" → ("Major Lazer feat. Sean Paul", "Come On To Me")
     - "Seb Skalski - My Religion" → ("Seb Skalski", "My Religion")
-    - "Just Title" → ("", "Just Title")
+    - "Just Title" → (None, None) - no split possible
     
     Returns:
-        Tuple of (artist, title). If no dash found, returns ("", original_text).
+        Tuple of (artist, title). If no dash found or invalid format, returns (None, None).
     """
     text = (text or "").strip()
     if not text:
-        return "", ""
+        return None, None
     
     # Look for " - " separator (canonical artist-title split)
     # But NOT inside parentheses (e.g., "Title (Some - Mix)" should not split on inner dash)
@@ -281,7 +281,7 @@ def _split_artist_title_from_combined(text: str) -> Tuple[str, str]:
                         if artist_part and title_part:
                             return artist_part, title_part
     
-    return "", text
+    return None, None
 
 
 def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, str]:
@@ -436,15 +436,24 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
     # CHECK: If title contains "Artist - Title" pattern (tracklist dump), split it
     # This handles cases like title="66. Major Lazer feat. Sean Paul - Come On To Me"
     # where the track number was stripped but artist-title combo remains
-    if title and " - " in title and (not artist or artist.lower() in title.lower()):
+    # ONLY do this if artist is empty or artist is a PREFIX of title (not substring)
+    should_split_title = False
+    if title and " - " in title:
+        if not artist:
+            should_split_title = True
+        elif artist and title.lower().startswith(artist.lower()):
+            # Artist is prefix of title - likely duplicated
+            should_split_title = True
+    
+    if should_split_title:
         extracted_artist, extracted_title = _split_artist_title_from_combined(title)
         if extracted_artist and extracted_title:
-            # Use extracted values
+            # Use extracted values, apply proper sanitization
             if not artist:
                 artist = _sanitize_artist(extracted_artist)
-            title = extracted_title
+            title = _sanitize_title(extracted_title)
 
-    # FIRST: Normalize featuring info BEFORE splitting title/version
+    # Normalize featuring info BEFORE splitting title/version
     # This prevents "(feat. Carol)" from being treated as version info
     artist, title = _normalize_features(artist, title)
 

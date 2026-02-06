@@ -379,6 +379,13 @@ ROCK_N_ROLL:
     - "rockabilly"
     - "50s rock"
     - "50s rock and roll"
+    - "swing"
+    - "Swing"
+    - "big band"
+    - "big-band"
+    - "bigband"
+    - "jazz swing"
+    - "vocal swing"
 
 NEW_WAVE:
   label: "New Wave"
@@ -448,17 +455,6 @@ BLUES:
     - "electric blues"
     - "delta blues"
     - "chicago blues"
-
-SWING:
-  label: "Swing"
-  synonyms:
-    - "Swing"
-    - "swing"
-    - "big band"
-    - "big-band"
-    - "bigband"
-    - "jazz swing"
-    - "vocal swing"
 
 REGGAE:
   label: "Reggae"

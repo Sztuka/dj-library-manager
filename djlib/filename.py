@@ -57,6 +57,7 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
         "rub", "flip", "refix", "revamp",
         "live", "acoustic", "unplugged", "instrumental", "acapella", "a capella",
         "radio", "extended", "original", "club", "single",
+        "mezcla",  # Spanish for "mix"
     ]
     
     def _is_version_content(content: str) -> bool:
@@ -173,6 +174,7 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         "rub", "flip", "refix", "revamp",
         "live", "acoustic", "unplugged", "instrumental", "acapella", "a capella",
         "radio", "extended", "original", "club", "single",
+        "mezcla",  # Spanish for "mix"
     ]
     
     def _is_version_content(content: str) -> bool:
@@ -180,12 +182,12 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         c = content.lower()
         return any(kw in c for kw in VERSION_KEYWORDS)
 
-    # 2) próba dopasowania z wieloma nawiasami: Artist - Title (V1) (V2) ...
-    m_multi = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*(\(.+\))\s*$", cleaned)
+    # 2) próba dopasowania z wieloma nawiasami: Artist - Title (V1) (V2) ... lub [V1] [V2] ...
+    m_multi = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*([\(\[\{{].+[\)\]\}}])\s*$", cleaned)
     if m_multi:
         a, t, tail = m_multi.groups()
-        # wyciągnij wszystkie grupy nawiasów
-        parts = re.findall(r"\(([^)]+)\)", tail)
+        # wyciągnij wszystkie grupy nawiasów (okrągłe, kwadratowe, klamrowe)
+        parts = re.findall(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]", tail)
         # ONLY include parts that look like version info
         version_parts = [p.strip() for p in parts if p.strip() and _is_version_content(p)]
         # Non-version parts should be appended back to title

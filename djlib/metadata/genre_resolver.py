@@ -162,6 +162,20 @@ BEATPORT_ELECTRONIC_GENRES = {
     "hardstyle", "hardcore", "gabber", "happy hardcore",
 }
 
+# Weight constants for genre scoring
+# These values are tuned to balance different sources' reliability
+WEIGHT_BEATPORT_BASE = 10.0
+WEIGHT_BEATPORT_REMIX = 8.0
+WEIGHT_BEATPORT_ELECTRONIC = 25.0      # When BP returns specific EDM genre
+WEIGHT_BEATPORT_ELECTRONIC_REMIX = 15.0
+WEIGHT_LASTFM_BASE = 6.0
+WEIGHT_LASTFM_WHEN_BP_ELECTRONIC = 2.0  # Reduced to let Beatport dominate for EDM
+WEIGHT_LASTFM_REMIX = 0.5
+WEIGHT_MB_BASE = 3.0
+WEIGHT_MB_REMIX = 1.5
+WEIGHT_SC_BASE = 2.0
+WEIGHT_SC_REMIX = 20.0
+
 
 def _is_beatport_electronic(genre: str) -> bool:
     """Check if Beatport genre is a specific electronic genre (not generic Dance/Pop)."""
@@ -217,7 +231,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # BOOST: If Beatport returns specific electronic genre, increase weight to dominate over Last.fm
     beatport_is_electronic = False
     if not disable_beatport:
-        bp_w = 8.0 if is_remix else 10.0
+        bp_w = WEIGHT_BEATPORT_REMIX if is_remix else WEIGHT_BEATPORT_BASE
         try:
             from djlib.metadata.beatport import search_track as bp_search
             bp_result = bp_search(artist, title, duration_s)
@@ -230,7 +244,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
                 for t in bp_genres:
                     if _is_beatport_electronic(t):
                         beatport_is_electronic = True
-                        bp_w = 15.0 if is_remix else 25.0  # BOOST: dominate over Last.fm log(count)
+                        bp_w = WEIGHT_BEATPORT_ELECTRONIC_REMIX if is_remix else WEIGHT_BEATPORT_ELECTRONIC
                         break
                 
                 for t in bp_genres:
@@ -250,7 +264,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
 
     # MusicBrainz
     # Reduced weight for remixes (MB returns data for original track, not remix)
-    mb_w = 1.5 if is_remix else 3.0
+    mb_w = WEIGHT_MB_REMIX if is_remix else WEIGHT_MB_BASE
     rec = mb_client.search_recording(artist, title, duration=duration_s)
     if rec:
         tags = mb_client.get_recording_genres(rec.recording_id, release_group_id=rec.release_group_id, artist_id=rec.artist_id)
@@ -269,16 +283,16 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
             parts.append(("musicbrainz", mb_w, local))
 
     # Last.fm (stronger influence to reflect community tags importance)
-    # Zwiększona waga (podniesiona z 4.0 → 6.0) aby Last.fm częściej dominowało w wynikach przy szerokim zestawie tagów.
-    # Reduced weight for remixes (LFM returns data for original track, not remix)
-    # Further reduced 3.0 → 0.5 to prevent high-playcount indie/pop tags from dominating remix-specific genres
-    # ALSO reduce if Beatport found specific electronic genre (Beatport is authoritative for EDM)
+    # Weights tuned to balance: LFM has good coverage but can be noisy for EDM
+    # - Remixes: very low (0.5) - LFM returns original track data, not remix-specific
+    # - Electronic (Beatport confirmed): reduced - Beatport is authoritative for EDM
+    # - Default: base weight (6.0) - LFM is valuable for non-EDM genres
     if is_remix:
-        lfm_w = 0.5
+        lfm_w = WEIGHT_LASTFM_REMIX
     elif beatport_is_electronic:
-        lfm_w = 2.0  # Reduced: trust Beatport for electronic music
+        lfm_w = WEIGHT_LASTFM_WHEN_BP_ELECTRONIC
     else:
-        lfm_w = 6.0
+        lfm_w = WEIGHT_LASTFM_BASE
     tags_lfm = lastfm.top_tags(artist, title)
     if tags_lfm:
         local: Dict[str, float] = {}
@@ -301,7 +315,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # SoundCloud (light weight for originals, higher for remixes)
     # SoundCloud is most reliable for remix-specific genre tagging
     if not disable_soundcloud:
-        sc_w = 20.0 if is_remix else 2.0  # significantly increased for remixes to override Last.fm and Beatport
+        sc_w = WEIGHT_SC_REMIX if is_remix else WEIGHT_SC_BASE
         sc = sc_track_tags(artist, title, version)
         if sc.get("tags"):
             local: Dict[str, float] = {}
