@@ -1,7 +1,10 @@
 from __future__ import annotations
+import logging
 import math
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional, Any
+from typing import List, Dict, Tuple, Optional
+
+log = logging.getLogger(__name__)
 
 # Ensure requests-cache side effects
 import djlib.metadata  # noqa: F401
@@ -224,28 +227,38 @@ def _is_beatport_electronic(genre: str) -> bool:
 # FETCH HELPERS - Used for parallel API calls
 # ============================================================================
 
-def _fetch_beatport(artist: str, title: str, duration_s: Optional[int]) -> Optional[Dict[str, Any]]:
+def _fetch_beatport(artist: str, title: str, duration_s: Optional[int]) -> Optional[Dict[str, object]]:
     """Fetch genre data from Beatport. Returns dict with 'genre' key or None."""
     try:
         from djlib.metadata.beatport import search_track as bp_search
-        return bp_search(artist, title, duration_s)
-    except Exception:
+        result = bp_search(artist, title, duration_s)
+        log.debug("Beatport: %s - %s → %s", artist, title, result.get('genre') if result else None)
+        return result
+    except Exception as e:
+        log.warning("Beatport fetch failed for %s - %s: %s", artist, title, e)
         return None
 
 
 def _fetch_lastfm(artist: str, title: str) -> Optional[List[Tuple[str, int]]]:
     """Fetch top tags from Last.fm. Returns list of (tag_name, count) or None."""
     try:
-        return lastfm.top_tags(artist, title)
-    except Exception:
+        result = lastfm.top_tags(artist, title)
+        log.debug("Last.fm: %s - %s → %d tags", artist, title, len(result) if result else 0)
+        return result
+    except Exception as e:
+        log.warning("Last.fm fetch failed for %s - %s: %s", artist, title, e)
         return None
 
 
-def _fetch_soundcloud(artist: str, title: str, version: str) -> Optional[Dict[str, Any]]:
+def _fetch_soundcloud(artist: str, title: str, version: str) -> Optional[Dict[str, object]]:
     """Fetch tags from SoundCloud. Returns dict with 'tags' key or None."""
     try:
-        return sc_track_tags(artist, title, version)
-    except Exception:
+        result = sc_track_tags(artist, title, version)
+        tags = result.get('tags', []) if result else []
+        log.debug("SoundCloud: %s - %s (%s) → %d tags", artist, title, version, len(tags))
+        return result
+    except Exception as e:
+        log.warning("SoundCloud fetch failed for %s - %s: %s", artist, title, e)
         return None
 
 
@@ -255,14 +268,36 @@ def _fetch_musicbrainz(artist: str, title: str, duration_s: Optional[int],
     try:
         rec = mb_recording if mb_recording else mb_client.search_recording(artist, title, duration=duration_s)
         if rec:
-            return mb_client.get_recording_genres(
+            genres = mb_client.get_recording_genres(
                 rec.recording_id, 
                 release_group_id=rec.release_group_id, 
                 artist_id=rec.artist_id
             )
-    except Exception:
-        pass
+            log.debug("MusicBrainz: %s - %s → %s", artist, title, genres[:3] if genres else None)
+            return genres
+    except Exception as e:
+        log.warning("MusicBrainz fetch failed for %s - %s: %s", artist, title, e)
     return None
+
+
+def _score_tag(tag: str, base_weight: float, scores: Dict[str, float], local: Dict[str, float]) -> None:
+    """Score a single tag and update scores dict. Applies canonical, noise filter, and boosts.
+    
+    Args:
+        tag: Raw tag string from source
+        base_weight: Base weight for this source (e.g., WEIGHT_BEATPORT_BASE)
+        scores: Global scores dict to update
+        local: Local scores dict for this source to update
+    """
+    c = canonical(tag)
+    if _is_noise(c):
+        return
+    f = _downweight_factor(c) * _specificity_boost(c)
+    w = base_weight * f
+    if w <= 0:
+        return
+    scores[c] = scores.get(c, 0.0) + w
+    local[c] = local.get(c, 0.0) + w
 
 
 # Confidence threshold for Beatport early exit
@@ -368,15 +403,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
                 break
         
         for t in bp_genres:
-            c = canonical(t)
-            if _is_noise(c):
-                continue
-            f = _downweight_factor(c) * _specificity_boost(c)
-            w = bp_w * f
-            if w <= 0:
-                continue
-            scores[c] = scores.get(c, 0.0) + w
-            local[c] = local.get(c, 0.0) + w
+            _score_tag(t, bp_w, scores, local)
         if local:
             parts.append(("beatport", bp_w, local))
             
@@ -394,15 +421,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         mb_w = WEIGHT_MB_REMIX if is_remix else WEIGHT_MB_BASE
         local: Dict[str, float] = {}
         for t in mb_result:
-            c = canonical(t)
-            if _is_noise(c):
-                continue
-            f = _downweight_factor(c) * _specificity_boost(c)
-            w = mb_w * f
-            if w <= 0:
-                continue
-            scores[c] = scores.get(c, 0.0) + w
-            local[c] = local.get(c, 0.0) + w
+            _score_tag(t, mb_w, scores, local)
         if local:
             parts.append(("musicbrainz", mb_w, local))
 
@@ -441,15 +460,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         sc_w = WEIGHT_SC_REMIX if is_remix else WEIGHT_SC_BASE
         local: Dict[str, float] = {}
         for name in sc_result["tags"]:
-            c = canonical(name)
-            if _is_noise(c):
-                continue
-            f = _downweight_factor(c) * _specificity_boost(c)
-            w = sc_w * f
-            if w <= 0:
-                continue
-            scores[c] = scores.get(c, 0.0) + w
-            local[c] = local.get(c, 0.0) + w
+            _score_tag(name, sc_w, scores, local)
         if local:
             parts.append(("soundcloud", sc_w, local))
 
