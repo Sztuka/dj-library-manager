@@ -227,13 +227,17 @@ class GenreResolution:
     breakdown: List[Tuple[str, float, Dict[str, float]]]
 
 
-def resolve(artist: str, title: str, version: str = "", *, duration_s: int | None = None, disable_soundcloud: bool = False, disable_beatport: bool = False) -> GenreResolution | None:
+def resolve(artist: str, title: str, version: str = "", *, duration_s: int | None = None, disable_soundcloud: bool = False, disable_beatport: bool = False, mb_recording: "mb_client.RecordingMatch | None" = None) -> GenreResolution | None:
     """Resolve genres using Beatport -> Last.fm -> MB (+ optional SoundCloud) with scoring.
 
     Version info (remix names) helps SoundCloud queries disambiguate edits.
     Weights (relative): Beatport=10, LFM=6, MB=3, SC=2 (base).
     For remixes (version provided): SC and BP weights increased, LFM/MB decreased.
     Returns main + up to 2 subs.
+    
+    Args:
+        mb_recording: Pre-fetched MusicBrainz RecordingMatch to avoid redundant API calls.
+                      If provided, skips search_recording call.
     """
     artist = (artist or "").strip()
     title = (title or "").strip()
@@ -298,7 +302,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # MusicBrainz
     # Reduced weight for remixes (MB returns data for original track, not remix)
     mb_w = WEIGHT_MB_REMIX if is_remix else WEIGHT_MB_BASE
-    rec = mb_client.search_recording(artist, title, duration=duration_s)
+    # Use pre-fetched MB data if provided, otherwise search
+    rec = mb_recording if mb_recording else mb_client.search_recording(artist, title, duration=duration_s)
     if rec:
         tags = mb_client.get_recording_genres(rec.recording_id, release_group_id=rec.release_group_id, artist_id=rec.artist_id)
         local: Dict[str, float] = {}

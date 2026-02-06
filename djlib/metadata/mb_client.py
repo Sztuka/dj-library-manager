@@ -115,11 +115,17 @@ def _cached_search_recordings(q: str, limit: int = 5) -> tuple:
     # Convert to immutable structure for caching (recording-list as tuple of tuples)
     return result  # dict is actually fine for lru_cache as long as we don't modify it
 
+@lru_cache(maxsize=500)
+def _cached_search_release_groups(q: str, limit: int = 10) -> dict:
+    """Cached wrapper for _search_release_groups."""
+    return _search_release_groups(q, limit)
+
 def clear_mb_cache() -> None:
     """Clear all MusicBrainz API caches. Call between batch runs if needed."""
     _cached_get_recording_by_id.cache_clear()
     _cached_get_release_group_by_id.cache_clear()
     _cached_search_recordings.cache_clear()
+    _cached_search_release_groups.cache_clear()
     _cached_get_artist_by_id.cache_clear()
 
 def get_mb_cache_stats() -> dict:
@@ -128,6 +134,7 @@ def get_mb_cache_stats() -> dict:
         "recording_by_id": _cached_get_recording_by_id.cache_info()._asdict(),
         "release_group_by_id": _cached_get_release_group_by_id.cache_info()._asdict(),
         "search_recordings": _cached_search_recordings.cache_info()._asdict(),
+        "search_release_groups": _cached_search_release_groups.cache_info()._asdict(),
         "artist_by_id": _cached_get_artist_by_id.cache_info()._asdict(),
     }
 
@@ -338,7 +345,7 @@ def get_original_release_year(artist: str, title: str) -> Optional[str]:
         q_parts.append(f'releasegroup:"{title}"')
     q = " AND ".join(q_parts)
     try:
-        data = _search_release_groups(q, limit=10)
+        data = _cached_search_release_groups(q, limit=10)
         rg_list = (data or {}).get("release-group-list") or []
         # Filter for Single/Album/EP (not Live/Compilation)
         studio_rgs = [
@@ -375,7 +382,7 @@ def get_original_release_info(artist: str, title: str) -> Optional[Tuple[str, st
         q_parts.append(f'releasegroup:"{title}"')
     q = " AND ".join(q_parts)
     try:
-        data = _search_release_groups(q, limit=10)
+        data = _cached_search_release_groups(q, limit=10)
         rg_list = (data or {}).get("release-group-list") or []
         # Filter for Single/Album/EP (not Live/Compilation)
         studio_rgs = [
