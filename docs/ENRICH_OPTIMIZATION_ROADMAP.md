@@ -25,22 +25,34 @@ System `enrich-online` to obecnie najbardziej czasochłonny workflow w DJ Librar
 
 ## 📋 Progress Tracking
 
-### Current Sprint
-_No active optimization sprint. All previous work was bugfixes, now merged to main._
+### Current Sprint: Phase 1 Complete ✅
 
-### Backlog — Phase 1: Quick Wins (1 day)
-- [ ] 3.1.1 Add LRU cache to MB Client (`djlib/metadata/mb_client.py`)
-- [ ] 3.1.2 Skip genre_resolver when MB already has genres (`djlib/enrich.py`)
+Branch: `perf/enrich-phase1`
+
+**Benchmark Results (8 tracks):**
+| Version | Total Time | Per Track | Improvement |
+|---------|------------|-----------|-------------|
+| Baseline (main) | 126.08s | 15.76s | — |
+| Phase 1.1 (LRU cache) | 90.85s | 11.36s | **28%** |
+| Phase 1.2 (skip MB for remixes) | 82.03s | 10.25s | **35%** |
+
+### Completed — Phase 1: Quick Wins
+
+- [x] 3.1.1 Add LRU cache to MB Client (`djlib/metadata/mb_client.py`)
+- [x] 3.1.2 Skip MB in genre_resolver for remixes (`djlib/enrich.py`, `genre_resolver.py`)
 
 ### Backlog — Phase 2: Parallel Processing (2-3 days)
+
 - [ ] 3.2.1 Parallel API calls in genre_resolver
 - [ ] 3.2.2 Early exit for Beatport EDM matches
 
 ### Backlog — Phase 3: Advanced (3-5 days)
+
 - [ ] 3.3.1 SoundCloud query optimization
 - [ ] 3.3.2 Batch MB prefetching
 
 ### Done (Bugfixes — merged to main 2026-02-06)
+
 - [x] Fix: SWING genre merged into ROCK_N_ROLL
 - [x] Fix: "mezcla" recognized as version keyword
 - [x] Fix: Radio Edit is NOT a remix
@@ -502,7 +514,7 @@ DJLIB_DEBUG_MB=1 python -m djlib.cli enrich-online
 
 ## Changelog
 
-| Date       | Author       | Change                                          |
-| ---------- | ------------ | ----------------------------------------------- |
-| 2026-02-05 | CTO Analysis | Initial draft                                   |
+| Date       | Author       | Change                                           |
+| ---------- | ------------ | ------------------------------------------------ |
+| 2026-02-05 | CTO Analysis | Initial draft                                    |
 | 2026-02-06 | CTO          | Added Progress Tracking, merged bugfixes to main |
