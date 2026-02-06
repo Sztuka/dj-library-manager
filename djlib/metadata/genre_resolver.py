@@ -106,31 +106,60 @@ _SPECIFIC_GENRE_BOOST = {
     "classic rock": 1.8,
     "progressive rock": 1.8,
     "glam rock": 1.8,
-    # Electronic subgenres
+    "alternative rock": 1.5,
+    "indie rock": 1.5,
+    "new wave": 1.8,
+    # Electronic/House subgenres
     "tech house": 1.5,
     "deep house": 1.5,
     "progressive house": 1.5,
-    "minimal techno": 1.5,
+    "afro house": 1.8,
     "acid house": 1.5,
     "electro house": 1.5,
+    "electro swing": 1.8,
+    # Techno subgenres
     "melodic techno": 1.5,
-    "afro house": 1.5,
+    "minimal techno": 1.5,
+    "hard techno": 1.8,
+    "hardcore": 1.8,
+    # Trance subgenres
+    "trance": 1.5,
+    "psytrance": 1.8,
     # Pop subgenres
     "synth pop": 1.8,
     "electropop": 1.8,
     "dance pop": 1.5,
+    "indie pop": 1.8,
+    "eurodance": 2.0,
+    # Disco variants
     "disco": 1.8,
     "italo disco": 2.0,
     "euro disco": 2.0,
     "nu disco": 1.8,
-    # Other specific genres
+    # Urban/Hip-hop
+    "hip hop": 1.5,
+    "r&b": 1.5,
+    "rnb": 1.5,
+    # Funk/Soul
     "funk": 1.5,
     "soul": 1.5,
-    "r&b": 1.5,
-    "hip hop": 1.5,
+    "blues": 1.5,
+    "swing": 1.8,
+    # Caribbean/Latin
     "reggae": 1.5,
+    "dancehall": 1.8,
     "ska": 1.8,
     "dub": 1.5,
+    "reggaeton": 1.8,
+    "latin": 1.5,
+    "kuduro": 1.8,
+    # Bass music
+    "drum and bass": 1.5,
+    "dnb": 1.5,
+    "breakbeat": 1.5,
+    # World/Regional
+    "afrobeats": 1.8,
+    "balkan": 1.8,
 }
 
 
@@ -220,8 +249,12 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         # Explicit remix indicators - ONLY these make it a remix
         remix_keywords = ["remix", "rework", "bootleg", "dub mix", "vip mix", "vip edit"]
         is_remix = any(kw in version_lower for kw in remix_keywords)
-        # Edge case: "radio edit" contains "edit" but is NOT a remix
-        # Already handled: "edit" alone is not in remix_keywords, only "vip edit"
+        # Producer edits: "X edit" where X is not radio/original/extended/club/single
+        # e.g. "City Boys Edit", "Merchant Edit" should be treated as remixes
+        if not is_remix and "edit" in version_lower:
+            non_remix_edits = ["radio edit", "original edit", "extended edit", "club edit", "single edit", "album edit", "short edit"]
+            if not any(ne in version_lower for ne in non_remix_edits):
+                is_remix = True
     
     scores: Dict[str, float] = {}
     parts: List[Tuple[str, float, Dict[str, float]]] = []
