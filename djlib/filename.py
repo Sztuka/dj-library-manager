@@ -255,6 +255,10 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         # This catches "Title (Remix) - Artist" pattern
         if first_has_version and not second_has_version:
             a, t = t, a  # Swap!
+            # After swap, extract version from parentheses in the title
+            base_t, ver = split_title_and_version(t)
+            if ver:
+                return a, base_t, ver
         
         # 3b) heurystyka: jeśli tytuł kończy się znanym określeniem wersji – wydziel je
         version_markers = [
