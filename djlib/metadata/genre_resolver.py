@@ -357,47 +357,32 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     parts: List[Tuple[str, float, Dict[str, float]]] = []
 
     # =========================================================================
-    # API calls - Sequential execution (requests_cache uses SQLite, not thread-safe)
+    # Sequential API calls (parallelization causes segfaults)
     # 
-    # NOTE: Phase 2 attempted parallel execution with ThreadPoolExecutor, but
-    # requests_cache (used by Last.fm, SoundCloud) has a SQLite backend that
-    # causes sqlite3.ProgrammingError when accessed from multiple threads.
-    # Revert to sequential until we either:
-    # - Switch to thread-safe cache backend (memory/filesystem)
-    # - Use async/await with aiohttp
-    # - Add proper locking around cache access
+    # Attempted parallelization with ThreadPoolExecutor (both SQLite and filesystem
+    # cache backends) resulted in segmentation faults. Root causes:
+    # - Playwright (Beatport token) is not thread-safe
+    # - requests_cache filesystem backend has internal threading issues
+    # - Some native extensions (SSL, regex) don't like multi-threaded access
+    # 
+    # Current approach: Sequential with early exit optimization
+    # 1. Call Beatport first (gold standard for EDM)
+    # 2. If confident EDM match → return immediately (skip other APIs)
+    # 3. Otherwise fetch remaining sources sequentially
     # =========================================================================
     
-    # Fetch Beatport (gold standard for EDM)
+    # Step 1: Fetch Beatport FIRST (gold standard for EDM, enables early exit)
     bp_result = None
     if not disable_beatport:
         bp_result = _fetch_beatport(artist, title, duration_s, version=version)
     
-    # Fetch Last.fm
-    lfm_result = _fetch_lastfm(artist, title)
-    
-    # Fetch SoundCloud
-    sc_result = None
-    if not disable_soundcloud:
-        sc_result = _fetch_soundcloud(artist, title, version)
-    
-    # Fetch MusicBrainz
-    mb_result = None
-    if not disable_mb:
-        mb_result = _fetch_musicbrainz(artist, title, duration_s, mb_recording)
-
-    # =========================================================================
-    # Process Beatport (gold standard for EDM - highest weight)
-    # BOOST: If Beatport returns specific electronic genre, increase weight
-    # =========================================================================
+    # Process Beatport result immediately to check for early exit
     beatport_is_electronic = False
     if bp_result and bp_result.get("genre"):
         bp_w = WEIGHT_BEATPORT_REMIX if is_remix else WEIGHT_BEATPORT_BASE
         local: Dict[str, float] = {}
-        # Beatport returns precise genres like "Techno (Peak Time / Driving)"
         bp_genres = [g.strip() for g in bp_result["genre"].split(",")]
         
-        # Check if Beatport returned a specific electronic genre (not generic Dance/Pop)
         for t in bp_genres:
             if _is_beatport_electronic(t):
                 beatport_is_electronic = True
@@ -409,12 +394,21 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         if local:
             parts.append(("beatport", bp_w, local))
             
-            # PHASE 2.2: Early exit for confident Beatport EDM
-            # If Beatport returns specific EDM genre with high confidence, skip other sources
+            # Early exit for confident Beatport EDM — skip other APIs entirely
             if beatport_is_electronic and len(local) == 1:
-                # Single specific EDM genre from Beatport → return immediately
                 main = list(local.keys())[0]
                 return GenreResolution(main=main, subs=[], confidence=BEATPORT_EARLY_EXIT_CONFIDENCE, breakdown=parts)
+    
+    # Step 2: Fetch secondary sources (sequential — threading causes segfaults)
+    lfm_result = _fetch_lastfm(artist, title)
+    
+    sc_result = None
+    if not disable_soundcloud:
+        sc_result = _fetch_soundcloud(artist, title, version)
+    
+    mb_result = None
+    if not disable_mb:
+        mb_result = _fetch_musicbrainz(artist, title, duration_s, mb_recording)
 
     # =========================================================================
     # Process MusicBrainz

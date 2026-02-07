@@ -41,17 +41,30 @@ Branch: `perf/enrich-phase1`
 - [x] 3.1.1 Add LRU cache to MB Client (`djlib/metadata/mb_client.py`)
 - [x] 3.1.2 Skip MB in genre_resolver for remixes (`djlib/enrich.py`, `genre_resolver.py`)
 
-### Backlog — Phase 2: Parallel Processing (2-3 days)
+### BLOCKED — Phase 2: Parallel Processing (2026-02-07)
 
-- [ ] 3.2.1 Parallel API calls in genre_resolver
-- [ ] 3.2.2 Early exit for Beatport EDM matches
+**Status:** ❌ FAILED — Causes segmentation faults
+
+**Attempted:**
+- [x] 3.2.1 Parallel API calls in genre_resolver (ThreadPoolExecutor) — **SEGFAULTS**
+- [x] 3.2.2 Filesystem cache backend (thread-safe replacement for SQLite) — **NOT ENOUGH**
+- [x] 3.2.3 Early exit for Beatport EDM matches — ✅ **KEPT** (works without threading)
+
+**Conclusion:** ThreadPoolExecutor causes segfaults regardless of cache backend. Root causes:
+- Playwright (Beatport) not thread-safe
+- Some native extensions (SSL, regex, C libs) crash with concurrent access
+- Even with filesystem cache, internal locking in requests library causes issues
+
+**What worked:** Early exit optimization for EDM tracks (skips other APIs when Beatport confident)
+
+**Future option:** Full async rewrite with aiohttp (would require rewriting all HTTP clients)
 
 ### Backlog — Phase 3: Advanced (3-5 days)
 
 - [ ] 3.3.1 SoundCloud query optimization
 - [ ] 3.3.2 Batch MB prefetching
 
-### Done (Bugfixes — merged to main 2026-02-06)
+### Done (Bugfixes — merged to main 2026-02-06/07)
 
 - [x] Fix: SWING genre merged into ROCK_N_ROLL
 - [x] Fix: "mezcla" recognized as version keyword
@@ -577,3 +590,5 @@ DJLIB_DEBUG_MB=1 python -m djlib.cli enrich-online
 | 2026-02-05 | CTO Analysis | Initial draft                                                                         |
 | 2026-02-06 | CTO          | Added Progress Tracking, merged bugfixes to main                                      |
 | 2026-02-06 | CTO          | Phase 2 attempt: ThreadPoolExecutor failed due to requests_cache SQLite thread-safety |
+| 2026-02-07 | CTO          | Phase 2 retry: filesystem cache + ThreadPoolExecutor → segfaults persist              |
+| 2026-02-07 | CTO          | Phase 2 abandoned: reverted to sequential, kept early exit optimization               |
