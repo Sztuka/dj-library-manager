@@ -59,20 +59,31 @@ def _normalize_value(val) -> str:
     return str(val).strip().lower()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def baseline_df() -> pd.DataFrame:
-    """Load the baseline SoT."""
+    """Load the baseline SoT (cached for module)."""
     if not BASELINE_FILE.exists():
         pytest.skip(f"Baseline file not found: {BASELINE_FILE}")
     return pd.read_excel(BASELINE_FILE)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def current_df() -> pd.DataFrame:
-    """Load current enrich results."""
+    """Load current enrich results (cached for module)."""
     if not CURRENT_FILE.exists():
         pytest.skip(f"Current file not found: {CURRENT_FILE}")
     return pd.read_excel(CURRENT_FILE)
+
+
+@pytest.fixture(scope="module")
+def merged_df(baseline_df: pd.DataFrame, current_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge baseline and current DataFrames once for all tests."""
+    return baseline_df.merge(
+        current_df,
+        on=ID_COLUMN,
+        suffixes=("_baseline", "_current"),
+        how="outer",
+    )
 
 
 def test_baseline_exists():
@@ -87,20 +98,17 @@ def test_same_track_count(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
     )
 
 
-def _compare_column(baseline_df: pd.DataFrame, current_df: pd.DataFrame, column: str) -> list:
+def _compare_column(merged_df: pd.DataFrame, column: str) -> list[dict]:
     """Compare a single column between baseline and current, return mismatches."""
-    merged = baseline_df.merge(
-        current_df,
-        on=ID_COLUMN,
-        suffixes=("_baseline", "_current"),
-        how="outer",
-    )
-    
     mismatches = []
     baseline_col = f"{column}_baseline"
     current_col = f"{column}_current"
     
-    for _, row in merged.iterrows():
+    # Skip if columns don't exist
+    if baseline_col not in merged_df.columns or current_col not in merged_df.columns:
+        return []
+    
+    for _, row in merged_df.iterrows():
         file_path = row[ID_COLUMN]
         
         baseline_val = row.get(baseline_col)
@@ -120,81 +128,25 @@ def _compare_column(baseline_df: pd.DataFrame, current_df: pd.DataFrame, column:
     return mismatches
 
 
-def test_genre_results_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify final genre results match baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "genre")
+# Critical columns that get individual tests for clearer CI output
+CRITICAL_COLUMNS = [
+    ("genre", "Genre"),
+    ("year", "Year"),
+    ("genres_beatport", "Beatport"),
+    ("genres_musicbrainz", "MusicBrainz"),
+    ("genres_lastfm", "Last.fm"),
+    ("genres_soundcloud", "SoundCloud"),
+    ("genre_suggest", "genre_suggest"),
+    ("meta_source", "meta_source"),
+]
+
+
+@pytest.mark.parametrize("column,label", CRITICAL_COLUMNS)
+def test_enrich_column_match(merged_df: pd.DataFrame, column: str, label: str):
+    """Verify enrich column matches baseline (parametrized)."""
+    mismatches = _compare_column(merged_df, column)
     if mismatches:
-        msg = "Genre mismatches:\n"
-        for m in mismatches:
-            msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
-        pytest.fail(msg)
-
-
-def test_year_results_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify year results match baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "year")
-    if mismatches:
-        msg = "Year mismatches:\n"
-        for m in mismatches:
-            msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
-        pytest.fail(msg)
-
-
-def test_beatport_results_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify Beatport source results match baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "genres_beatport")
-    if mismatches:
-        msg = "Beatport mismatches:\n"
-        for m in mismatches:
-            msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
-        pytest.fail(msg)
-
-
-def test_musicbrainz_results_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify MusicBrainz source results match baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "genres_musicbrainz")
-    if mismatches:
-        msg = "MusicBrainz mismatches:\n"
-        for m in mismatches:
-            msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
-        pytest.fail(msg)
-
-
-def test_lastfm_results_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify Last.fm source results match baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "genres_lastfm")
-    if mismatches:
-        msg = "Last.fm mismatches:\n"
-        for m in mismatches:
-            msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
-        pytest.fail(msg)
-
-
-def test_soundcloud_results_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify SoundCloud source results match baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "genres_soundcloud")
-    if mismatches:
-        msg = "SoundCloud mismatches:\n"
-        for m in mismatches:
-            msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
-        pytest.fail(msg)
-
-
-def test_genre_suggest_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify genre_suggest (combined) matches baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "genre_suggest")
-    if mismatches:
-        msg = "genre_suggest mismatches:\n"
-        for m in mismatches:
-            msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
-        pytest.fail(msg)
-
-
-def test_meta_source_match(baseline_df: pd.DataFrame, current_df: pd.DataFrame):
-    """Verify meta_source matches baseline."""
-    mismatches = _compare_column(baseline_df, current_df, "meta_source")
-    if mismatches:
-        msg = "meta_source mismatches:\n"
+        msg = f"{label} mismatches:\n"
         for m in mismatches:
             msg += f"  {m['file']}: '{m['baseline']}' → '{m['current']}'\n"
         pytest.fail(msg)
