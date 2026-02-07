@@ -29,8 +29,9 @@ def _norm(s: str) -> str:
 
 
 def _extract_primary_remixer(version: str) -> str:
-    """Extract main remixer name from version string.
+    """Extract main remixer name from version string (max 2 words to keep queries short).
     'Merchant vs Vidojean & Oliver Loenn City Boys Edit' -> 'Merchant'
+    'Blue Purple Afro House Remix' -> 'Blue Purple'
     'Audien Remix' -> 'Audien'
     """
     if not version:
@@ -41,9 +42,11 @@ def _extract_primary_remixer(version: str) -> str:
             version = version.split(sep)[0].strip()
             break
     # Remove common version keywords to get just the name
-    for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix"]:
+    for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix", "house", "afro"]:
         version = re.sub(rf"\b{kw}\b", "", version, flags=re.IGNORECASE)
-    return version.strip()
+    # Limit to first 2 words (longer names cause 403 errors)
+    words = version.split()[:2]
+    return " ".join(words).strip()
 
 
 def _clean_for_query(s: str) -> str:
