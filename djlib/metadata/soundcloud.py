@@ -63,11 +63,11 @@ def _clean_for_query(s: str) -> str:
 def _candidate_queries(artist: str, title: str, version: str, max_queries: int = 2) -> List[str]:
     """Generate query list for SoundCloud search.
     
-    Uses FULL remixer names for precision. Rate-limit 403s are handled by retry logic.
+    Uses remixer names for precision. Rate-limit 403s are handled by retry logic.
     
     For remixes/mashups:
-      1. full_remixer + title (most precise)
-      2. full_remixer + artist (fallback)
+      1. remixer + title (most precise)
+      2. remixer + artist (fallback)
     For originals:
       1. artist + title
     """
@@ -78,23 +78,28 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
     clean_title = _clean_for_query(title)
     
     if version:
-        # Full remixer: clean but keep full name for precision
-        full_remixer = version
-        for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix", "mashup"]:
-            full_remixer = re.sub(rf"\b{kw}\b", "", full_remixer, flags=re.IGNORECASE)
-        full_remixer = re.sub(r'\s+', ' ', full_remixer).strip()
+        # Extract remixer name: remove keywords AND genre names that hurt search precision
+        remixer = version
+        # Remove version type keywords
+        for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix", "mashup", "extended", "radio", "club", "vip", "dub"]:
+            remixer = re.sub(rf"\b{kw}\b", "", remixer, flags=re.IGNORECASE)
+        # Remove genre names that appear in version strings (e.g., "Blue Purple Afro House Remix")
+        # These words hurt SoundCloud search precision
+        for genre in ["afro house", "tech house", "deep house", "house", "techno", "trance", "dnb", "drum and bass"]:
+            remixer = re.sub(rf"\b{genre}\b", "", remixer, flags=re.IGNORECASE)
+        remixer = re.sub(r'\s+', ' ', remixer).strip()
         
         # Strategy 1: remixer + title (most precise)
-        if full_remixer and clean_title:
-            queries.append(f"{full_remixer} {clean_title}".strip())
+        if remixer and clean_title:
+            queries.append(f"{remixer} {clean_title}".strip())
         
         # Strategy 2: remixer + artist
         is_mashup = "mashup" in (version or "").lower()
-        if full_remixer and clean_artist:
+        if remixer and clean_artist:
             if is_mashup:
-                queries.append(f"{full_remixer} {clean_artist} mashup".strip())
+                queries.append(f"{remixer} {clean_artist} mashup".strip())
             else:
-                queries.append(f"{full_remixer} {clean_artist}".strip())
+                queries.append(f"{remixer} {clean_artist}".strip())
     else:
         # For originals: artist + title
         if clean_artist and clean_title:
