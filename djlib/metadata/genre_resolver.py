@@ -418,7 +418,16 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
                 return GenreResolution(main=main, subs=[], confidence=BEATPORT_EARLY_EXIT_CONFIDENCE, breakdown=parts)
     
     # Step 2: Fetch secondary sources (sequential — threading causes segfaults)
-    lfm_result = _fetch_lastfm(artist, title)
+    
+    # For remixes without Beatport match: SKIP MB and LFM entirely
+    # Reason: MB/LFM will find the ORIGINAL track (e.g., "hip hop" for 50 Cent)
+    # but the remix might be a completely different genre (e.g., "afro house")
+    # Only SoundCloud can find remix-specific genre tags
+    skip_mb_lfm_for_remix = is_remix and not bp_result
+    
+    lfm_result = None
+    if not skip_mb_lfm_for_remix:
+        lfm_result = _fetch_lastfm(artist, title)
     
     # SoundCloud: only for remixes (it's slow and mostly useful for remix-specific tags)
     # For originals, Beatport + Last.fm + MB provide sufficient coverage
@@ -427,7 +436,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         sc_result = _fetch_soundcloud(artist, title, version)
     
     mb_result = None
-    if not disable_mb:
+    if not disable_mb and not skip_mb_lfm_for_remix:
         mb_result = _fetch_musicbrainz(artist, title, duration_s, mb_recording)
 
     # =========================================================================
