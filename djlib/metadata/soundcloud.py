@@ -112,6 +112,14 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
         "drill", "afro", "dancehall", "reggaeton", "dnb", "drumstep", "jungle",
     }
 
+    # Words that indicate title/lyric fragments (not genres)
+    title_indicator_words = {
+        "you", "me", "i", "my", "your", "we", "us", "the", "a", "an", "is", "are", "was", 
+        "were", "be", "been", "am", "can", "could", "would", "should", "will", "do", "does",
+        "did", "have", "has", "had", "way", "like", "love", "miss", "want", "need", "know",
+        "feel", "tell", "say", "see", "look", "time", "full", "version", "song"
+    }
+
     def _keep_token(t: str) -> bool:
         if not t:
             return False
@@ -122,8 +130,14 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
         # remove plain years
         if re.fullmatch(r"20[0-3][0-9]", t):
             return False
-        # keep multi-word phrases (e.g., 'afro house', 'tech house')
+        # For multi-word phrases: check if it looks like a genre vs title fragment
         if " " in t:
+            words = set(t.split())
+            # Reject if >50% of words are title/lyric indicators
+            title_word_count = len(words & title_indicator_words)
+            if title_word_count > len(words) * 0.5:
+                return False
+            # Accept confirmed genre phrases
             return True
         # keep only certain singletons
         if t in allow_single:

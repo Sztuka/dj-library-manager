@@ -6,5 +6,8 @@
   "python.analysis.autoImportCompletions": true,
   "python-envs.pythonProjects": [],
   "cursorpyright.analysis.autoImportCompletions": true,
-  "cursorpyright.analysis.typeCheckingMode": "basic"
+  "cursorpyright.analysis.typeCheckingMode": "basic",
+  "chat.tools.terminal.autoApprove": {
+    "git add": true
+  }
 }

@@ -54,6 +54,11 @@ _NOISE_TERMS = {
     "viral", "trending", "new", "new music", "summer mix", "summer", "remixes", "mix",
     # project-specific: do not use 'folk indie' at all
     "folk indie",
+    # geographic locations (not genres)
+    "puerto rico", "puerto rican", "jamaica", "jamaica dancehall",
+    "united states", "usa", "uk", "united kingdom", "brazil", "brasil",
+    # garbage/noise tokens from MB/LFM
+    "merge", "various", "compilation", "soundtrack", "ost",
 }
 
 # Pre-compiled regex patterns for noise detection

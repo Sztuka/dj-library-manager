@@ -46,11 +46,13 @@ Branch: `perf/enrich-phase1`
 **Status:** ❌ FAILED — Causes segmentation faults
 
 **Attempted:**
+
 - [x] 3.2.1 Parallel API calls in genre_resolver (ThreadPoolExecutor) — **SEGFAULTS**
 - [x] 3.2.2 Filesystem cache backend (thread-safe replacement for SQLite) — **NOT ENOUGH**
 - [x] 3.2.3 Early exit for Beatport EDM matches — ✅ **KEPT** (works without threading)
 
 **Conclusion:** ThreadPoolExecutor causes segfaults regardless of cache backend. Root causes:
+
 - Playwright (Beatport) not thread-safe
 - Some native extensions (SSL, regex, C libs) crash with concurrent access
 - Even with filesystem cache, internal locking in requests library causes issues
