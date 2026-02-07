@@ -1,8 +1,9 @@
 from __future__ import annotations
 import logging
 import math
+import re
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ ALIASES = {
 
 
 def canonical(tag: str) -> str:
+    """Normalize and resolve aliases for a genre tag."""
     t = _norm(tag)
     return ALIASES.get(t, t)
 
@@ -54,9 +56,14 @@ _NOISE_TERMS = {
     "folk indie",
 }
 
-import re as _re
+# Pre-compiled regex patterns for noise detection
+_RE_WOCHEN = re.compile(r"\b\d+\s*[–-]?\s*\d*\s*wochen\b")
+_RE_YEAR_ONLY = re.compile(r"20[0-3][0-9]$")
+_RE_CONTAINS_YEAR = re.compile(r"20[0-3][0-9]")
+
 
 def _is_noise(tag: str) -> bool:
+    """Return True if tag is a non-genre noise term (charts, dates, etc.)."""
     t = _norm(tag)
     if not t:
         return True
@@ -66,15 +73,15 @@ def _is_noise(tag: str) -> bool:
     if "." in t and not t.replace(".", "").isalpha():
         return True
     # '1–4 wochen' / '1-4 wochen' etc.
-    if _re.search(r"\b\d+\s*[–-]?\s*\d*\s*wochen\b", t):
+    if _RE_WOCHEN.search(t):
         return True
     # very short or purely numeric
     if len(t) <= 2 or t.isdigit():
         return True
     # Year-only tags (2023, 2024, etc.) or tokens ending with year markers
-    if _re.fullmatch(r"20[0-3][0-9]", t):
+    if _RE_YEAR_ONLY.match(t):
         return True
-    if _re.search(r"20[0-3][0-9]", t) and len(t.split()) == 1:
+    if _RE_CONTAINS_YEAR.search(t) and len(t.split()) == 1:
         return True
     return False
 
@@ -209,7 +216,7 @@ WEIGHT_LASTFM_REMIX = 0.5
 WEIGHT_MB_BASE = 3.0
 WEIGHT_MB_REMIX = 1.5
 WEIGHT_SC_BASE = 2.0
-WEIGHT_SC_REMIX = 20.0
+WEIGHT_SC_REMIX = 20.0  # High for remixes: SC often has remix-specific genre tags
 
 
 def _is_beatport_electronic(genre: str) -> bool:
@@ -306,6 +313,14 @@ def _score_tag(tag: str, base_weight: float, scores: Dict[str, float], local: Di
 # If Beatport returns specific EDM genre, skip other sources (they're less reliable for EDM)
 BEATPORT_EARLY_EXIT_CONFIDENCE = 0.8
 
+# Keywords that indicate a TRUE remix (another artist reworked the track)
+_REMIX_KEYWORDS = frozenset(["remix", "rework", "bootleg", "dub mix", "vip mix", "vip edit"])
+# Edit types that are NOT remixes (same artist, different version)
+_NON_REMIX_EDITS = frozenset([
+    "radio edit", "original edit", "extended edit", "club edit", 
+    "single edit", "album edit", "short edit"
+])
+
 
 @dataclass
 class GenreResolution:
@@ -338,19 +353,16 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         return None
 
     # Detect if this is a TRUE remix (another artist/producer reworked it)
-    # INVERTED LOGIC: Default is NOT remix. Only explicit remix keywords make it a remix.
+    # Default is NOT remix. Only explicit remix keywords make it a remix.
     # This prevents "(Hear Me Tonight)", "(Remastered)", "(Version 1)" from being treated as remixes.
     is_remix = False
     version_lower = (version or "").strip().lower()
     if version_lower:
-        # Explicit remix indicators - ONLY these make it a remix
-        remix_keywords = ["remix", "rework", "bootleg", "dub mix", "vip mix", "vip edit"]
-        is_remix = any(kw in version_lower for kw in remix_keywords)
+        is_remix = any(kw in version_lower for kw in _REMIX_KEYWORDS)
         # Producer edits: "X edit" where X is not radio/original/extended/club/single
         # e.g. "City Boys Edit", "Merchant Edit" should be treated as remixes
         if not is_remix and "edit" in version_lower:
-            non_remix_edits = ["radio edit", "original edit", "extended edit", "club edit", "single edit", "album edit", "short edit"]
-            if not any(ne in version_lower for ne in non_remix_edits):
+            if not any(ne in version_lower for ne in _NON_REMIX_EDITS):
                 is_remix = True
     
     scores: Dict[str, float] = {}
@@ -380,7 +392,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     beatport_is_electronic = False
     if bp_result and bp_result.get("genre"):
         bp_w = WEIGHT_BEATPORT_REMIX if is_remix else WEIGHT_BEATPORT_BASE
-        local: Dict[str, float] = {}
+        bp_local: Dict[str, float] = {}
         bp_genres = [g.strip() for g in bp_result["genre"].split(",")]
         
         for t in bp_genres:
@@ -390,13 +402,14 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
                 break
         
         for t in bp_genres:
-            _score_tag(t, bp_w, scores, local)
-        if local:
-            parts.append(("beatport", bp_w, local))
+            _score_tag(t, bp_w, scores, bp_local)
+        if bp_local:
+            parts.append(("beatport", bp_w, bp_local))
             
-            # Early exit for confident Beatport EDM — skip other APIs entirely
-            if beatport_is_electronic and len(local) == 1:
-                main = list(local.keys())[0]
+            # Early exit: single specific EDM genre from Beatport → trust it completely
+            # (Beatport is authoritative for electronic music; other sources add noise)
+            if beatport_is_electronic and len(bp_local) == 1:
+                main = list(bp_local.keys())[0]
                 return GenreResolution(main=main, subs=[], confidence=BEATPORT_EARLY_EXIT_CONFIDENCE, breakdown=parts)
     
     # Step 2: Fetch secondary sources (sequential — threading causes segfaults)
@@ -415,11 +428,11 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # =========================================================================
     if mb_result:
         mb_w = WEIGHT_MB_REMIX if is_remix else WEIGHT_MB_BASE
-        local: Dict[str, float] = {}
+        mb_local: Dict[str, float] = {}
         for t in mb_result:
-            _score_tag(t, mb_w, scores, local)
-        if local:
-            parts.append(("musicbrainz", mb_w, local))
+            _score_tag(t, mb_w, scores, mb_local)
+        if mb_local:
+            parts.append(("musicbrainz", mb_w, mb_local))
 
     # =========================================================================
     # Process Last.fm (stronger influence to reflect community tags importance)
@@ -433,7 +446,7 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
         lfm_w = WEIGHT_LASTFM_BASE
     
     if lfm_result:
-        local: Dict[str, float] = {}
+        lfm_local: Dict[str, float] = {}
         # weight by log(count), scale with lfm_w
         for name, cnt in lfm_result:
             base = (math.log(max(cnt, 1)) if cnt > 0 else 0.0) * lfm_w
@@ -445,20 +458,20 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
             if w <= 0:
                 continue
             scores[c] = scores.get(c, 0.0) + w
-            local[c] = local.get(c, 0.0) + w
-        if local:
-            parts.append(("lastfm", lfm_w, local))
+            lfm_local[c] = lfm_local.get(c, 0.0) + w
+        if lfm_local:
+            parts.append(("lastfm", lfm_w, lfm_local))
 
     # =========================================================================
     # Process SoundCloud (light weight for originals, higher for remixes)
     # =========================================================================
     if sc_result and sc_result.get("tags"):
         sc_w = WEIGHT_SC_REMIX if is_remix else WEIGHT_SC_BASE
-        local: Dict[str, float] = {}
+        sc_local: Dict[str, float] = {}
         for name in sc_result["tags"]:
-            _score_tag(name, sc_w, scores, local)
-        if local:
-            parts.append(("soundcloud", sc_w, local))
+            _score_tag(name, sc_w, scores, sc_local)
+        if sc_local:
+            parts.append(("soundcloud", sc_w, sc_local))
 
     if not scores:
         return None
