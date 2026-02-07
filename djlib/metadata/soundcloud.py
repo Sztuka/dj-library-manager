@@ -48,8 +48,11 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
         max_queries: Maximum number of queries to return (default: 2 for performance)
     
     Returns up to max_queries most effective queries:
-    1. artist + primary_remixer (best for edits/remixes)
-    2. base query (artist + title) as fallback
+    For remixes (version provided):
+      1. title + primary_remixer (most specific, best match)
+      2. artist + primary_remixer (fallback)
+    For originals:
+      1. artist + title
     """
     base = f"{artist} {title}".strip()
     if not base:
@@ -59,19 +62,22 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
     # Extract primary remixer for shorter queries (avoid 403 on long queries)
     primary_remixer = _extract_primary_remixer(version)
     
-    # Strategy 1: artist + primary_remixer (short, most effective for remixes)
-    # e.g., "Bastille Merchant" finds "bastille - pompeii (merchant edit)"
-    if primary_remixer and artist:
-        queries.append(f"{artist} {primary_remixer}".strip())
-    
-    # Strategy 2: base query (finds original or matches title)
-    queries.append(base)
-    
-    # Strategy 3: artist + title + primary_remixer (more specific, if space)
-    if primary_remixer and len(queries) < max_queries:
-        full_remix = f"{base} {primary_remixer}".strip()
-        if full_remix not in queries:
-            queries.append(full_remix)
+    if primary_remixer:
+        # For remixes: prioritize queries WITH remixer name
+        # Avoids mixing tags from different remixes of same original
+        
+        # Strategy 1: title + remixer (most specific)
+        # e.g., "Djadja Vidojean" finds "Djadja (Vidojean X Oliver Loenn Remix)"
+        if title:
+            queries.append(f"{title} {primary_remixer}".strip())
+        
+        # Strategy 2: artist + remixer (fallback)
+        # e.g., "Aya Nakamura Vidojean" 
+        if artist:
+            queries.append(f"{artist} {primary_remixer}".strip())
+    else:
+        # For originals: just artist + title
+        queries.append(base)
     
     # de-dup preserve order, limit to max_queries
     seen = set()
@@ -109,7 +115,7 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     allow_single = {
         "house", "techno", "trance", "electronic", "edm", "garage", "dubstep", "amapiano",
         "breaks", "breakbeat", "disco", "funk", "soul", "hiphop", "hip-hop", "hip",
-        "drill", "afro", "dancehall", "reggaeton", "dnb", "drumstep", "jungle",
+        "drill", "afro", "afrohouse", "dancehall", "reggaeton", "dnb", "drumstep", "jungle",
     }
 
     # Words that indicate title/lyric fragments (not genres)
@@ -151,9 +157,18 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
         toks: List[str] = []
         genre = item.get("genre") or ""
         if genre:
-            normg = _norm(genre)
-            if _keep_token(normg):
-                toks.append(normg)
+            # Handle hashtag-separated genres like "#afrohouse #afro #house"
+            if "#" in genre:
+                for part in genre.split("#"):
+                    part = part.strip()
+                    if part:
+                        normg = _norm(part)
+                        if _keep_token(normg):
+                            toks.append(normg)
+            else:
+                normg = _norm(genre)
+                if _keep_token(normg):
+                    toks.append(normg)
         tag_list = item.get("tag_list") or ""
         if tag_list:
             quoted = re.findall(r'"([^\"]+)"', tag_list)
@@ -195,11 +210,21 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
             if r.status_code != 200:
                 continue
             data = r.json() or {}
-            coll = (data.get("collection") or [])[:3]
+            coll = data.get("collection") or []
+            
+            # Filter results: skip mixes/sets (duration > 10 min)
+            count = 0
             for item in coll:
+                duration_s = (item.get("duration") or 0) // 1000
+                if duration_s > 600:  # Skip mixes > 10 min
+                    continue
                 collected.extend(_extract_from_item(item))
-            # Early exit if we already captured strong afro/house tokens
-            if any(t in collected for t in ["afro house", "afro tech", "tech house", "house"]):
+                count += 1
+                if count >= 3:  # Top 3 per query
+                    break
+            
+            # Early exit if we already captured strong genre tokens
+            if any(t in collected for t in ["afro house", "afro tech", "tech house", "house", "afrohouse"]):
                 break
     # de-dup preserve order
         seen = set()
