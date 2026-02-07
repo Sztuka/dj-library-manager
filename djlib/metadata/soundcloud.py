@@ -16,47 +16,11 @@ _DEF_TIMEOUT = 10
 _CLIENT_ID_CACHE_PATH = Path.home() / ".djlib" / "soundcloud_client_id.json"
 _CLIENT_ID_CACHE_DAYS = 30  # SoundCloud client_id typically valid for ~30 days
 
-_REMIX_KEYWORDS = (
-    "remix", "bootleg", "rework", "refix", "flip", "vip", "mashup", "re-edit", "re edit", "edit"
-)
-_GENERIC_VERSION_WORDS = {
-    "extended", "radio", "original", "mix", "edit", "version", "club", "dub", "instrumental",
-    "clean", "dirty", "album", "single", "main mix"
-}
-
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = s.replace("_", " ")
     s = re.sub(r"\s+", " ", s)
     return s
-
-def _split_version_segments(text: str) -> List[str]:
-    if not text:
-        return []
-    normalized = re.sub(r"[()\[\]{}]+", ",", text)
-    parts = [seg.strip() for seg in re.split(r"[,/|]+", normalized) if seg.strip()]
-    return parts
-
-
-def _focus_version_tokens(title: str, version: str) -> List[str]:
-    segments = []
-    segments.extend(_split_version_segments(version))
-    # also collect from parentheses in title if version missing
-    if title:
-        segments.extend(_split_version_segments(title))
-    tokens: List[str] = []
-    seen = set()
-    for seg in segments:
-        lower = seg.lower()
-        if not any(kw in lower for kw in _REMIX_KEYWORDS):
-            continue
-        # drop if it's only a generic descriptor without remixer name
-        if all(word in _GENERIC_VERSION_WORDS for word in lower.split()):
-            continue
-        if lower not in seen:
-            tokens.append(seg)
-            seen.add(lower)
-    return tokens
 
 
 def _extract_primary_remixer(version: str) -> str:
@@ -116,12 +80,11 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
 
 @lru_cache(maxsize=1000)
 def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optional[List[str]]:
-    """Public SoundCloud search – multi-query strategy collecting genre + tag_list tokens.
+    """Public SoundCloud search – optimized 2-query strategy for genre/tag extraction.
 
-    Queries (stop early if we already have strong tokens like 'afro house'):
-      1) artist + title (+ version if given)
-      2) artist + title + 'remix'
-      3) artist + title + 'extended edit'
+    Queries (limited to 2 for performance):
+      1) artist + primary_remixer (best for finding remixes)
+      2) artist + title (fallback)
 
     For each query we take up to top 3 results, merge tokens and filter noise.
     Noise: generic buzz (new, trending, viral, remix(es) duplicates, year tags).
