@@ -57,11 +57,9 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
       1. title + primary_remixer (most specific, best match)
       2. artist + primary_remixer (fallback)
     For originals:
-      1. artist + title
+      1. Short combined query (first artist word + first title words)
+      2. Full combined if short enough
     """
-    base = f"{artist} {title}".strip()
-    if not base:
-        return []
     queries: List[str] = []
     
     # Extract primary remixer for shorter queries (avoid 403 on long queries)
@@ -81,8 +79,35 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
         if artist:
             queries.append(f"{artist} {primary_remixer}".strip())
     else:
-        # For originals: just artist + title
-        queries.append(base)
+        # For originals: build short, effective queries
+        # Long queries often fail with 403 or return poor results
+        
+        # Clean up artist and title - remove special chars, extract key words
+        import re
+        def _clean_for_query(s: str) -> str:
+            # Remove parentheses content, x/&/feat separators, clean up
+            s = re.sub(r'\([^)]*\)', '', s)  # Remove (...)
+            s = re.sub(r'\[[^\]]*\]', '', s)  # Remove [...]
+            s = re.sub(r'\s+x\s+', ' ', s, flags=re.IGNORECASE)  # "A x B" -> "A B"
+            s = re.sub(r'\s*[,&]\s*', ' ', s)  # "A, B" or "A & B" -> "A B"
+            s = re.sub(r'\s+', ' ', s).strip()
+            return s
+        
+        clean_artist = _clean_for_query(artist or "")
+        clean_title = _clean_for_query(title or "")
+        
+        # Strategy: first 2 artist words + first 3 title words (compact but specific)
+        artist_words = clean_artist.split()[:2]
+        title_words = clean_title.split()[:3]
+        
+        short_query = " ".join(artist_words + title_words).strip()
+        if short_query:
+            queries.append(short_query)
+        
+        # Fallback: full artist + title if reasonably short
+        full_query = f"{clean_artist} {clean_title}".strip()
+        if full_query and len(full_query) <= 60 and full_query != short_query:
+            queries.append(full_query)
     
     # de-dup preserve order, limit to max_queries
     seen = set()
