@@ -379,9 +379,14 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
     global _REFRESHING
     global _TOKEN_IN_MEMORY
 
-    # Fast path: in-process token already loaded
-    if _TOKEN_IN_MEMORY:
+    # Fast path: in-process token already loaded AND still valid
+    # Skip if force_refresh requested (e.g., after 401)
+    if not force_refresh and _TOKEN_IN_MEMORY and _is_token_valid(_TOKEN_IN_MEMORY):
         return _TOKEN_IN_MEMORY
+    
+    # Clear in-memory cache if forcing refresh or token expired
+    if force_refresh or (_TOKEN_IN_MEMORY and not _is_token_valid(_TOKEN_IN_MEMORY)):
+        _TOKEN_IN_MEMORY = None
     
     # Try cached token first
     token = _load_cached_token()
