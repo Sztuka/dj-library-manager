@@ -46,57 +46,69 @@ def _extract_primary_remixer(version: str) -> str:
     return version.strip()
 
 
+def _clean_for_query(s: str) -> str:
+    """Clean string for SoundCloud query - remove special chars, normalize spaces."""
+    # Remove parentheses content, x/&/feat separators, clean up
+    s = re.sub(r'\([^)]*\)', '', s or "")  # Remove (...)
+    s = re.sub(r'\[[^\]]*\]', '', s)  # Remove [...]
+    s = re.sub(r'\s+x\s+', ' ', s, flags=re.IGNORECASE)  # "A x B" -> "A B"
+    s = re.sub(r'\s*[,&]\s*', ' ', s)  # "A, B" or "A & B" -> "A B"
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 def _candidate_queries(artist: str, title: str, version: str, max_queries: int = 2) -> List[str]:
     """Generate optimized query list for SoundCloud search.
     
     Args:
         max_queries: Maximum number of queries to return (default: 2 for performance)
     
-    Returns up to max_queries most effective queries:
-    For remixes (version provided):
-      1. title + primary_remixer (most specific, best match)
-      2. artist + primary_remixer (fallback)
+    Returns up to max_queries most effective queries.
+    All queries are kept SHORT to avoid 403 errors from SoundCloud.
+    
+    For remixes/mashups (version provided):
+      1. remixer + first 2-3 title words (most specific)
+      2. remixer + first artist word (fallback)
     For originals:
       1. Short combined query (first artist word + first title words)
-      2. Full combined if short enough
+      2. Full combined if reasonably short
     """
     queries: List[str] = []
     
     # Extract primary remixer for shorter queries (avoid 403 on long queries)
     primary_remixer = _extract_primary_remixer(version)
     
+    # Clean inputs - remove X, &, parens
+    clean_artist = _clean_for_query(artist)
+    clean_title = _clean_for_query(title)
+    
     if primary_remixer:
         # For remixes: prioritize queries WITH remixer name
         # Avoids mixing tags from different remixes of same original
+        # Keep queries SHORT - use first few words only
         
-        # Strategy 1: title + remixer (most specific)
-        # e.g., "Djadja Vidojean" finds "Djadja (Vidojean X Oliver Loenn Remix)"
-        if title:
-            queries.append(f"{title} {primary_remixer}".strip())
+        title_words = clean_title.split()[:3]  # First 3 words of title
+        artist_words = clean_artist.split()[:1]  # First word of artist
         
-        # Strategy 2: artist + remixer (fallback)
-        # e.g., "Aya Nakamura Vidojean" 
-        if artist:
-            queries.append(f"{artist} {primary_remixer}".strip())
+        # Strategy 1: remixer + title words (most specific)
+        # e.g., "Vidojean Enjoy The Silence" finds afro house remix
+        if title_words:
+            query1 = f"{primary_remixer} {' '.join(title_words)}".strip()
+            queries.append(query1)
+        
+        # Strategy 2: remixer + artist + "mashup" if it's a mashup
+        # e.g., "Vidojean Alesso mashup" 
+        is_mashup = "mashup" in (version or "").lower()
+        if artist_words:
+            if is_mashup:
+                query2 = f"{primary_remixer} {' '.join(artist_words)} mashup".strip()
+            else:
+                query2 = f"{primary_remixer} {' '.join(artist_words)}".strip()
+            queries.append(query2)
     else:
         # For originals: build short, effective queries
         # Long queries often fail with 403 or return poor results
         
-        # Clean up artist and title - remove special chars, extract key words
-        import re
-        def _clean_for_query(s: str) -> str:
-            # Remove parentheses content, x/&/feat separators, clean up
-            s = re.sub(r'\([^)]*\)', '', s)  # Remove (...)
-            s = re.sub(r'\[[^\]]*\]', '', s)  # Remove [...]
-            s = re.sub(r'\s+x\s+', ' ', s, flags=re.IGNORECASE)  # "A x B" -> "A B"
-            s = re.sub(r'\s*[,&]\s*', ' ', s)  # "A, B" or "A & B" -> "A B"
-            s = re.sub(r'\s+', ' ', s).strip()
-            return s
-        
-        clean_artist = _clean_for_query(artist or "")
-        clean_title = _clean_for_query(title or "")
-        
-        # Strategy: first 2 artist words + first 3 title words (compact but specific)
         artist_words = clean_artist.split()[:2]
         title_words = clean_title.split()[:3]
         
