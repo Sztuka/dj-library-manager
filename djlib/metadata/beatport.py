@@ -644,6 +644,11 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None, vers
             # No matching artist found in Beatport results
             return None
         
+        # If we're searching for a remix but found only original, reject match
+        # This prevents returning "Hip-Hop" for an Afro House remix
+        if version and best_version_score == 0:
+            return None
+        
         # Extract metadata
         genre = best_match.get("genre", {}).get("name", "")
         sub_genre = best_match.get("sub_genre")
