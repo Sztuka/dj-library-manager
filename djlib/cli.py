@@ -230,37 +230,21 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "last_file": "",
         }
     )
+    
+    # Batch status writes to reduce disk I/O (every N files instead of every file)
+    _STATUS_BATCH_SIZE = 10
+    _last_status_write = 0
 
     new_rows: List[Dict[str, str]] = []
     for p in all_files:
         # Skip if file path already in staging or library (prevents duplicates when tags change)
         if str(p) in known_paths:
             processed += 1
-            _write_status(
-                {
-                    "state": "running",
-                    "total": total,
-                    "processed": processed,
-                    "added": added,
-                    "errors": errors,
-                    "last_file": str(p),
-                }
-            )
             continue
         
         fhash = file_sha256(p)
         if fhash in known_hashes:
             processed += 1
-            _write_status(
-                {
-                    "state": "running",
-                    "total": total,
-                    "processed": processed,
-                    "added": added,
-                    "errors": errors,
-                    "last_file": str(p),
-                }
-            )
             continue
 
         tags = read_tags(p)
@@ -391,23 +375,27 @@ def cmd_scan(args: argparse.Namespace) -> None:
             known_fps.add(fp)
         added += 1
         processed += 1
-        _write_status(
-            {
-                "state": "running",
-                "total": total,
-                "processed": processed,
-                "added": added,
-                "errors": errors,
-                "last_file": str(p),
-                "missing_fpcalc": missing_fpcalc,
-            }
-        )
+        
+        # Write status periodically (every N files) to reduce disk I/O
+        if processed - _last_status_write >= _STATUS_BATCH_SIZE:
+            _last_status_write = processed
+            _write_status(
+                {
+                    "state": "running",
+                    "total": total,
+                    "processed": processed,
+                    "added": added,
+                    "errors": errors,
+                    "last_file": str(p),
+                    "missing_fpcalc": missing_fpcalc,
+                }
+            )
 
     if new_rows:
         _save_unsorted(staging_rows)
-        print(f"Zeskanowano {len(new_rows)} plików. Zapisano {UNSORTED_XLSX}.")
+        print(f"Scanned {len(new_rows)} files. Saved to {UNSORTED_XLSX}.")
     else:
-        print("Brak nowych plików do dodania.")
+        print("No new files to add.")
 
     _write_status(
         {
@@ -2198,25 +2186,42 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 raise FileNotFoundError(f"library.csv not found: {CSV_PATH}")
         print(f"   Continuing with existing library.csv...")
     
+    # --- OPTIMIZATION: Cache UNSORTED scan for all recovery steps ---
+    # Single scan replaces 3 separate rglob scans (Step 1.5a, 1.5b, 1.5c)
+    from djlib.djlib_tags import read_djlib_tags, has_djlib_tags
+    from djlib.config import load_config
+    import csv
+    
+    cfg = load_config()
+    unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
+    
+    # Pre-scan UNSORTED (once, not 3 times)
+    _unsorted_audio_files: list[Path] = []
+    _unsorted_file_tags: dict[Path, dict] = {}  # file → djlib_tags
+    
+    if unsorted_path.exists():
+        print("📂 Scanning UNSORTED folder (single pass for all recovery steps)...")
+        for audio_file in unsorted_path.rglob('*'):
+            if audio_file.suffix.lower() in AUDIO_EXTS:
+                _unsorted_audio_files.append(audio_file)
+                try:
+                    _unsorted_file_tags[audio_file] = read_djlib_tags(audio_file)
+                except Exception:
+                    _unsorted_file_tags[audio_file] = {}
+        print(f"   Found {len(_unsorted_audio_files)} audio files")
+    
     # Step 1.5a: Track ID reconciliation - find moved files by their DJLIB_TRACK_ID tag
     print()
     print("=" * 60)
     print("STEP 1.5a: TRACK ID RECONCILIATION")
     print("=" * 60)
     print()
-    print("Scanning UNSORTED for files with DJLIB_TRACK_ID tags...")
+    print("Looking for files with DJLIB_TRACK_ID tags...")
     print("(This finds files that were tagged before being moved)")
     print()
     
     try:
-        from djlib.djlib_tags import read_djlib_tags
-        from djlib.config import load_config
-        import csv
-        
-        cfg = load_config()
-        unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
-        
-        if unsorted_path.exists():
+        if unsorted_path.exists() and _unsorted_audio_files:
             # Build track_id → current_path from library.csv
             track_id_to_path: dict[str, str] = {}
             with open(CSV_PATH, 'r', newline='', encoding='utf-8') as f:
@@ -2227,32 +2232,25 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     if tid and path:
                         track_id_to_path[tid] = path
             
-            # Scan UNSORTED for files with DJLIB_TRACK_ID
+            # Use cached UNSORTED scan instead of re-scanning
             reconciled_paths: dict[str, str] = {}  # old_path → new_path
-            audio_extensions = {'.mp3', '.flac', '.m4a', '.aif', '.aiff', '.wav'}
             
-            for audio_file in unsorted_path.rglob('*'):
-                if audio_file.suffix.lower() not in audio_extensions:
-                    continue
+            for audio_file in _unsorted_audio_files:
+                tags = _unsorted_file_tags.get(audio_file, {})
+                file_track_id = tags.get('track_id', '')
                 
-                try:
-                    tags = read_djlib_tags(audio_file)
-                    file_track_id = tags.get('track_id', '')
+                if file_track_id and file_track_id in track_id_to_path:
+                    csv_path = track_id_to_path[file_track_id]
+                    current_path = str(audio_file)
                     
-                    if file_track_id and file_track_id in track_id_to_path:
-                        csv_path = track_id_to_path[file_track_id]
-                        current_path = str(audio_file)
-                        
-                        # Path changed - needs update
-                        if csv_path != current_path:
-                            reconciled_paths[csv_path] = current_path
-                            if dry_run:
-                                print(f"   🔍 Would reconcile: {audio_file.name}")
-                                print(f"      track_id: {file_track_id}")
-                            else:
-                                print(f"   ✅ Reconciled: {audio_file.name}")
-                except Exception:
-                    pass  # Skip files that can't be read
+                    # Path changed - needs update
+                    if csv_path != current_path:
+                        reconciled_paths[csv_path] = current_path
+                        if dry_run:
+                            print(f"   🔍 Would reconcile: {audio_file.name}")
+                            print(f"      track_id: {file_track_id}")
+                        else:
+                            print(f"   ✅ Reconciled: {audio_file.name}")
             
             if reconciled_paths:
                 print(f"\n🔄 Found {len(reconciled_paths)} files with changed paths")
@@ -2290,20 +2288,15 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     print("STEP 1.5b: FILENAME FALLBACK (Rekordbox)")
     print("=" * 60)
     print()
-    print("Scanning UNSORTED for files that match Rekordbox entries by filename...")
+    print("Looking for files that match Rekordbox entries by filename...")
     print("(This recovers files moved after Rekordbox analysis but before Workflow 0)")
     print()
     
     try:
         from djlib.external_sync import get_rekordbox_track_ids
-        from djlib.djlib_tags import write_djlib_tags, has_djlib_tags, read_djlib_tags
-        from djlib.config import load_config
+        from djlib.djlib_tags import write_djlib_tags
         
-        # Get UNSORTED path from config
-        cfg = load_config()
-        unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
-        
-        if unsorted_path.exists():
+        if unsorted_path.exists() and _unsorted_audio_files:
             # Build filename → rekordbox_id map (for files where path no longer exists)
             rekordbox_mapping = get_rekordbox_track_ids()  # {Path: rb_id}
             
@@ -2317,16 +2310,12 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             if filename_to_rb:
                 print(f"📋 Found {len(filename_to_rb)} Rekordbox entries with missing files")
                 
-                # Scan UNSORTED for matching filenames
+                # Use cached UNSORTED scan instead of re-scanning
                 recovered = 0
                 already_tagged = 0
                 recovered_paths: dict[str, str] = {}  # old_path → new_path
                 
-                audio_extensions = {'.mp3', '.flac', '.m4a', '.aif', '.aiff', '.wav'}
-                for audio_file in unsorted_path.rglob('*'):
-                    if audio_file.suffix.lower() not in audio_extensions:
-                        continue
-                    
+                for audio_file in _unsorted_audio_files:
                     if audio_file.name in filename_to_rb:
                         rb_id, original_path = filename_to_rb[audio_file.name]
                         
@@ -2334,15 +2323,11 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                         if str(audio_file) != str(original_path):
                             recovered_paths[str(original_path)] = str(audio_file)
                         
-                        # Check if already tagged with this rekordbox_id
-                        try:
-                            if has_djlib_tags(audio_file):
-                                existing_tags = read_djlib_tags(audio_file)
-                                if existing_tags.get('rekordbox_id') == rb_id:
-                                    already_tagged += 1
-                                    continue
-                        except Exception:
-                            pass
+                        # Check if already tagged with this rekordbox_id (use cached tags)
+                        cached_tags = _unsorted_file_tags.get(audio_file, {})
+                        if cached_tags.get('rekordbox_id') == rb_id:
+                            already_tagged += 1
+                            continue
                         
                         if dry_run:
                             print(f"   🔍 Would recover: {audio_file.name}")
@@ -2410,20 +2395,15 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     print("STEP 1.5c: FILENAME FALLBACK (Traktor)")
     print("=" * 60)
     print()
-    print("Scanning UNSORTED for files that match Traktor entries by filename...")
+    print("Looking for files that match Traktor entries by filename...")
     print("(This recovers files moved after Traktor analysis but before Workflow 0)")
     print()
     
     try:
         from djlib.external_sync import get_traktor_track_ids
-        from djlib.djlib_tags import write_djlib_tags, has_djlib_tags, read_djlib_tags
-        from djlib.config import load_config
+        from djlib.djlib_tags import write_djlib_tags
         
-        # Get UNSORTED path from config
-        cfg = load_config()
-        unsorted_path = Path(cfg.get('unsorted_path', '~/Music Unsorted')).expanduser()
-        
-        if unsorted_path.exists():
+        if unsorted_path.exists() and _unsorted_audio_files:
             # Build filename → traktor_id map (for files where path no longer exists)
             traktor_mapping = get_traktor_track_ids()  # {Path: tr_id}
             
@@ -2437,16 +2417,12 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             if filename_to_tr:
                 print(f"📋 Found {len(filename_to_tr)} Traktor entries with missing files")
                 
-                # Scan UNSORTED for matching filenames
+                # Use cached UNSORTED scan instead of re-scanning
                 recovered = 0
                 already_tagged = 0
                 recovered_paths: dict[str, str] = {}  # old_path → new_path
                 
-                audio_extensions = {'.mp3', '.flac', '.m4a', '.aif', '.aiff', '.wav'}
-                for audio_file in unsorted_path.rglob('*'):
-                    if audio_file.suffix.lower() not in audio_extensions:
-                        continue
-                    
+                for audio_file in _unsorted_audio_files:
                     if audio_file.name in filename_to_tr:
                         tr_id, original_path = filename_to_tr[audio_file.name]
                         
@@ -2454,15 +2430,11 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                         if str(audio_file) != str(original_path):
                             recovered_paths[str(original_path)] = str(audio_file)
                         
-                        # Check if already tagged with this traktor_id
-                        try:
-                            if has_djlib_tags(audio_file):
-                                existing_tags = read_djlib_tags(audio_file)
-                                if existing_tags.get('traktor_id') == tr_id:
-                                    already_tagged += 1
-                                    continue
-                        except Exception:
-                            pass
+                        # Check if already tagged with this traktor_id (use cached tags)
+                        cached_tags = _unsorted_file_tags.get(audio_file, {})
+                        if cached_tags.get('traktor_id') == tr_id:
+                            already_tagged += 1
+                            continue
                         
                         if dry_run:
                             print(f"   🔍 Would recover: {audio_file.name}")
