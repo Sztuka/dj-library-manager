@@ -630,8 +630,12 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
                 genre_str = ", ".join(genres)
                 current_genre = (r.get("genre_suggest") or "").strip()
-                # Override existing genre if: force_genres flag, or no current genre, or significantly better confidence
-                if force_genres or not current_genre or genre_res.confidence > 0.08:
+                # Treat noise-only genres as empty (e.g., "puerto rico, merge" from Last.fm artist tags)
+                noise_terms = {"puerto rico", "merge", "various", "compilation"}
+                current_parts = [p.strip().lower() for p in current_genre.split(",")]
+                is_noise_only = current_genre and all(p in noise_terms for p in current_parts if p)
+                # Override existing genre if: force_genres flag, or no current genre, or noise-only, or significantly better confidence
+                if force_genres or not current_genre or is_noise_only or genre_res.confidence > 0.08:
                     r["genre_suggest"] = genre_str
                     any_change = True
                     # Update meta_source to reflect all sources used

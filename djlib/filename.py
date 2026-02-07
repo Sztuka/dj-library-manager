@@ -65,21 +65,43 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
         c = content.lower()
         return any(kw in c for kw in VERSION_KEYWORDS)
     
+    def _find_outer_paren(text: str) -> tuple[str | None, str | None]:
+        """Find outermost parentheses at end of string, handling nested parens.
+        
+        Returns:
+            tuple[str | None, str | None]: (prefix_before_paren, content_inside_paren)
+        """
+        text = text.rstrip()
+        if not text or text[-1] not in ")]}":
+            return None, None
+        close_char = text[-1]
+        open_char = {")" : "(", "]": "[", "}": "{"}[close_char]
+        # Find matching open bracket/paren
+        depth = 0
+        for i in range(len(text) - 1, -1, -1):
+            if text[i] == close_char:
+                depth += 1
+            elif text[i] == open_char:
+                depth -= 1
+                if depth == 0:
+                    return text[:i].rstrip(), text[i + 1 : -1]
+        return None, None
+
     # First, extract ONLY version-like content from parentheses/brackets at the end
     parenthesis_tokens: list[str] = []
     while True:
-        # Match parentheses (), square brackets [], or curly braces {} at the end
-        m = re.search(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]\s*$", s)
-        if not m:
+        # Find outermost parentheses/brackets at the end (handles nested parens)
+        prefix, content = _find_outer_paren(s)
+        if prefix is None or content is None:
             break
-        content = m.group(1).strip()
+        content = content.strip()
         if not content:
             break
         
         # Only extract if it looks like version info
         if _is_version_content(content):
             parenthesis_tokens.append(content)
-            s = s[: m.start()].strip()
+            s = prefix
         else:
             # Not a version - stop extracting (keep it as part of title)
             break
