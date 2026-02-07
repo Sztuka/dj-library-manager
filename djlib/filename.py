@@ -49,6 +49,12 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
     if not s:
         return "", ""
     
+    # Strip "feat. XYZ" / "ft. XYZ" from the end before processing
+    # These are feature credits, not version info
+    feat_match = re.search(r'\s+(feat\.?|ft\.?|featuring)\s+.+$', s, re.IGNORECASE)
+    if feat_match:
+        s = s[:feat_match.start()].strip()
+    
     # Version indicators - content must contain one of these to be considered a version
     # Case-insensitive matching
     VERSION_KEYWORDS = [
@@ -58,6 +64,7 @@ def split_title_and_version(full_title: str) -> tuple[str, str]:
         "live", "acoustic", "unplugged", "instrumental", "acapella", "a capella",
         "radio", "extended", "original", "club", "single",
         "mezcla",  # Spanish for "mix"
+        "dirty", "clean", "explicit",  # content/quality markers
     ]
     
     def _is_version_content(content: str) -> bool:
