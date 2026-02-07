@@ -471,16 +471,74 @@ class EnrichStats:
 
 ## 6. Risks & Mitigations
 
-| Risk                                     | Impact | Probability | Mitigation                       |
-| ---------------------------------------- | ------ | ----------- | -------------------------------- |
-| Parallel calls cause rate limit issues   | High   | Medium      | Add per-API semaphores           |
-| Cache invalidation issues                | Medium | Low         | Clear cache between runs         |
-| Beatport early-exit misses non-EDM       | Medium | Low         | Keep full resolution as fallback |
-| SoundCloud fewer queries = worse results | Low    | Medium      | A/B test before full rollout     |
+| Risk                                      | Impact   | Probability   | Mitigation                       |
+| ----------------------------------------- | -------- | ------------- | -------------------------------- |
+| Parallel calls cause rate limit issues    | High     | Medium        | Add per-API semaphores           |
+| **requests_cache SQLite not thread-safe** | **High** | **Confirmed** | **Use async/aiohttp or locking** |
+| Cache invalidation issues                 | Medium   | Low           | Clear cache between runs         |
+| Beatport early-exit misses non-EDM        | Medium   | Low           | Keep full resolution as fallback |
+| SoundCloud fewer queries = worse results  | Low      | Medium        | A/B test before full rollout     |
 
 ---
 
-## 7. Appendix
+## 7. Phase 2 Post-Mortem: Threading Issues
+
+### Problem Discovery (2026-02-06)
+
+Attempted to parallelize API calls in `genre_resolver.resolve()` using `ThreadPoolExecutor`.
+Encountered segmentation faults and `sqlite3.ProgrammingError: Cannot operate on a closed database`.
+
+### Root Cause
+
+`requests_cache` (used by Last.fm, SoundCloud) uses SQLite backend by default.
+SQLite connections are not thread-safe — concurrent access from multiple threads causes corruption.
+
+```
+File ".venv/.../requests_cache/backends/sqlite.py", line 314, in __getitem__
+    cur.close()
+sqlite3.ProgrammingError: Cannot operate on a closed database.
+```
+
+### Solution Options
+
+1. **Switch to thread-safe cache backend** (memory/filesystem)
+
+   ```python
+   import requests_cache
+   requests_cache.install_cache('http_cache', backend='filesystem')
+   ```
+
+2. **Use async/await with aiohttp** instead of threaded requests
+   - Requires rewriting all HTTP clients to async
+   - More idiomatic for I/O-bound parallelism
+
+3. **Add threading lock around cached HTTP calls**
+
+   ```python
+   import threading
+   _cache_lock = threading.Lock()
+
+   def cached_request(url):
+       with _cache_lock:
+           return session.get(url)
+   ```
+
+### What Was Kept
+
+- Helper functions: `_fetch_beatport`, `_fetch_lastfm`, `_fetch_musicbrainz`, `_fetch_soundcloud`
+- Early exit for confident Beatport EDM matches
+- `BEATPORT_EARLY_EXIT_CONFIDENCE` constant
+- Code organization improvements
+
+### Recommendation
+
+For true parallelization, migrate to **async/await with aiohttp**. This is the cleanest
+long-term solution for I/O-bound workloads. The threading approach has too many footguns
+with shared state (cache, browser automation).
+
+---
+
+## 8. Appendix
 
 ### A. Files to Modify
 
@@ -514,7 +572,8 @@ DJLIB_DEBUG_MB=1 python -m djlib.cli enrich-online
 
 ## Changelog
 
-| Date       | Author       | Change                                           |
-| ---------- | ------------ | ------------------------------------------------ |
-| 2026-02-05 | CTO Analysis | Initial draft                                    |
-| 2026-02-06 | CTO          | Added Progress Tracking, merged bugfixes to main |
+| Date       | Author       | Change                                                                                |
+| ---------- | ------------ | ------------------------------------------------------------------------------------- |
+| 2026-02-05 | CTO Analysis | Initial draft                                                                         |
+| 2026-02-06 | CTO          | Added Progress Tracking, merged bugfixes to main                                      |
+| 2026-02-06 | CTO          | Phase 2 attempt: ThreadPoolExecutor failed due to requests_cache SQLite thread-safety |
