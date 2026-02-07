@@ -60,14 +60,16 @@ def _clean_for_query(s: str) -> str:
     return s
 
 
-def _candidate_queries(artist: str, title: str, version: str, max_queries: int = 2) -> List[str]:
+def _candidate_queries(artist: str, title: str, version: str, max_queries: int = 4) -> List[str]:
     """Generate query list for SoundCloud search.
     
     Uses remixer names for precision. Rate-limit 403s are handled by retry logic.
     
     For remixes/mashups:
-      1. remixer + title (most precise)
-      2. remixer + artist (fallback)
+      1. first_remixer + title (most precise - handles "A & B Remix" where SC only has A)
+      2. artist + title + "remix" (fallback - works when SC has different remixer name)
+      3. full_remixer + title (when there's only one remixer)
+      4. remixer + artist (last resort)
     For originals:
       1. artist + title
     """
@@ -89,11 +91,25 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
             remixer = re.sub(rf"\b{genre}\b", "", remixer, flags=re.IGNORECASE)
         remixer = re.sub(r'\s+', ' ', remixer).strip()
         
-        # Strategy 1: remixer + title (most precise)
-        if remixer and clean_title:
-            queries.append(f"{remixer} {clean_title}".strip())
+        # Extract first remixer (before & or "and") - handles "Okan Evci & Emre Yuksel" → "Okan Evci"
+        first_remixer = re.split(r'\s*[&]\s*|\s+and\s+', remixer, maxsplit=1)[0].strip()
         
-        # Strategy 2: remixer + artist
+        # Strategy 1: first_remixer + title (most precise when there are multiple remixers)
+        if first_remixer and clean_title and first_remixer != remixer:
+            queries.append(f"{first_remixer} {clean_title}".strip())
+        
+        # Strategy 2: artist + title + "remix" (fallback - works when SC has different remixer name)
+        # E.g., "Akon Right Now remix" finds tracks even if remixer name differs on SC
+        if clean_artist and clean_title:
+            queries.append(f"{clean_artist} {clean_title} remix".strip())
+        
+        # Strategy 3: full remixer + title
+        if remixer and clean_title:
+            q = f"{remixer} {clean_title}".strip()
+            if q not in queries:
+                queries.append(q)
+        
+        # Strategy 4: remixer + artist (last resort)
         is_mashup = "mashup" in (version or "").lower()
         if remixer and clean_artist:
             if is_mashup:
