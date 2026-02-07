@@ -61,70 +61,46 @@ def _clean_for_query(s: str) -> str:
 
 
 def _candidate_queries(artist: str, title: str, version: str, max_queries: int = 2) -> List[str]:
-    """Generate optimized query list for SoundCloud search.
+    """Generate query list for SoundCloud search.
     
-    Args:
-        max_queries: Maximum number of queries to return (default: 2 for performance)
+    Uses FULL remixer names for precision. Rate-limit 403s are handled by retry logic.
     
-    Returns up to max_queries most effective queries.
-    All queries are kept SHORT to avoid 403 errors from SoundCloud.
-    
-    For remixes/mashups (version provided):
-      1. remixer + first 2-3 title words (most specific)
-      2. remixer + first artist word (fallback)
+    For remixes/mashups:
+      1. full_remixer + title (most precise)
+      2. full_remixer + artist (fallback)
     For originals:
-      1. Short combined query (first artist word + first title words)
-      2. Full combined if reasonably short
+      1. artist + title
     """
     queries: List[str] = []
-    
-    # Extract primary remixer for shorter queries (avoid 403 on long queries)
-    primary_remixer = _extract_primary_remixer(version)
     
     # Clean inputs - remove X, &, parens
     clean_artist = _clean_for_query(artist)
     clean_title = _clean_for_query(title)
     
-    if primary_remixer:
-        # For remixes: prioritize queries WITH remixer name
-        # Avoids mixing tags from different remixes of same original
-        # Keep queries SHORT - use first few words only
+    if version:
+        # Full remixer: clean but keep full name for precision
+        full_remixer = version
+        for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix", "mashup"]:
+            full_remixer = re.sub(rf"\b{kw}\b", "", full_remixer, flags=re.IGNORECASE)
+        full_remixer = re.sub(r'\s+', ' ', full_remixer).strip()
         
-        title_words = clean_title.split()[:3]  # First 3 words of title
-        artist_words = clean_artist.split()[:1]  # First word of artist
+        # Strategy 1: remixer + title (most precise)
+        if full_remixer and clean_title:
+            queries.append(f"{full_remixer} {clean_title}".strip())
         
-        # Strategy 1: remixer + title words (most specific)
-        # e.g., "Vidojean Enjoy The Silence" finds afro house remix
-        if title_words:
-            query1 = f"{primary_remixer} {' '.join(title_words)}".strip()
-            queries.append(query1)
-        
-        # Strategy 2: remixer + artist + "mashup" if it's a mashup
-        # e.g., "Vidojean Alesso mashup" 
+        # Strategy 2: remixer + artist
         is_mashup = "mashup" in (version or "").lower()
-        if artist_words:
+        if full_remixer and clean_artist:
             if is_mashup:
-                query2 = f"{primary_remixer} {' '.join(artist_words)} mashup".strip()
+                queries.append(f"{full_remixer} {clean_artist} mashup".strip())
             else:
-                query2 = f"{primary_remixer} {' '.join(artist_words)}".strip()
-            queries.append(query2)
+                queries.append(f"{full_remixer} {clean_artist}".strip())
     else:
-        # For originals: build short, effective queries
-        # Long queries often fail with 403 or return poor results
-        
-        artist_words = clean_artist.split()[:2]
-        title_words = clean_title.split()[:3]
-        
-        short_query = " ".join(artist_words + title_words).strip()
-        if short_query:
-            queries.append(short_query)
-        
-        # Fallback: full artist + title if reasonably short
-        full_query = f"{clean_artist} {clean_title}".strip()
-        if full_query and len(full_query) <= 60 and full_query != short_query:
-            queries.append(full_query)
+        # For originals: artist + title
+        if clean_artist and clean_title:
+            queries.append(f"{clean_artist} {clean_title}".strip())
     
-    # de-dup preserve order, limit to max_queries
+    # de-dup preserve order
     seen = set()
     return [q for q in queries if q and not (q in seen or seen.add(q))][:max_queries]
 
