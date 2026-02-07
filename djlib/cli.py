@@ -1004,31 +1004,38 @@ def cmd_apply(args: argparse.Namespace) -> None:
     
     # Build library index for duplicate detection when exporting to library
     # Includes both active library AND archive
+    # OPTIMIZATION: Only build index if there are files destined for "library"
     from djlib.dedup import get_audio_info, normalize_for_match, format_quality, format_duration
     from djlib.config import load_config
     _cfg = load_config()
     _library_path = Path(_cfg.get("LIB_ROOT", "")).expanduser()
     _archive_path = Path(_cfg.get("ARCHIVE_ROOT", "")).expanduser()
     library_index: Dict[str, Any] = {}  # match_key -> AudioInfo
+    _library_index_loaded = False
+    _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
     
-    # Scan library folder
-    if _library_path and _library_path.exists():
-        _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
-        for _ext in _audio_exts:
-            for _path in _library_path.rglob(f"*{_ext}"):
-                _info = get_audio_info(_path)
-                if _info and _info.artist and _info.title:
-                    library_index[_info.match_key] = _info
-    
-    # Scan archive folder for duplicates too
-    if _archive_path and _archive_path.exists():
-        _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
-        for _ext in _audio_exts:
-            for _path in _archive_path.rglob(f"*{_ext}"):
-                _info = get_audio_info(_path)
-                if _info and _info.artist and _info.title:
-                    # Archive entries indexed for duplicate detection
-                    library_index[_info.match_key] = _info
+    def _load_library_index():
+        """Lazy-load library index for duplicate detection."""
+        nonlocal _library_index_loaded
+        if _library_index_loaded:
+            return
+        _library_index_loaded = True
+        
+        # Scan library folder (single rglob with extension filter)
+        if _library_path and _library_path.exists():
+            for _path in _library_path.rglob("*"):
+                if _path.suffix.lower() in _audio_exts:
+                    _info = get_audio_info(_path)
+                    if _info and _info.artist and _info.title:
+                        library_index[_info.match_key] = _info
+        
+        # Scan archive folder for duplicates too
+        if _archive_path and _archive_path.exists():
+            for _path in _archive_path.rglob("*"):
+                if _path.suffix.lower() in _audio_exts:
+                    _info = get_audio_info(_path)
+                    if _info and _info.artist and _info.title:
+                        library_index[_info.match_key] = _info
 
     for r in ready:
         # Determine destination path (new model or legacy fallback)
@@ -1124,7 +1131,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
         title = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
         
         # Check for duplicates in library when exporting to library
-        if destination == "library" and library_index:
+        if destination == "library":
+            _load_library_index()  # Lazy-load on first library export
             match_key = normalize_for_match(artist, title)
             if match_key in library_index:
                 existing = library_index[match_key]
