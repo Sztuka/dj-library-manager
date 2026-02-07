@@ -16,6 +16,11 @@ _DEF_TIMEOUT = 10
 _CLIENT_ID_CACHE_PATH = Path.home() / ".djlib" / "soundcloud_client_id.json"
 _CLIENT_ID_CACHE_DAYS = 30  # SoundCloud client_id typically valid for ~30 days
 
+# Rate limiting and filtering constants
+_RATE_LIMIT_DELAY = 0.8  # Seconds between requests
+_RETRY_DELAY = 2.0  # Seconds to wait on 403 before retry
+_MAX_TRACK_DURATION = 600  # Skip tracks > 10 min (DJ mixes/sets)
+
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = s.replace("_", " ")
@@ -89,11 +94,11 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     """Public SoundCloud search – optimized 2-query strategy for genre/tag extraction.
 
     Queries (limited to 2 for performance):
-      1) artist + primary_remixer (best for finding remixes)
-      2) artist + title (fallback)
+      For remixes: title + remixer, then artist + remixer
+      For originals: artist + title
 
-    For each query we take up to top 3 results, merge tokens and filter noise.
-    Noise: generic buzz (new, trending, viral, remix(es) duplicates, year tags).
+    For each query we take up to top 3 results (skipping DJ mixes >10min), 
+    merge tokens and filter noise.
     Returns unique, normalized tokens sorted (for stable CSV diffs) or None.
     """
     cid = get_valid_client_id()  # Use auto-refresh version
@@ -200,12 +205,12 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
 
     try:
         for q in queries:
-            time.sleep(0.8)  # Increased delay to avoid rate limiting
+            time.sleep(_RATE_LIMIT_DELAY)
             _SC_REQUESTS += 1
             r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
             if r.status_code == 403:
                 # Rate limit or client_id issue - wait longer and retry once
-                time.sleep(2.0)
+                time.sleep(_RETRY_DELAY)
                 r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
             if r.status_code != 200:
                 continue
@@ -216,7 +221,7 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
             count = 0
             for item in coll:
                 duration_s = (item.get("duration") or 0) // 1000
-                if duration_s > 600:  # Skip mixes > 10 min
+                if duration_s > _MAX_TRACK_DURATION:
                     continue
                 collected.extend(_extract_from_item(item))
                 count += 1
@@ -259,17 +264,25 @@ def get_track_year(artist: str, title: str, version: str = "") -> Optional[str]:
         global _SC_REQUESTS
         # Try first query only (most specific)
         q = queries[0]
-        time.sleep(0.8)
+        time.sleep(_RATE_LIMIT_DELAY)
         _SC_REQUESTS += 1
         r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
         if r.status_code == 403:
-            time.sleep(2.0)
+            time.sleep(_RETRY_DELAY)
             r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
         if r.status_code != 200:
             return None
         
         data = r.json() or {}
-        items = (data.get("collection") or [])[:3]
+        
+        # Filter: skip mixes/sets (duration > 10 min), take top 3
+        items = []
+        for item in (data.get("collection") or []):
+            duration_s = (item.get("duration") or 0) // 1000
+            if duration_s <= _MAX_TRACK_DURATION:
+                items.append(item)
+                if len(items) >= 3:
+                    break
         
         # Try to find best matching track
         for item in items:
@@ -304,24 +317,25 @@ def get_track_artwork_url(artist: str, title: str, version: str = "", client_id:
         global _SC_REQUESTS
         # Try first query only (most specific)
         q = queries[0]
-        time.sleep(0.8)
+        time.sleep(_RATE_LIMIT_DELAY)
         _SC_REQUESTS += 1
         r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
         if r.status_code == 403:
-            time.sleep(2.0)
+            time.sleep(_RETRY_DELAY)
             r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
         if r.status_code != 200:
             return None
         
         data = r.json() or {}
-        items = (data.get("collection") or [])[:3]
         
-        # Try to find track with artwork
-        for item in items:
+        # Filter: skip mixes/sets (duration > 10 min)
+        for item in (data.get("collection") or []):
+            duration_s = (item.get("duration") or 0) // 1000
+            if duration_s > _MAX_TRACK_DURATION:
+                continue
             artwork_url = item.get("artwork_url")
             if artwork_url:
-                # Replace 'large' (100x100) with 't500x500' for better quality
-                # Also try t1080x1080 for even better quality
+                # Replace 'large' (100x100) with 't1080x1080' for better quality
                 high_res_url = artwork_url.replace('-large.', '-t1080x1080.')
                 return high_res_url
         return None
