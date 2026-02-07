@@ -238,7 +238,18 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     m2 = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*$", cleaned)
     if m2:
         a, t = (m2.group(1).strip(), m2.group(2).strip())
-        # 3a) heurystyka: jeśli tytuł kończy się znanym określeniem wersji – wydziel je
+        
+        # 3a) DETECT REVERSED ORDER: if first part has version keywords, swap!
+        # e.g., "Alors on danse (ALLERTZ REMIX) - Stromae" → swap to "Stromae - Alors on danse (ALLERTZ REMIX)"
+        first_has_version = _is_version_content(a)
+        second_has_version = _is_version_content(t)
+        
+        # Swap if: first part has version info but second doesn't
+        # This catches "Title (Remix) - Artist" pattern
+        if first_has_version and not second_has_version:
+            a, t = t, a  # Swap!
+        
+        # 3b) heurystyka: jeśli tytuł kończy się znanym określeniem wersji – wydziel je
         version_markers = [
             "original mix", "extended mix", "club mix", "radio edit", "edit", "remix",
             "dub mix", "instrumental", "vip mix", "vip", "bootleg", "refix", "rework",
