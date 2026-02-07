@@ -415,8 +415,10 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     # Step 2: Fetch secondary sources (sequential — threading causes segfaults)
     lfm_result = _fetch_lastfm(artist, title)
     
+    # SoundCloud: only for remixes (it's slow and mostly useful for remix-specific tags)
+    # For originals, Beatport + Last.fm + MB provide sufficient coverage
     sc_result = None
-    if not disable_soundcloud:
+    if not disable_soundcloud and is_remix:
         sc_result = _fetch_soundcloud(artist, title, version)
     
     mb_result = None

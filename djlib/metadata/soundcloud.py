@@ -77,7 +77,16 @@ def _extract_primary_remixer(version: str) -> str:
     return version.strip()
 
 
-def _candidate_queries(artist: str, title: str, version: str) -> List[str]:
+def _candidate_queries(artist: str, title: str, version: str, max_queries: int = 2) -> List[str]:
+    """Generate optimized query list for SoundCloud search.
+    
+    Args:
+        max_queries: Maximum number of queries to return (default: 2 for performance)
+    
+    Returns up to max_queries most effective queries:
+    1. artist + primary_remixer (best for edits/remixes)
+    2. base query (artist + title) as fallback
+    """
     base = f"{artist} {title}".strip()
     if not base:
         return []
@@ -86,32 +95,23 @@ def _candidate_queries(artist: str, title: str, version: str) -> List[str]:
     # Extract primary remixer for shorter queries (avoid 403 on long queries)
     primary_remixer = _extract_primary_remixer(version)
     
-    # Strategy 1: artist + primary_remixer (short, often works best)
+    # Strategy 1: artist + primary_remixer (short, most effective for remixes)
     # e.g., "Bastille Merchant" finds "bastille - pompeii (merchant edit)"
     if primary_remixer and artist:
         queries.append(f"{artist} {primary_remixer}".strip())
     
-    # Strategy 2: artist + title + primary_remixer
-    if primary_remixer:
-        queries.append(f"{base} {primary_remixer}".strip())
-    
-    # Strategy 3: full version tokens (may be long and cause 403)
-    for tok in _focus_version_tokens(title, version):
-        full_query = f"{base} {tok}".strip()
-        # Skip if query is too long (>100 chars often cause 403)
-        if len(full_query) <= 100:
-            queries.append(full_query)
-    
-    # Strategy 4: base query (finds original, useful fallback)
+    # Strategy 2: base query (finds original or matches title)
     queries.append(base)
     
-    # Strategy 5: generic remix search
-    if "remix" not in base.lower():
-        queries.append(f"{base} remix")
+    # Strategy 3: artist + title + primary_remixer (more specific, if space)
+    if primary_remixer and len(queries) < max_queries:
+        full_remix = f"{base} {primary_remixer}".strip()
+        if full_remix not in queries:
+            queries.append(full_remix)
     
-    # de-dup preserve order
+    # de-dup preserve order, limit to max_queries
     seen = set()
-    return [q for q in queries if q and not (q in seen or seen.add(q))]
+    return [q for q in queries if q and not (q in seen or seen.add(q))][:max_queries]
 
 
 @lru_cache(maxsize=1000)
