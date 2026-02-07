@@ -319,7 +319,7 @@ def _score_tag(tag: str, base_weight: float, scores: Dict[str, float], local: Di
 BEATPORT_EARLY_EXIT_CONFIDENCE = 0.8
 
 # Keywords that indicate a TRUE remix (another artist reworked the track)
-_REMIX_KEYWORDS = frozenset(["remix", "rework", "bootleg", "dub mix", "vip mix", "vip edit"])
+_REMIX_KEYWORDS = frozenset(["remix", "rework", "bootleg", "mashup", "dub mix", "vip mix", "vip edit"])
 # Edit types that are NOT remixes (same artist, different version)
 _NON_REMIX_EDITS = frozenset([
     "radio edit", "original edit", "extended edit", "club edit", 
