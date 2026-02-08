@@ -22,9 +22,16 @@ import base64
 from pathlib import Path
 from datetime import datetime, timezone
 
+# Ensure requests_cache side effects (shared HTTP cache with Last.fm, MB, SC)
+import djlib.metadata  # noqa: F401
+
 # Rate limiting
 _LAST_REQUEST = 0.0
 MIN_INTERVAL = 1.0  # Beatport: 1 req/s
+
+# In-process cache for search results (prevents duplicate API calls for same track
+# within a single enrich-online run — e.g. genre_resolver + year lookup)
+_search_cache: Dict[str, Optional[Dict]] = {}
 
 # Version matching constants
 _MIN_REMIXER_NAME_LEN = 4  # Minimum length for remixer name to be meaningful
@@ -546,6 +553,10 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
 def search_track(artist: str, title: str, duration_s: Optional[int] = None, version: Optional[str] = None) -> Optional[Dict]:
     """Search Beatport for track metadata.
     
+    Uses in-process cache to avoid duplicate API calls within the same run
+    (e.g. genre_resolver calls search_track, then enrich.py calls it again
+    for year/album — second call returns cached result instantly).
+    
     Args:
         artist: Artist name
         title: Track title
@@ -556,6 +567,18 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None, vers
         Dict with: genre, release_date, artwork_url, bpm, key_camelot, mix_name
         Or None if not found
     """
+    # In-process cache key based on normalized inputs
+    cache_key = f"{(artist or '').strip().lower()}|{(title or '').strip().lower()}|{duration_s}|{(version or '').strip().lower()}"
+    if cache_key in _search_cache:
+        return _search_cache[cache_key]
+    
+    result = _search_track_impl(artist, title, duration_s, version)
+    _search_cache[cache_key] = result
+    return result
+
+
+def _search_track_impl(artist: str, title: str, duration_s: Optional[int] = None, version: Optional[str] = None) -> Optional[Dict]:
+    """Internal implementation of search_track (called via in-process cache wrapper)."""
     global _LAST_REQUEST
     
     if not artist and not title:
@@ -568,11 +591,6 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None, vers
         print("   Setup required: python -m djlib.metadata.beatport --setup\n")
         return None
     
-    # Rate limiting
-    elapsed = time.time() - _LAST_REQUEST
-    if elapsed < MIN_INTERVAL:
-        time.sleep(MIN_INTERVAL - elapsed)
-    
     # Build search query - include remixer name from version if present
     query = f"{artist} {title}".strip()
     if version:
@@ -584,6 +602,13 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None, vers
             query = f"{remixer_part} {query}"
     
     try:
+        # Rate limiting — only sleep before LIVE requests.
+        # requests_cache may serve from disk cache instantly (from_cache=True),
+        # in which case we skip the sleep to avoid wasting ~1s per cached hit.
+        elapsed = time.time() - _LAST_REQUEST
+        if elapsed < MIN_INTERVAL:
+            time.sleep(MIN_INTERVAL - elapsed)
+        
         _LAST_REQUEST = time.time()
         response = requests.get(
             f"{API_BASE}/catalog/search/",
@@ -591,6 +616,10 @@ def search_track(artist: str, title: str, duration_s: Optional[int] = None, vers
             headers={"Authorization": f"Bearer {token}"},
             timeout=10
         )
+        
+        # If served from cache, give back the rate-limit budget
+        if getattr(response, 'from_cache', False):
+            _LAST_REQUEST = 0.0
         
         if response.status_code == 401:
             # Token expired during request - remove cache but don't auto-refresh

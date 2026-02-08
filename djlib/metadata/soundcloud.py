@@ -6,8 +6,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from djlib.config import get_soundcloud_client_id
 
+# Ensure requests_cache side effects (shared HTTP cache)
+import djlib.metadata  # noqa: F401
+
 # Licznik prób zapytań do SoundCloud public search (użyteczne dla enrich_status.json)
 _SC_REQUESTS = 0
+# Track last live (non-cached) request time for smart rate limiting
+_SC_LAST_LIVE_REQUEST = 0.0
 
 API_SEARCH = "https://api-v2.soundcloud.com/search/tracks"
 _DEF_TIMEOUT = 10
@@ -242,13 +247,22 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
 
     try:
         for q in queries:
-            time.sleep(_RATE_LIMIT_DELAY)
             _SC_REQUESTS += 1
+            # Smart rate limiting: sleep only before LIVE requests.
+            # requests_cache serves repeated queries from disk instantly.
+            global _SC_LAST_LIVE_REQUEST
+            elapsed = time.time() - _SC_LAST_LIVE_REQUEST
+            if elapsed < _RATE_LIMIT_DELAY:
+                time.sleep(_RATE_LIMIT_DELAY - elapsed)
             r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+            if not getattr(r, 'from_cache', False):
+                _SC_LAST_LIVE_REQUEST = time.time()
             if r.status_code == 403:
                 # Rate limit or client_id issue - wait longer and retry once
                 time.sleep(_RETRY_DELAY)
                 r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+                if not getattr(r, 'from_cache', False):
+                    _SC_LAST_LIVE_REQUEST = time.time()
             if r.status_code != 200:
                 continue
             data = r.json() or {}
@@ -298,15 +312,22 @@ def get_track_year(artist: str, title: str, version: str = "") -> Optional[str]:
         return None
     
     try:
-        global _SC_REQUESTS
+        global _SC_REQUESTS, _SC_LAST_LIVE_REQUEST
         # Try first query only (most specific)
         q = queries[0]
-        time.sleep(_RATE_LIMIT_DELAY)
+        # Smart rate limiting: only sleep before live requests
+        elapsed = time.time() - _SC_LAST_LIVE_REQUEST
+        if elapsed < _RATE_LIMIT_DELAY:
+            time.sleep(_RATE_LIMIT_DELAY - elapsed)
         _SC_REQUESTS += 1
         r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+        if not getattr(r, 'from_cache', False):
+            _SC_LAST_LIVE_REQUEST = time.time()
         if r.status_code == 403:
             time.sleep(_RETRY_DELAY)
             r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+            if not getattr(r, 'from_cache', False):
+                _SC_LAST_LIVE_REQUEST = time.time()
         if r.status_code != 200:
             return None
         
@@ -351,15 +372,22 @@ def get_track_artwork_url(artist: str, title: str, version: str = "", client_id:
         return None
     
     try:
-        global _SC_REQUESTS
+        global _SC_REQUESTS, _SC_LAST_LIVE_REQUEST
         # Try first query only (most specific)
         q = queries[0]
-        time.sleep(_RATE_LIMIT_DELAY)
+        # Smart rate limiting: only sleep before live requests
+        elapsed = time.time() - _SC_LAST_LIVE_REQUEST
+        if elapsed < _RATE_LIMIT_DELAY:
+            time.sleep(_RATE_LIMIT_DELAY - elapsed)
         _SC_REQUESTS += 1
         r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+        if not getattr(r, 'from_cache', False):
+            _SC_LAST_LIVE_REQUEST = time.time()
         if r.status_code == 403:
             time.sleep(_RETRY_DELAY)
             r = requests.get(API_SEARCH, params={"q": q, "client_id": cid, "limit": 5}, timeout=_DEF_TIMEOUT)
+            if not getattr(r, 'from_cache', False):
+                _SC_LAST_LIVE_REQUEST = time.time()
         if r.status_code != 200:
             return None
         

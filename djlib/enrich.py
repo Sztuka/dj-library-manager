@@ -678,9 +678,10 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
             # For remixes: try Beatport first (might have specific remix release date)
             if version:
                 try:
-                    # Try with version in title for better matching
-                    full_title = f"{title} {version}" if version else title
-                    beatport_data = beatport.search_track(artist, full_title, duration_s=dur_s)
+                    # OPTIMIZATION: Use same call signature as genre_resolver to hit
+                    # the in-process cache (genre_resolver already called search_track
+                    # with version= param, so this returns cached result instantly)
+                    beatport_data = beatport.search_track(artist, title, duration_s=dur_s, version=version)
                     if beatport_data:
                         # Verify Beatport actually found the remix, not just the original
                         bp_title = beatport_data.get("title", "").lower()
@@ -727,6 +728,8 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                     pass
             
             # Fallback to Beatport for originals if Last.fm didn't provide
+            # OPTIMIZATION: genre_resolver already called search_track(artist, title, dur, version="")
+            # so this hits the in-process cache — no extra API call
             if not version and (not year_from_online or not album_from_online):
                 try:
                     beatport_data = beatport.search_track(artist, title, duration_s=dur_s)
