@@ -221,8 +221,15 @@ def _refresh_token_with_playwright() -> str:
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not debug_mode)
+        # Create fresh context without any stored state
         context = browser.new_context()
         page = context.new_page()
+        
+        # Clear all storage on beatport.com before we start
+        page.goto("https://www.beatport.com", wait_until="domcontentloaded")
+        page.evaluate("localStorage.clear(); sessionStorage.clear();")
+        context.clear_cookies()
+        page.wait_for_timeout(500)
         
         # Intercept API requests to capture Authorization header
         def handle_request(route, request):
@@ -334,7 +341,17 @@ def _refresh_token_with_playwright() -> str:
                     print(f"🔍 Debug: Screenshot saved to {screenshot_path}")
                 raise Exception("Login failed - still on login page after 5 attempts. Check credentials.")
             
-            # Trigger an API call to capture token (search for anything)
+            # IMPORTANT: Reset captured_token after login success
+            # Any token captured before this point was from a stale/cached session
+            captured_token = None
+            api_calls_seen = 0
+            
+            # First, go to main beatport.com and wait for frontend to update the token
+            # The login sets a cookie, but localStorage token needs JS to run
+            page.goto("https://www.beatport.com/", timeout=15000)
+            page.wait_for_timeout(2000)  # Wait for JS to update localStorage
+            
+            # Now trigger an API call to capture FRESH token
             try:
                 page.goto("https://www.beatport.com/search?q=test", timeout=15000)
                 page.wait_for_timeout(3000)  # Wait for API call
@@ -378,22 +395,29 @@ def get_valid_token(max_retries: int = 2, *, force_refresh: bool = False) -> str
     """
     global _REFRESHING
     global _TOKEN_IN_MEMORY
+    global _MEMORY_TOKEN
 
     # Fast path: in-process token already loaded AND still valid
     # Skip if force_refresh requested (e.g., after 401)
     if not force_refresh and _TOKEN_IN_MEMORY and _is_token_valid(_TOKEN_IN_MEMORY):
         return _TOKEN_IN_MEMORY
     
-    # Clear in-memory cache if forcing refresh or token expired
+    # Also check _MEMORY_TOKEN (used by _load_cached_token)
+    if not force_refresh and _MEMORY_TOKEN and _is_token_valid(_MEMORY_TOKEN):
+        _TOKEN_IN_MEMORY = _MEMORY_TOKEN
+        return _MEMORY_TOKEN
+    
+    # Clear in-memory caches if forcing refresh or token expired
     if force_refresh or (_TOKEN_IN_MEMORY and not _is_token_valid(_TOKEN_IN_MEMORY)):
         _TOKEN_IN_MEMORY = None
+        _MEMORY_TOKEN = None
     
     # Try cached token first
     token = _load_cached_token()
     if token:
         _TOKEN_IN_MEMORY = token
         return token
-
+    
     # No valid cached token. Apply cooldown ONLY if last refresh FAILED.
     # If token just expired normally, allow immediate refresh.
     if not force_refresh and _get_last_refresh_failed():
