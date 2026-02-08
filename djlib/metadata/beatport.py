@@ -219,6 +219,17 @@ def _refresh_token_with_playwright() -> str:
     import os
     debug_mode = os.environ.get("BEATPORT_DEBUG", "").lower() in ("1", "true", "yes")
     
+    def _is_fresh_token(token: str, min_remaining_seconds: int = 300) -> bool:
+        """Check if token has enough time remaining to be useful."""
+        try:
+            payload = _decode_jwt(token)
+            exp = payload.get("exp", 0)
+            now = int(datetime.now(timezone.utc).timestamp())
+            remaining = exp - now
+            return remaining > min_remaining_seconds
+        except Exception:
+            return False
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not debug_mode)
         # Create fresh context without any stored state
@@ -231,7 +242,7 @@ def _refresh_token_with_playwright() -> str:
         context.clear_cookies()
         page.wait_for_timeout(500)
         
-        # Intercept API requests to capture Authorization header
+        # Intercept API requests AND responses to capture fresh token
         def handle_request(route, request):
             nonlocal captured_token, api_calls_seen
             
@@ -241,9 +252,16 @@ def _refresh_token_with_playwright() -> str:
                 auth_header = request.headers.get("authorization", "")
                 
                 if auth_header.startswith("Bearer "):
-                    if not captured_token:  # Capture first token
-                        captured_token = auth_header.replace("Bearer ", "")
-                        print(f"✓ Token captured from API call #{api_calls_seen}")
+                    token = auth_header.replace("Bearer ", "")
+                    # Only capture if it's fresh (has > 5 min remaining)
+                    if not captured_token and _is_fresh_token(token, min_remaining_seconds=300):
+                        captured_token = token
+                        print(f"✓ Fresh token captured from API call #{api_calls_seen}")
+                    elif debug_mode and not _is_fresh_token(token, min_remaining_seconds=300):
+                        payload = _decode_jwt(token)
+                        exp = payload.get("exp", 0)
+                        now = int(datetime.now(timezone.utc).timestamp())
+                        print(f"🔍 Skipping stale token (expires in {exp - now}s)")
             
             route.continue_()
         
@@ -349,17 +367,71 @@ def _refresh_token_with_playwright() -> str:
             # First, go to main beatport.com and wait for frontend to update the token
             # The login sets a cookie, but localStorage token needs JS to run
             page.goto("https://www.beatport.com/", timeout=15000)
-            page.wait_for_timeout(2000)  # Wait for JS to update localStorage
+            page.wait_for_timeout(3000)  # Wait longer for JS to update localStorage
             
-            # Now trigger an API call to capture FRESH token
-            try:
-                page.goto("https://www.beatport.com/search?q=test", timeout=15000)
-                page.wait_for_timeout(3000)  # Wait for API call
-            except Exception as e:
-                # If we already captured token, this timeout is acceptable
-                if not captured_token:
-                    raise Exception(f"Failed to trigger API call after login: {e}")
-                print(f"⚠ Warning: Search timeout, but token already captured")
+            # Try to get token from localStorage first (more reliable than intercepting)
+            def _extract_token_from_storage():
+                """Try to extract JWT from Beatport's localStorage."""
+                try:
+                    # Beatport stores auth data in __bp_store__ (Redux/Zustand persist)
+                    bp_store = page.evaluate("localStorage.getItem('__bp_store__')")
+                    if bp_store:
+                        import json
+                        store_data = json.loads(bp_store)
+                        # Navigate through possible token locations
+                        for key in ['state', 'persist:root', 'auth', 'user']:
+                            if isinstance(store_data.get(key), dict):
+                                for subkey in ['accessToken', 'access_token', 'token', 'jwt']:
+                                    token = store_data[key].get(subkey)
+                                    if token and token.startswith('eyJ'):
+                                        return token
+                        # Try top-level
+                        for key in ['accessToken', 'access_token', 'token']:
+                            token = store_data.get(key)
+                            if token and isinstance(token, str) and token.startswith('eyJ'):
+                                return token
+                except Exception:
+                    pass
+                
+                # Try direct localStorage keys
+                for key in ['access_token', 'accessToken', 'bp_token', 'jwt', 'token']:
+                    try:
+                        token = page.evaluate(f"localStorage.getItem('{key}')")
+                        if token and token.startswith('eyJ'):
+                            return token
+                    except Exception:
+                        pass
+                return None
+            
+            # Try localStorage first
+            ls_token = _extract_token_from_storage()
+            if ls_token and _is_fresh_token(ls_token, min_remaining_seconds=300):
+                captured_token = ls_token
+                print("✓ Fresh token captured from localStorage")
+            
+            # If no token from localStorage, trigger API calls to intercept
+            if not captured_token:
+                # Now trigger an API call to capture FRESH token
+                try:
+                    page.goto("https://www.beatport.com/search?q=test", timeout=15000)
+                    page.wait_for_timeout(4000)  # Wait for API call
+                except Exception as e:
+                    # If we already captured token, this timeout is acceptable
+                    if not captured_token:
+                        raise Exception(f"Failed to trigger API call after login: {e}")
+                    print(f"⚠ Warning: Search timeout, but token already captured")
+            
+            # Still no token? Try one more search with reload
+            if not captured_token:
+                print("⏳ No fresh token yet, trying page reload...")
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+                
+                # Check localStorage again after reload
+                ls_token = _extract_token_from_storage()
+                if ls_token and _is_fresh_token(ls_token, min_remaining_seconds=300):
+                    captured_token = ls_token
+                    print("✓ Fresh token captured from localStorage after reload")
             
         except Exception as e:
             browser.close()
@@ -368,7 +440,7 @@ def _refresh_token_with_playwright() -> str:
         browser.close()
     
     if not captured_token:
-        raise Exception("Failed to capture Beatport token after login. Check credentials.")
+        raise Exception("Failed to capture fresh Beatport token after login. Token may be stale.")
     
     print("✅ Beatport token refreshed successfully")
     return captured_token
