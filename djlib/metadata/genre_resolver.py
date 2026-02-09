@@ -8,6 +8,8 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
+from djlib.genre_utils import normalize_genre
+
 log = logging.getLogger(__name__)
 
 # Ensure requests-cache side effects
@@ -39,7 +41,10 @@ _GENRES_DATA = _load_genres_yml()
 
 
 def _build_electronic_genres() -> frozenset[str]:
-    """Build set of electronic genre synonyms from genres.yml category=electronic."""
+    """Build set of electronic genre synonyms from genres.yml category=electronic.
+    
+    Uses normalize_genre() for consistent normalization with all other modules.
+    """
     result = set()
     for _key, info in _GENRES_DATA.items():
         if not isinstance(info, dict):
@@ -47,7 +52,9 @@ def _build_electronic_genres() -> frozenset[str]:
         if info.get("category") != "electronic":
             continue
         for syn in info.get("synonyms", []):
-            result.add(syn.strip().lower())
+            n = normalize_genre(syn)
+            if n:
+                result.add(n)
     return frozenset(result)
 
 
@@ -66,39 +73,31 @@ def _build_specificity_boost() -> Dict[str, float]:
         if not isinstance(boost, (int, float)) or boost == 1.0:
             continue
         for syn in info.get("synonyms", []):
-            n = _norm(syn)
+            n = normalize_genre(syn)
             if n:
                 result[n] = float(boost)
         # Also map the label
         label = info.get("label", "")
         if label:
-            result[_norm(label)] = float(boost)
+            result[normalize_genre(label)] = float(boost)
     return result
 
 
-def _norm(tag: str) -> str:
-    t = (tag or "").strip().lower()
-    t = t.replace("_", " ").replace("-", " ")
-    t = " ".join(t.split())
-    return t
-
-
 # Aliases: additional mappings not captured by genres.yml synonyms.
+# Keys MUST be in normalize_genre() form (lowercase, all punctuation→spaces).
 # These handle compound / shorthand tags from Beatport/MB/LFM.
 ALIASES = {
     "edm": "electronic",
-    "tech-house": "tech house",
+    "tech house": "tech house",
     "techno house": "tech house",
     "d n b": "drum and bass",
-    "d&b": "drum and bass",
-    # Beatport compound genre names
-    "nu disco / disco": "nu disco",  # Beatport ID 50
+    "d b": "drum and bass",       # from "d&b" after normalization
 }
 
 
 def canonical(tag: str) -> str:
     """Normalize and resolve aliases for a genre tag."""
-    t = _norm(tag)
+    t = normalize_genre(tag)
     return ALIASES.get(t, t)
 
 
@@ -132,7 +131,7 @@ _RE_CONTAINS_YEAR = re.compile(r"20[0-3][0-9]")
 
 def _is_noise(tag: str) -> bool:
     """Return True if tag is a non-genre noise term (charts, dates, etc.)."""
-    t = _norm(tag)
+    t = normalize_genre(tag)
     if not t:
         return True
     if t in _NOISE_TERMS:
@@ -161,7 +160,7 @@ def _downweight_factor(tag: str) -> float:
     Generic parent genres (rock, pop, electronic) keep weight 1.0 - 
     they can still win over false positives, but lose to specific subgenres via boost.
     """
-    t = _norm(tag)
+    t = normalize_genre(tag)
     if not t:
         return 1.0
     if t == "folk":
@@ -184,7 +183,7 @@ _SPECIFIC_GENRE_BOOST = _build_specificity_boost()
 
 def _specificity_boost(tag: str) -> float:
     """Return boost factor for specific subgenres over generic parents."""
-    t = _norm(tag)
+    t = normalize_genre(tag)
     return _SPECIFIC_GENRE_BOOST.get(t, 1.0)
 
 
@@ -208,14 +207,19 @@ WEIGHT_SC_REMIX = 20.0  # High for remixes: SC often has remix-specific genre ta
 
 
 def _is_beatport_electronic(genre: str) -> bool:
-    """Check if Beatport genre is a specific electronic genre (not generic Dance/Pop)."""
-    g = _norm(genre)
+    """Check if Beatport genre is a specific electronic genre (not generic Dance/Pop).
+    
+    Uses word-boundary matching for compound genres like
+    "Techno (Peak Time / Driving)" to avoid false positives
+    (e.g. "warehouse" matching "house").
+    """
+    g = normalize_genre(genre)
     # Direct match
     if g in BEATPORT_ELECTRONIC_GENRES:
         return True
-    # Partial match for compound genres like "Techno (Peak Time / Driving)"
+    # Word-boundary match for compound genres
     for eg in BEATPORT_ELECTRONIC_GENRES:
-        if eg in g or g.startswith(eg):
+        if re.search(rf"\b{re.escape(eg)}\b", g):
             return True
     return False
 
@@ -277,7 +281,14 @@ def _fetch_musicbrainz(artist: str, title: str, duration_s: Optional[int],
     return None
 
 
-def _score_tag(tag: str, base_weight: float, scores: Dict[str, float], local: Dict[str, float]) -> None:
+def _score_tag(
+    tag: str,
+    base_weight: float,
+    scores: Dict[str, float],
+    local: Dict[str, float],
+    *,
+    count: int = 0,
+) -> None:
     """Score a single tag and update scores dict. Applies canonical, noise filter, and boosts.
     
     Args:
@@ -285,12 +296,17 @@ def _score_tag(tag: str, base_weight: float, scores: Dict[str, float], local: Di
         base_weight: Base weight for this source (e.g., WEIGHT_BEATPORT_BASE)
         scores: Global scores dict to update
         local: Local scores dict for this source to update
+        count: Tag popularity count (e.g., Last.fm play count). When > 0,
+               base_weight is scaled by log(count) for popularity-weighted scoring.
     """
     c = canonical(tag)
     if _is_noise(c):
         return
+    w = base_weight
+    if count > 0:
+        w *= math.log(max(count, 1))
     f = _downweight_factor(c) * _specificity_boost(c)
-    w = base_weight * f
+    w *= f
     if w <= 0:
         return
     scores[c] = scores.get(c, 0.0) + w
@@ -448,18 +464,8 @@ def resolve(artist: str, title: str, version: str = "", *, duration_s: int | Non
     
     if lfm_result:
         lfm_local: Dict[str, float] = {}
-        # weight by log(count), scale with lfm_w
         for name, cnt in lfm_result:
-            base = (math.log(max(cnt, 1)) if cnt > 0 else 0.0) * lfm_w
-            c = canonical(name)
-            if _is_noise(c):
-                continue
-            f = _downweight_factor(c) * _specificity_boost(c)
-            w = base * f
-            if w <= 0:
-                continue
-            scores[c] = scores.get(c, 0.0) + w
-            lfm_local[c] = lfm_local.get(c, 0.0) + w
+            _score_tag(name, lfm_w, scores, lfm_local, count=cnt)
         if lfm_local:
             parts.append(("lastfm", lfm_w, lfm_local))
 

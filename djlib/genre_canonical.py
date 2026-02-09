@@ -10,6 +10,8 @@ from typing import Dict, List, Tuple, Optional
 import yaml
 import re
 
+from djlib.genre_utils import normalize_genre
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GENRES_FILE = REPO_ROOT / "genres.yml"
 
@@ -20,15 +22,14 @@ class GenreDefinition:
     def __init__(self, key: str, label: str, synonyms: List[str], description: str = "", boost: float = 1.0):
         self.key = key  # Canonical key (e.g., "AFRO_HOUSE")
         self.label = label  # Human-readable label (e.g., "Afro House")
-        self.synonyms = [self._normalize(s) for s in synonyms]
+        self.synonyms = [normalize_genre(s) for s in synonyms]
         self.description = description
         self.boost = boost  # Specificity multiplier from genres.yml (1.0 = generic parent)
     
     @staticmethod
     def _normalize(text: str) -> str:
-        """Normalize text for matching: lowercase, punctuation to spaces, single spacing."""
-        cleaned = re.sub(r'[^a-z0-9\s]', ' ', (text or '').lower())
-        return re.sub(r'\s+', ' ', cleaned).strip()
+        """Normalize text for matching. Delegates to shared normalize_genre()."""
+        return normalize_genre(text)
     
     def matches(self, raw_genre: str) -> bool:
         """Check if raw genre string matches this definition."""

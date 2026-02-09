@@ -230,6 +230,8 @@ DNB:
     - "drum & bass"
     - "drum and bass"
     - "dnb"
+    - "d&b"
+    - "d n b"
     - "drum'n'bass"
     - "drum n bass"
     - "jungle"
@@ -294,7 +296,7 @@ NU_DISCO:
     - "nu disco"
     - "nu-disco"
     - "nudisco"
-    - "Nu Disco / Disco"  # Beatport genre ID 50
+    - "Nu Disco / Disco" # Beatport genre ID 50
     - "disco house"
     - "modern disco"
     - "disco edit"
@@ -319,7 +321,7 @@ INDIE_DANCE:
   boost: 1.8
   synonyms:
     - "indie dance"
-    - "indie dance / nu disco"  # Beatport compound
+    - "indie dance / nu disco" # Beatport compound
 
 DANCE:
   label: "Dance"
