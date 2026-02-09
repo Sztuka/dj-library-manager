@@ -17,7 +17,6 @@ from djlib.csvdb import load_records, save_records
 from djlib.tags import read_tags, write_tags
 from djlib.rekordbox_status import was_analyzed, extract_metadata_from_db
 from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
-from djlib.metadata.genre_resolver import resolve as resolve_genres
 from djlib.metadata.canonical_mb import import_canonical_dump as do_import_canonical_dump, get_canonical_db_path
 from djlib.fingerprint import file_sha256, fingerprint_info
 from djlib.filename import build_final_filename, extension_for, split_title_and_version, merge_title_and_version
@@ -614,15 +613,19 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             
-            from djlib.metadata.genre_resolver import resolve as resolve_genres
+            from djlib.metadata.genre_resolver import resolve as resolve_genres, ALL_SOURCES
             print(f"   🎵 Resolving genres for: {a} - {t}")
+            enabled_sources = set(ALL_SOURCES)
+            if getattr(args, "skip_soundcloud", False):
+                enabled_sources.discard("soundcloud")
+            if getattr(args, "skip_beatport", False):
+                enabled_sources.discard("beatport")
             genre_res = resolve_genres(
                 a,
                 t,
                 version=v,
                 duration_s=dur_s,
-                disable_soundcloud=bool(getattr(args, "skip_soundcloud", False)),
-                disable_beatport=bool(getattr(args, "skip_beatport", False)),
+                sources=enabled_sources,
             )
             print(f"      Result: main={genre_res.main if genre_res else None}, conf={genre_res.confidence if genre_res else None}")
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
@@ -639,13 +642,13 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                     r["genre_suggest"] = genre_str
                     any_change = True
                     # Update meta_source to reflect all sources used
-                    sources = [src for src, _, _ in genre_res.breakdown]
+                    sources = [s.source for s in genre_res.breakdown]
                     if sources:
                         r["meta_source"] = f"{r.get('meta_source', '')}+genres({','.join(sources)})".strip("+")
 
                 # Zapisz surowe listy tagów per źródło do dodatkowych kolumn
                 try:
-                    src_map = {src: local for (src, _, local) in genre_res.breakdown}
+                    src_map = {s.source: s.tags for s in genre_res.breakdown}
                     def _top_k(d, k=5):
                         return ", ".join([kv[0] for kv in sorted(d.items(), key=lambda kv: kv[1], reverse=True)[:k]])
                     if src_map.get("beatport") and (force_genres or not (r.get("genres_beatport") or "")):
@@ -1639,6 +1642,7 @@ def cmd_import_canonical_dump(args: argparse.Namespace) -> None:
 
 
 def cmd_genres_resolve(args: argparse.Namespace) -> None:
+    from djlib.metadata.genre_resolver import resolve as resolve_genres
     artist = (getattr(args, "artist", None) or "").strip()
     title = (getattr(args, "title", None) or "").strip()
     dur = getattr(args, "duration", None)
@@ -1652,9 +1656,9 @@ def cmd_genres_resolve(args: argparse.Namespace) -> None:
         print(f"Subs: {', '.join(res.subs)}")
     print(f"Confidence: {res.confidence:.2f}")
     print("Breakdown:")
-    for src, _, local in res.breakdown:
-        parts = ", ".join(f"{k}:{v:.2f}" for k, v in sorted(local.items(), key=lambda kv: kv[1], reverse=True)[:5])
-        print(f"  - {src}: {parts}")
+    for s in res.breakdown:
+        parts = ", ".join(f"{k}:{v:.2f}" for k, v in sorted(s.tags.items(), key=lambda kv: kv[1], reverse=True)[:5])
+        print(f"  - {s.source}: {parts}")
 
 def cmd_analyze_audio(args: argparse.Namespace) -> None:
     """Analiza audio (BPM/Key/Energy) dla INBOX lub wskazanego pliku/katalogu.

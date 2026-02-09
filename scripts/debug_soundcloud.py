@@ -17,5 +17,5 @@ for artist, title, version in tracks:
     print(f'{artist} - {title}')
     print(f'  main={result.main if result else None}')
     if result:
-        print(f'  sources: {[s for s, _, _ in result.breakdown]}')
+        print(f'  sources: {[s.source for s in result.breakdown]}')
     print()

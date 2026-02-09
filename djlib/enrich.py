@@ -660,7 +660,7 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
                 pass
         
         try:
-            from djlib.metadata.genre_resolver import resolve as resolve_genres
+            from djlib.metadata.genre_resolver import resolve as resolve_genres, ALL_SOURCES
             from djlib.metadata import lastfm, beatport
             
             dur_s = dur_sec if dur_sec else None
@@ -668,11 +668,12 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
             # earlier because it returns original track data, not remix-specific info.
             # For originals: MB lookup may still help even if lookup_musicbrainz failed.
             is_remix_not_live = bool(version and not is_live)
+            sources = set(ALL_SOURCES)
+            if is_remix_not_live:
+                sources.discard("mb")
             genre_res = resolve_genres(
                 artist, title, version=version, duration_s=dur_s,
-                disable_soundcloud=False,
-                disable_beatport=False,
-                disable_mb=is_remix_not_live
+                sources=sources,
             )
             
             # For remixes: try Beatport first (might have specific remix release date)
@@ -748,7 +749,7 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
             if genre_res and genre_res.confidence >= 0.03:
                 genres = [genre_res.main] + genre_res.subs[:2]
                 genre_str = ", ".join(genres)
-                sources = [src for src, _, _ in genre_res.breakdown]
+                sources = [s.source for s in genre_res.breakdown]
                 meta_source = f"genres({','.join(sources)})" if sources else "genres"
                 # Prioritize online over tags (online has more context about releases)
                 final_year = year_from_online if year_from_online else year_from_tags
