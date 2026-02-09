@@ -3,7 +3,10 @@ import logging
 import math
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+import yaml
 
 log = logging.getLogger(__name__)
 
@@ -15,6 +18,64 @@ from . import lastfm
 from .soundcloud import track_tags as sc_track_tags
 
 
+# ============================================================================
+# GENRES.YML - single source of truth for taxonomy
+# ============================================================================
+
+_GENRES_FILE = Path(__file__).resolve().parents[2] / "genres.yml"
+
+
+def _load_genres_yml() -> Dict:
+    """Load genres.yml once at import time."""
+    try:
+        with _GENRES_FILE.open("r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        log.warning("Failed to load genres.yml: %s", e)
+        return {}
+
+
+_GENRES_DATA = _load_genres_yml()
+
+
+def _build_electronic_genres() -> frozenset[str]:
+    """Build set of electronic genre synonyms from genres.yml category=electronic."""
+    result = set()
+    for _key, info in _GENRES_DATA.items():
+        if not isinstance(info, dict):
+            continue
+        if info.get("category") != "electronic":
+            continue
+        for syn in info.get("synonyms", []):
+            result.add(syn.strip().lower())
+    return frozenset(result)
+
+
+def _build_specificity_boost() -> Dict[str, float]:
+    """Build specificity boost map from genres.yml boost field.
+    
+    For each genre with boost != 1.0, maps every synonym (normalized)
+    to that boost value. This lets subgenres beat their parent genres
+    in weighted scoring.
+    """
+    result: Dict[str, float] = {}
+    for _key, info in _GENRES_DATA.items():
+        if not isinstance(info, dict):
+            continue
+        boost = info.get("boost", 1.0)
+        if not isinstance(boost, (int, float)) or boost == 1.0:
+            continue
+        for syn in info.get("synonyms", []):
+            n = _norm(syn)
+            if n:
+                result[n] = float(boost)
+        # Also map the label
+        label = info.get("label", "")
+        if label:
+            result[_norm(label)] = float(boost)
+    return result
+
+
 def _norm(tag: str) -> str:
     t = (tag or "").strip().lower()
     t = t.replace("_", " ").replace("-", " ")
@@ -22,6 +83,8 @@ def _norm(tag: str) -> str:
     return t
 
 
+# Aliases: additional mappings not captured by genres.yml synonyms.
+# These handle compound / shorthand tags from Beatport/MB/LFM.
 ALIASES = {
     "edm": "electronic",
     "tech-house": "tech house",
@@ -114,71 +177,9 @@ def _downweight_factor(tag: str) -> float:
     return 1.0
 
 
-# Specific subgenres that should be boosted over their parent genres
-_SPECIFIC_GENRE_BOOST = {
-    # Rock subgenres
-    "rock and roll": 2.0,
-    "rockabilly": 2.0,
-    "punk rock": 1.8,
-    "hard rock": 1.8,
-    "classic rock": 1.8,
-    "progressive rock": 1.8,
-    "glam rock": 1.8,
-    "alternative rock": 1.5,
-    "indie rock": 1.5,
-    "new wave": 1.8,
-    # Electronic/House subgenres
-    "tech house": 1.5,
-    "deep house": 1.5,
-    "progressive house": 1.5,
-    "afro house": 1.8,
-    "acid house": 1.5,
-    "electro house": 1.5,
-    "electro swing": 1.8,
-    # Techno subgenres
-    "melodic techno": 1.5,
-    "minimal techno": 1.5,
-    "hard techno": 1.8,
-    "hardcore": 1.8,
-    # Trance subgenres
-    "trance": 1.5,
-    "psytrance": 1.8,
-    # Pop subgenres
-    "synth pop": 1.8,
-    "electropop": 1.8,
-    "dance pop": 1.5,
-    "indie pop": 1.8,
-    "eurodance": 2.0,
-    # Disco variants
-    "disco": 1.8,
-    "italo disco": 2.0,
-    "euro disco": 2.0,
-    "nu disco": 1.8,
-    # Urban/Hip-hop
-    "hip hop": 1.5,
-    "r&b": 1.5,
-    "rnb": 1.5,
-    # Funk/Soul
-    "funk": 1.5,
-    "soul": 1.5,
-    "blues": 1.5,
-    "swing": 1.8,
-    # Caribbean/Latin
-    "reggae": 1.5,
-    "dancehall": 1.8,
-    "ska": 1.8,
-    "dub": 1.5,
-    "reggaeton": 1.8,
-    "latin": 1.5,
-    "kuduro": 1.8,
-    # Bass music
-    "drum and bass": 1.5,
-    "dnb": 1.5,
-    "breakbeat": 1.5,
-    # World/Regional
-    "afrobeats": 1.8,
-    "balkan": 1.8,
-}
+# Specificity boost map: derived from genres.yml `boost` field at import time.
+# Subgenres with boost > 1.0 beat their parent genre in weighted scoring.
+_SPECIFIC_GENRE_BOOST = _build_specificity_boost()
 
 
 def _specificity_boost(tag: str) -> float:
@@ -187,27 +188,9 @@ def _specificity_boost(tag: str) -> float:
     return _SPECIFIC_GENRE_BOOST.get(t, 1.0)
 
 
-# Beatport-authoritative electronic genres (if BP returns these, trust it over Last.fm)
-# These are specific enough that Beatport classification is reliable
-BEATPORT_ELECTRONIC_GENRES = {
-    # House variants
-    "house", "tech house", "deep house", "progressive house", "afro house",
-    "melodic house", "funky house", "jackin house", "tribal house", "soulful house",
-    "bass house", "electro house", "future house", "g-house", "minimal house",
-    "acid house", "chicago house", "uk garage", "garage", "speed garage",
-    # Techno variants
-    "techno", "melodic techno", "minimal techno", "hard techno", "peak time techno",
-    "driving techno", "dub techno", "detroit techno", "industrial techno",
-    # Trance
-    "trance", "progressive trance", "psytrance", "uplifting trance", "vocal trance",
-    # Bass music
-    "drum and bass", "dnb", "liquid dnb", "jungle", "dubstep", "bass", "future bass",
-    "breakbeat", "breaks", "uk bass",
-    # Other electronic
-    "electro", "electronica", "edm", "nu disco", "disco", "italo disco",
-    "synthwave", "downtempo", "ambient", "chillout", "lounge",
-    "hardstyle", "hardcore", "gabber", "happy hardcore",
-}
+# Beatport-authoritative electronic genres: derived from genres.yml category=electronic.
+# If Beatport returns one of these, trust it over Last.fm/MB.
+BEATPORT_ELECTRONIC_GENRES = _build_electronic_genres()
 
 # Weight constants for genre scoring
 # These values are tuned to balance different sources' reliability

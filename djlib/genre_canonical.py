@@ -17,11 +17,12 @@ GENRES_FILE = REPO_ROOT / "genres.yml"
 class GenreDefinition:
     """A canonical genre with its label and synonyms."""
     
-    def __init__(self, key: str, label: str, synonyms: List[str], description: str = ""):
+    def __init__(self, key: str, label: str, synonyms: List[str], description: str = "", boost: float = 1.0):
         self.key = key  # Canonical key (e.g., "AFRO_HOUSE")
         self.label = label  # Human-readable label (e.g., "Afro House")
         self.synonyms = [self._normalize(s) for s in synonyms]
         self.description = description
+        self.boost = boost  # Specificity multiplier from genres.yml (1.0 = generic parent)
     
     @staticmethod
     def _normalize(text: str) -> str:
@@ -31,21 +32,32 @@ class GenreDefinition:
     
     def matches(self, raw_genre: str) -> bool:
         """Check if raw genre string matches this definition."""
+        return self.best_match_length(raw_genre) > 0
+
+    def best_match_length(self, raw_genre: str) -> int:
+        """Return length of the longest matching synonym, or 0 if no match.
+        
+        Used by CanonicalGenreResolver to prefer the most specific genre
+        when multiple genres match a raw string (e.g. "Melodic House & Techno"
+        matches both "house" and "melodic house" — the longer match wins).
+        """
         normalized = self._normalize(raw_genre)
         if not normalized:
-            return False
+            return 0
         
-        # Check exact match
+        best = 0
+        
+        # Check exact match (highest specificity)
         if normalized in self.synonyms:
-            return True
+            return len(normalized)
 
-        # Check if any synonym appears as a whole-word phrase inside the raw
-        # genre (avoid partial substring matches like "dub" vs "dubstep").
+        # Check substring matches, track longest
         for syn in self.synonyms:
             if re.search(rf"\b{re.escape(syn)}\b", normalized):
-                return True
+                if len(syn) > best:
+                    best = len(syn)
 
-        return False
+        return best
 
 
 class CanonicalGenreResolver:
@@ -70,14 +82,42 @@ class CanonicalGenreResolver:
             label = definition.get("label", key)
             synonyms = definition.get("synonyms", [])
             description = definition.get("description", "")
+            boost = float(definition.get("boost", 1.0))
             
             if not isinstance(synonyms, list):
                 synonyms = []
             
-            self.genres[key] = GenreDefinition(key, label, synonyms, description)
+            self.genres[key] = GenreDefinition(key, label, synonyms, description, boost=boost)
     
+    def _resolve_single(self, raw_genre: str) -> Optional[Tuple[str, str, int, float]]:
+        """Resolve a single genre phrase to (key, label, match_length, boost).
+        
+        Prefers longest synonym match; on tie, highest boost wins.
+        """
+        best_key: Optional[str] = None
+        best_label: Optional[str] = None
+        best_length: int = 0
+        best_boost: float = 0.0
+        
+        for key, definition in self.genres.items():
+            match_len = definition.best_match_length(raw_genre)
+            if match_len > best_length or (match_len == best_length and match_len > 0 and definition.boost > best_boost):
+                best_length = match_len
+                best_boost = definition.boost
+                best_key = key
+                best_label = definition.label
+        
+        if best_key and best_label and best_length > 0:
+            return (best_key, best_label, best_length, best_boost)
+        return None
+
     def resolve(self, raw_genre: str) -> Optional[Tuple[str, str]]:
         """Resolve raw genre to (canonical_key, label).
+        
+        Handles both single genre strings ("Melodic House & Techno") and
+        comma-separated lists ("Pop, Dance").  For comma-separated inputs,
+        each part is resolved independently and the best match wins
+        (longest synonym, then highest boost, then first-listed).
         
         Args:
             raw_genre: Raw genre string from tags/metadata
@@ -93,11 +133,35 @@ class CanonicalGenreResolver:
         if not raw_genre or not raw_genre.strip():
             return None
         
-        # Try direct match first
-        for key, definition in self.genres.items():
-            if definition.matches(raw_genre):
-                return (key, definition.label)
+        # Comma-separated inputs ("Pop, Dance") → resolve each part independently
+        parts = [p.strip() for p in raw_genre.split(",") if p.strip()]
         
+        if len(parts) > 1:
+            best_part: Optional[Tuple[str, str, int, float]] = None
+            best_part_ratio: float = 0.0
+            
+            for part in parts:
+                result = self._resolve_single(part)
+                if result is None:
+                    continue
+                _, _, match_len, boost = result
+                # Normalize match length by part length for fair cross-part comparison
+                part_norm_len = len(GenreDefinition._normalize(part)) or 1
+                ratio = match_len / part_norm_len
+                if best_part is None or ratio > best_part_ratio or (
+                    ratio == best_part_ratio and boost > best_part[3]
+                ):
+                    best_part = result
+                    best_part_ratio = ratio
+            
+            if best_part:
+                return (best_part[0], best_part[1])
+        
+        # Single phrase (or comma-split found nothing): try whole string
+        # Handles compound names like "Melodic House & Techno"
+        whole_result = self._resolve_single(raw_genre)
+        if whole_result:
+            return (whole_result[0], whole_result[1])
         return None
     
     def resolve_multiple(self, raw_genres: List[str]) -> List[Tuple[str, str]]:

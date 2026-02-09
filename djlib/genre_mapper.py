@@ -9,7 +9,7 @@ import re
 _GENRES_CACHE: Dict[str, Dict[str, List[str]]] | None = None
 
 def _load_genres_yml() -> Dict[str, Dict[str, List[str]]]:
-    """Load genres.yml and return dict of canonical_id -> {label, synonyms}"""
+    """Load genres.yml and return dict of canonical_id -> {label, synonyms, boost, ...}"""
     global _GENRES_CACHE
     if _GENRES_CACHE is not None:
         return _GENRES_CACHE
@@ -40,8 +40,9 @@ def map_genre(genre_suggest: str) -> Optional[str]:
     
     Matching strategy:
     1. Split genre_suggest by comma (e.g., "afro house, tech house, melodic")
-    2. For each part, try to find exact synonym match in genres.yml
-    3. Return first match (prioritize first genre in genre_suggest)
+    2. For each part, find all matching synonym entries in genres.yml
+    3. Return the match with highest boost (most specific genre wins)
+    4. On tie, return first match (position priority)
     """
     if not genre_suggest or not genre_suggest.strip():
         return None
@@ -50,8 +51,8 @@ def map_genre(genre_suggest: str) -> Optional[str]:
     if not genres_data:
         return None
     
-    # Build reverse map: normalized_synonym -> canonical_label
-    synonym_map: Dict[str, str] = {}
+    # Build reverse map: normalized_synonym -> (canonical_label, boost)
+    synonym_map: Dict[str, Tuple[str, float]] = {}
     for genre_id, genre_info in genres_data.items():
         label = genre_info.get("label", "")
         if not isinstance(label, str):
@@ -59,33 +60,37 @@ def map_genre(genre_suggest: str) -> Optional[str]:
         synonyms = genre_info.get("synonyms", [])
         if not isinstance(synonyms, list):
             continue
+        boost = float(genre_info.get("boost", 1.0))
         
         # Add label itself as synonym
         if label:
-            synonym_map[_normalize_genre(label)] = label
+            norm_label = _normalize_genre(label)
+            # Only store if not already mapped with higher boost
+            if norm_label not in synonym_map or boost > synonym_map[norm_label][1]:
+                synonym_map[norm_label] = (label, boost)
         
         # Add all synonyms
         for syn in synonyms:
             if isinstance(syn, str):
-                synonym_map[_normalize_genre(syn)] = label
+                norm_syn = _normalize_genre(syn)
+                if norm_syn not in synonym_map or boost > synonym_map[norm_syn][1]:
+                    synonym_map[norm_syn] = (label, boost)
     
-    # Try to match each part of genre_suggest
+    # Try to match each part of genre_suggest, pick highest-boost match
     parts = [p.strip() for p in genre_suggest.split(",") if p.strip()]
     
-    # HEURISTIC: Prioritize "rockabilly" if present (more specific than "classic rock")
-    # Example: "classic rock, rockabilly, 60s" → should map to "Rock 'n' Roll" not "Rock"
-    for part in parts:
-        normalized = _normalize_genre(part)
-        if normalized == "rockabilly" and normalized in synonym_map:
-            return synonym_map[normalized]
+    best_label: Optional[str] = None
+    best_boost: float = -1.0
     
-    # Normal matching: first match wins
     for part in parts:
         normalized = _normalize_genre(part)
         if normalized in synonym_map:
-            return synonym_map[normalized]
+            label, boost = synonym_map[normalized]
+            if boost > best_boost:
+                best_boost = boost
+                best_label = label
     
-    return None
+    return best_label
 
 
 def map_genres_batch(rows: List[Dict[str, str]]) -> Dict[str, Any]:
