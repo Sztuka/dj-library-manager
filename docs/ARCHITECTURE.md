@@ -178,48 +178,70 @@ Excel file with all pending tracks. Key columns:
 
 ### Genre Resolution
 
-Multi-source weighted voting system:
+Multi-source weighted voting system in `djlib/metadata/genre_resolver.py`.
 
-| Source      | Weight | Data                       |
-| ----------- | ------ | -------------------------- |
-| Beatport    | 10     | EDM genres (authoritative) |
-| Last.fm     | 6      | Tags from user community   |
-| MusicBrainz | 3      | Structured genre data      |
-| SoundCloud  | 2      | Genre tags                 |
+**Architecture (post P1-P3 refactor):**
 
-**Resolution Process:**
+```text
+resolve(artist, title, version, *, sources=ALL_SOURCES)
+  ├── _detect_remix(version, title, artist) → bool
+  ├── _score_beatport()   → Optional[SourceScore]  (early exit if specific EDM)
+  ├── _score_lastfm()     → Optional[SourceScore]
+  ├── _score_musicbrainz() → Optional[SourceScore]
+  ├── _score_soundcloud()  → Optional[SourceScore]
+  └── _rank(scores)        → GenreResolution(main, subs, confidence, breakdown)
+```
 
-1. Query all available sources
-2. Normalize genres to canonical keys (genres.yml)
-3. Apply weights and specificity boost
-4. Return highest-scoring genre
+**Sources and weights:**
+
+| Source      | Weight | Data                       | Control              |
+| ----------- | ------ | -------------------------- | -------------------- |
+| Beatport    | 10     | EDM genres (authoritative) | `sources={"beatport"}` |
+| Last.fm     | 6      | Tags from user community   | `sources={"lastfm"}`   |
+| MusicBrainz | 3      | Structured genre data      | `sources={"mb"}`       |
+| SoundCloud  | 2-8    | Genre tags (remix boost)   | `sources={"soundcloud"}`|
+
+`ALL_SOURCES = frozenset({"beatport", "lastfm", "mb", "soundcloud"})`
+
+**Key types:**
+
+- `SourceScore(source, weight, tags)` — per-source scoring result
+- `GenreResolution(main, subs, confidence, breakdown)` — final result
+
+**Scoring pipeline (per tag):**
+
+```text
+raw tag → canonical() → _is_noise()? → _downweight_factor() → _specificity_boost()
+                ↓              ↓
+            ALIASES map    _NOISE_TERMS filter (validated at import vs genres.yml)
+```
 
 **Specificity Boost:** Subgenres get 1.5-2.0x multiplier over generic parents.
 
-```python
-# Example: "tech house" vs "house"
-# tech house: weight 10 × boost 1.5 = 15
-# house: weight 10 × boost 1.0 = 10
-# Winner: tech house
-```
+**Lazy loading:** `genres.yml` parsed via `@lru_cache` — no module-level I/O.
+
+**Test coverage:** 54 tests in `tests/test_genre_resolver.py`:
+- Pure function units: canonical, _is_noise, _downweight, _specificity_boost, _detect_remix
+- Mocked integration: resolve() with mocked API fetchers
+- Golden-file regression: known tracks with expected genre
 
 ### Canonical Genres (genres.yml)
 
-30 canonical genres with synonyms:
+50 canonical genres across 8 categories with ~680 lines of synonyms:
 
 ```yaml
-tech_house:
-  name: "Tech House"
-  synonyms: ["tech-house", "techhouse"]
-
-house:
-  name: "House"
-  synonyms: ["deep house", "progressive house"]
-
-rock_and_roll:
-  name: "Rock 'n' Roll"
-  synonyms: ["rock and roll", "rock & roll", "rockabilly"]
+AFRO_HOUSE:
+  label: "Afro House"
+  category: electronic
+  boost: 1.8
+  synonyms:
+    - "afro house"
+    - "afro tech"
+    - "tribal afro house"
+    # ...
 ```
+
+Categories: `electronic`, `rock`, `pop`, `urban`, `caribbean`, `world`, `jazz`, `other`
 
 ### Artist Validation (Beatport)
 
@@ -315,6 +337,31 @@ CREATE TABLE audio_features (
     algorithm_version TEXT
 );
 ```
+
+### ML Genre Classification Pipeline
+
+**Status:** Infrastructure ready, training not implemented yet.
+**Roadmap:** See [ML_GENRE_CLASSIFICATION_ROADMAP.md](ML_GENRE_CLASSIFICATION_ROADMAP.md)
+
+Pipeline flow:
+```text
+audio files → Essentia (~80 features) → SQLite cache
+                                              ↓
+library.csv (genre labels) ──────────→ training dataset CSV
+                                              ↓
+                                    LightGBM training (TODO)
+                                              ↓
+                                    genre_model.pkl → _score_essentia()
+```
+
+Key modules:
+- `djlib/audio/essentia_backend.py` — feature extraction
+- `djlib/audio/cache.py` — SQLite analysis cache
+- `djlib/ml/export_dataset.py` — joins features + labels
+- `djlib/ml/models.py` — model config placeholders
+- `djlib/ml/train.py` — training code (TODO)
+
+Goal: Replace API-based genre resolution with audio-based ML classification.
 
 ---
 
