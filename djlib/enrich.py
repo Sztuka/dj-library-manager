@@ -284,148 +284,153 @@ def _split_artist_title_from_combined(text: str) -> Tuple[Optional[str], Optiona
     return None, None
 
 
-def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, str]:
-    """
-    Normalize and derive artist, title, version from audio tags and filename.
-    Returns (artist, title, version) tuple with proper capitalization and cleanup.
-    """
-    
-    def _sanitize_artist(val: str) -> str:
-        # Check special artists map first
-        raw = (val or "").strip()
-        if not raw:
-            return ""
-        
-        # Remove track number prefix (e.g., "09. One Direction" -> "One Direction")
-        # Pattern: digits followed by dot/dash and optional space at start
-        raw = re.sub(r"^\d{1,3}[\.\-]\s*", "", raw)
-        
-        # Normalize key for lookup: remove spaces, underscores, dots
-        key = re.sub(r"[ _\.]+", "", raw).lower()
-        if key in SPECIAL_ARTISTS:
-            return SPECIAL_ARTISTS[key]
-        
-        # Standard cleaning
-        s = raw.replace("_", " ")
-        s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s+", " ", s).strip()
-        
-        if not s:
-            return ""
-        
-        # Heuristic for short all-caps acronym-like artist names
-        if s.isupper():
-            alpha = re.sub(r"[^A-Za-z]", "", s)
-            if (
-                s not in BAD_UPPERWORDS
-                and " " not in s  # single token, no spaces
-                and len(alpha) <= 4  # short acronym, e.g. ABBA, INXS, BTS, M83, U2
-            ):
-                return s
-        
-        # Apply title case for lowercase or UPPERCASE strings (preserve MixedCase)
-        if s and (s.islower() or s.isupper()):
-            # Split by common separators to handle multi-artist strings
-            parts = []
-            for separator in [" feat. ", " feat ", " ft. ", " ft ", " vs. ", " vs ", " & "]:
-                if separator in s.lower():
-                    # Find actual separator in original string (case-insensitive)
-                    pattern = re.compile(re.escape(separator), re.IGNORECASE)
-                    split_parts = pattern.split(s)
-                    for i, part in enumerate(split_parts):
-                        parts.append(part.strip().title())
-                        if i < len(split_parts) - 1:
-                            parts.append(separator.strip().lower())
-                    s = " ".join(parts)
-                    break
-            else:
-                s = s.title()
-            
-            # Fix common patterns after title-casing
-            s = re.sub(r"\bDj\b", "DJ", s)
-            s = re.sub(r"\bMc\b", "MC", s)
-            s = re.sub(r"\bAc/dc\b", "AC/DC", s, flags=re.IGNORECASE)
-        
-        return s
 
-    def _sanitize_title(val: str) -> str:
-        if not val:
-            return ""
-        s = val.replace("_", " ").replace("–", "-").replace("—", "-")
-        
-        # Remove track number prefix (e.g., "66. Artist - Title" or "01. Title")
-        # Pattern: digits followed by dot/dash and optional space at start
-        s = re.sub(r"^\d{1,3}[\.\-]\s*", "", s)
-        
-        s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\.(?:mp3|wav|flac|aiff|m4a|aac)$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s+-\s+", " - ", s)
-        s = re.sub(r"\s+", " ", s)
-        s = s.strip()
-        
-        # Apply title case for lowercase or UPPERCASE strings (preserve MixedCase)
-        if s and (s.islower() or s.isupper()):
+# ---------------------------------------------------------------------------
+# Sanitization / canonicalization helpers for derive_local_metadata
+# ---------------------------------------------------------------------------
+
+def _sanitize_artist(val: str) -> str:
+    # Check special artists map first
+    raw = (val or "").strip()
+    if not raw:
+        return ""
+    
+    # Remove track number prefix (e.g., "09. One Direction" -> "One Direction")
+    # Pattern: digits followed by dot/dash and optional space at start
+    raw = re.sub(r"^\d{1,3}[\.\-]\s*", "", raw)
+    
+    # Normalize key for lookup: remove spaces, underscores, dots
+    key = re.sub(r"[ _\.]+", "", raw).lower()
+    if key in SPECIAL_ARTISTS:
+        return SPECIAL_ARTISTS[key]
+    
+    # Standard cleaning
+    s = raw.replace("_", " ")
+    s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip()
+    
+    if not s:
+        return ""
+    
+    # Heuristic for short all-caps acronym-like artist names
+    if s.isupper():
+        alpha = re.sub(r"[^A-Za-z]", "", s)
+        if (
+            s not in BAD_UPPERWORDS
+            and " " not in s  # single token, no spaces
+            and len(alpha) <= 4  # short acronym, e.g. ABBA, INXS, BTS, M83, U2
+        ):
+            return s
+    
+    # Apply title case for lowercase or UPPERCASE strings (preserve MixedCase)
+    if s and (s.islower() or s.isupper()):
+        # Split by common separators to handle multi-artist strings
+        parts = []
+        for separator in [" feat. ", " feat ", " ft. ", " ft ", " vs. ", " vs ", " & "]:
+            if separator in s.lower():
+                # Find actual separator in original string (case-insensitive)
+                pattern = re.compile(re.escape(separator), re.IGNORECASE)
+                split_parts = pattern.split(s)
+                for i, part in enumerate(split_parts):
+                    parts.append(part.strip().title())
+                    if i < len(split_parts) - 1:
+                        parts.append(separator.strip().lower())
+                s = " ".join(parts)
+                break
+        else:
             s = s.title()
         
-        return s
+        # Fix common patterns after title-casing
+        s = re.sub(r"\bDj\b", "DJ", s)
+        s = re.sub(r"\bMc\b", "MC", s)
+        s = re.sub(r"\bAc/dc\b", "AC/DC", s, flags=re.IGNORECASE)
+    
+    return s
 
-    def _sanitize_version(val: str) -> str:
-        if not val:
-            return ""
-        s = val.replace("_", " ")
-        s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\.(?:mp3|wav|flac|aiff|m4a|aac)$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s+", " ", s)
-        return s.strip()
+def _sanitize_title(val: str) -> str:
+    if not val:
+        return ""
+    s = val.replace("_", " ").replace("–", "-").replace("—", "-")
+    
+    # Remove track number prefix (e.g., "66. Artist - Title" or "01. Title")
+    # Pattern: digits followed by dot/dash and optional space at start
+    s = re.sub(r"^\d{1,3}[\.\-]\s*", "", s)
+    
+    s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\.(?:mp3|wav|flac|aiff|m4a|aac)$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+-\s+", " - ", s)
+    s = re.sub(r"\s+", " ", s)
+    s = s.strip()
+    
+    # Apply title case for lowercase or UPPERCASE strings (preserve MixedCase)
+    if s and (s.islower() or s.isupper()):
+        s = s.title()
+    
+    return s
 
-    def _canonical(val: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", (val or "").lower())
+def _sanitize_version(val: str) -> str:
+    if not val:
+        return ""
+    s = val.replace("_", " ")
+    s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\.(?:mp3|wav|flac|aiff|m4a|aac)$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
-    def _clean_stem(stem: str) -> str:
-        s = stem.replace("_", " ")
-        s = re.sub(r"\((?:https?://|www\.)[^)]*\)", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s+", " ", s)
-        return s.strip()
+def _canonical(val: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (val or "").lower())
 
-    def _normalize_ascii(val: str) -> str:
-        if not val:
-            return ""
-        return unicodedata.normalize("NFKD", val).encode("ascii", "ignore").decode("ascii").lower()
+def _clean_stem(stem: str) -> str:
+    s = stem.replace("_", " ")
+    s = re.sub(r"\((?:https?://|www\.)[^)]*\)", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
 
-    def _strip_artist_prefix(title: str, artist: str) -> str:
-        if not title or not artist:
-            return title
-        pattern = rf"^\s*{re.escape(artist)}\s*-\s*(.+)$"
-        m = re.match(pattern, title, flags=re.IGNORECASE)
-        if m:
-            return m.group(1).strip()
-        # Fallback: compare in ASCII-only space (ignoring diacritics)
-        norm_title = _normalize_ascii(title)
-        norm_artist = _normalize_ascii(artist)
-        if norm_artist and norm_title.startswith(norm_artist + " - "):
-            dash_idx = title.find("-")
-            if dash_idx != -1:
-                return title[dash_idx + 1:].strip(" -–—")
+def _normalize_ascii(val: str) -> str:
+    if not val:
+        return ""
+    return unicodedata.normalize("NFKD", val).encode("ascii", "ignore").decode("ascii").lower()
+
+def _strip_artist_prefix(title: str, artist: str) -> str:
+    if not title or not artist:
         return title
+    pattern = rf"^\s*{re.escape(artist)}\s*-\s*(.+)$"
+    m = re.match(pattern, title, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Fallback: compare in ASCII-only space (ignoring diacritics)
+    norm_title = _normalize_ascii(title)
+    norm_artist = _normalize_ascii(artist)
+    if norm_artist and norm_title.startswith(norm_artist + " - "):
+        dash_idx = title.find("-")
+        if dash_idx != -1:
+            return title[dash_idx + 1:].strip(" -–—")
+    return title
 
-    def _strip_version_suffix(title: str, version: str) -> str:
-        if not title or not version:
-            return title
-        lt = title.lower()
-        lv = version.lower()
-        if lt.endswith(lv):
-            trimmed = title[:len(title) - len(version)]
-            trimmed = re.sub(r"[ \-_/]+$", "", trimmed)
-            return trimmed.strip()
+def _strip_version_suffix(title: str, version: str) -> str:
+    if not title or not version:
         return title
+    lt = title.lower()
+    lv = version.lower()
+    if lt.endswith(lv):
+        trimmed = title[:len(title) - len(version)]
+        trimmed = re.sub(r"[ \-_/]+$", "", trimmed)
+        return trimmed.strip()
+    return title
 
+
+def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, str]:
+    """Normalize and derive artist, title, version from audio tags and filename.
+
+    Returns (artist, title, version) tuple with proper capitalization and cleanup.
+    """
     # Get metadata from tags and filename
     pf_artist, pf_title, pf_version = parse_from_filename(path)
     
@@ -508,343 +513,66 @@ def derive_local_metadata(path: Path, tags: Dict[str, str]) -> Tuple[str, str, s
 
 
 def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = True) -> Dict[str, str]:
-    """
-    Zwraca proponowane metadane do akceptacji. Priorytety:
-    1) online lookup (AcoustID + MusicBrainz) – opcjonalne (enable_online=True)
-    2) fallback: parsowanie z nazwy pliku
-    3) ostatecznie: to co w tagach (tylko gdy brak czegokolwiek sensownego)
+    """Return proposed metadata for approval.
 
-    Z pliku zachowujemy BPM i Key (poza zakresem tej funkcji).
-    
+    Priority:
+      1) AcoustID fingerprint -> MusicBrainz recording
+      2) MusicBrainz search (originals & live only -- skipped for remixes)
+      3) Genre resolver (Last.fm / SoundCloud / Beatport) + year/album
+      4) Offline fallback: filename parsing + existing tags
+
+    BPM and Key are preserved from the file (outside the scope of this function).
+
     Args:
-        enable_online: If False, skip AcoustID/MusicBrainz/genre resolver (faster for scan)
-        tags: Dict with metadata, may include 'skip_fingerprint': 'yes' to force using tags
+        enable_online: If False, skip all online lookups (faster for scan).
+        tags: Dict with metadata; may include ``skip_fingerprint: yes``.
     """
-    # Use derive_local_metadata to get normalized artist, title, version
     artist, title, version = derive_local_metadata(path, tags)
-    
-    # Check if user wants to skip fingerprint (force use tags)
-    skip_fingerprint = (tags.get("skip_fingerprint") or "").strip().lower() in {"yes", "y", "true", "1"}
-
-    if enable_online:
-        # Najpierw spróbuj lookup online z fingerprintem (AcoustID)
-        fp = tags.get("fingerprint", "")
-        dur_sec = 0
-        try:
-            dur_txt = tags.get("duration", "")
-            if ":" in dur_txt:
-                m, s = dur_txt.split(":", 1)
-                dur_sec = int(m) * 60 + int(s)
-        except Exception:
-            pass
-        
-        # Fallback: get duration from audio file metadata if not in tags
-        if not dur_sec:
-            dur_sec = get_audio_duration(path)
-        
-        # Skip AcoustID if user explicitly requested (skip_fingerprint=yes)
-        if fp and dur_sec and not skip_fingerprint:
-            # Pass album tag from file for live detection (fallback when MB has no RG data)
-            file_album = tags.get("album", "")
-            online = lookup_acoustid(fp, dur_sec, file_album_tag=file_album)
-            if online:
-                # Sanity check: verify AcoustID result matches file tags (artist similarity)
-                # If AcoustID returns completely different artist, fingerprint may be wrong
-                acoustid_artist = (online.get("artist_suggest") or "").lower().strip()
-                tags_artist = artist.lower().strip()
-                
-                # Simple similarity check: at least one common word (3+ chars)
-                acoustid_words = set(w for w in acoustid_artist.replace(",", " ").split() if len(w) >= 3)
-                tags_words = set(w for w in tags_artist.replace(",", " ").split() if len(w) >= 3)
-                has_common_word = bool(acoustid_words & tags_words)
-                
-                # If no common words, artists are completely different - likely fingerprint mismatch
-                if not has_common_word and acoustid_artist and tags_artist:
-                    # Log mismatch for debugging
-                    import sys
-                    print(f"⚠️  AcoustID mismatch: tags say '{artist}' but fingerprint detected '{online.get('artist_suggest')}' - using tags", file=sys.stderr)
-                    # Don't return acoustid result, fallback to MusicBrainz with tags
-                else:
-                    # Preserve filename-derived version if online lacks it
-                    if version and not (online.get("version_suggest") or "").strip():
-                        online = {**online, "version_suggest": version}
-                    
-                    # Check if this is a live recording - enrich with Archive.org
-                    file_album = tags.get("album", "")
-                    is_live_version = version and version.lower() in ("live", "concert", "unplugged", "ao vivo", "in concert")
-                    is_live_album = any(kw in file_album.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
-                    is_live = is_live_version or is_live_album
-                    
-                    if is_live and dur_sec:
-                        try:
-                            archive_rec = archive_org.search_by_artist_title_duration(
-                                artist=artist,
-                                title=title,
-                                duration_seconds=dur_sec,
-                                tolerance_seconds=1.0
-                            )
-                            if archive_rec:
-                                online["archive_org_identifier"] = archive_rec.identifier
-                                if archive_rec.cover_url:
-                                    online["archive_org_cover_url"] = archive_rec.cover_url
-                                # Update album and year from Archive.org if better
-                                if archive_rec.title:
-                                    online["album_suggest"] = archive_rec.title
-                                if archive_rec.year:
-                                    online["year_suggest"] = str(archive_rec.year)
-                                # Mark as live recording
-                                online["version_suggest"] = "Live"
-                        except Exception:
-                            pass
-                    
-                    return online
-        
-        # Następnie spróbuj MusicBrainz search
-        # WAŻNE: dla remixów (gdy version istnieje) NIE używaj MusicBrainz early return,
-        # bo MB zwraca dane oryginalnego utworu bez uwzględnienia wersji.
-        # Zamiast tego przechodzimy dalej do genre_resolver, który używa version do
-        # znalezienia prawidłowych gatunków dla remixu (np. SoundCloud z wysoką wagą).
-        # WYJĄTEK: "Live" nie jest remixem - używaj MB + Archive.org dla live recordings
-        file_album = tags.get("album", "")
-        is_live_version = version and version.lower() in ("live", "concert", "unplugged", "ao vivo", "in concert")
-        is_live_album = any(kw in file_album.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
-        is_live = is_live_version or is_live_album
-        
-        # Skip MusicBrainz for remixes/edits (not live)
-        if not version or is_live:
-            online = lookup_musicbrainz(artist, title)
-            if online:
-                # Check if this is a live recording - enrich with Archive.org
-                if is_live and dur_sec:
-                    try:
-                        archive_rec = archive_org.search_by_artist_title_duration(
-                            artist=artist,
-                            title=title,
-                            duration_seconds=dur_sec,
-                            tolerance_seconds=1.0
-                        )
-                        if archive_rec:
-                            online["archive_org_identifier"] = archive_rec.identifier
-                            if archive_rec.cover_url:
-                                online["archive_org_cover_url"] = archive_rec.cover_url
-                            # Update album and year from Archive.org if better than canonical
-                            if archive_rec.title:
-                                online["album_suggest"] = archive_rec.title
-                            if archive_rec.year:
-                                online["year_suggest"] = str(archive_rec.year)
-                            # Add version="Live" to mark this as live recording
-                            online["version_suggest"] = "Live"
-                    except Exception:
-                        pass
-                
-                return online
-        
-        # Jeśli MusicBrainz nie znalazł, spróbuj gatunki z Last.fm/SoundCloud/Beatport (resolver)
-        # oraz wyciągnij rok i album z Last.fm/Beatport lub tagów pliku
-        # Priority: Last.fm/Beatport > tagi pliku (online ma więcej kontekstu o wydaniach)
-        year_from_tags = tags.get("year", "").strip()
-        album_from_tags = tags.get("album", "").strip()
-        year_from_online = ""
-        album_from_online = ""
-        release_group_id_online = None
-        
-        # For ORIGINALS (no version): use MusicBrainz release-group for accurate first release date + album + cover
-        # For REMIXES/EDITS (has version): only use Beatport if it finds the specific remix
-        # This prevents assigning original's year/album to remixes (misleading)
-        if not version:
-            try:
-                mb_info = mb_client.get_original_release_info(artist, title)
-                if mb_info:
-                    year_from_online, album_from_online, release_group_id_online = mb_info
-            except Exception:
-                pass
-        
-        try:
-            from djlib.metadata.genre_resolver import resolve as resolve_genres, ALL_SOURCES
-            from djlib.metadata import lastfm, beatport
-            
-            dur_s = dur_sec if dur_sec else None
-            # For remixes (not live): disable MB in resolver - we intentionally skipped MB 
-            # earlier because it returns original track data, not remix-specific info.
-            # For originals: MB lookup may still help even if lookup_musicbrainz failed.
-            is_remix_not_live = bool(version and not is_live)
-            sources = set(ALL_SOURCES)
-            if is_remix_not_live:
-                sources.discard("mb")
-            genre_res = resolve_genres(
-                artist, title, version=version, duration_s=dur_s,
-                sources=sources,
-            )
-            
-            # For remixes: try Beatport first (might have specific remix release date)
-            if version:
-                try:
-                    # OPTIMIZATION: Use same call signature as genre_resolver to hit
-                    # the in-process cache (genre_resolver already called search_track
-                    # with version= param, so this returns cached result instantly)
-                    beatport_data = beatport.search_track(artist, title, duration_s=dur_s, version=version)
-                    if beatport_data:
-                        # Verify Beatport actually found the remix, not just the original
-                        bp_title = beatport_data.get("title", "").lower()
-                        bp_version = (beatport_data.get("version") or "").lower()
-                        version_lower = version.lower()
-                        # Check if returned track matches our version
-                        version_found = (
-                            version_lower in bp_title or
-                            version_lower in bp_version or
-                            any(word in bp_version for word in version_lower.split() if len(word) > 3)
-                        )
-                        if version_found:
-                            release_date = beatport_data.get("release_date")
-                            if release_date and release_date.strip():
-                                year_from_online = release_date.split("-")[0]
-                            album_name = beatport_data.get("album")
-                            if album_name and album_name.strip():
-                                album_from_online = album_name
-                        # If version not found, Beatport returned original - ignore year
-                except Exception:
-                    pass
-                
-                # If Beatport didn't find the remix, try SoundCloud for upload year
-                if not year_from_online:
-                    try:
-                        from djlib.metadata import soundcloud
-                        sc_year = soundcloud.get_track_year(artist, title, version)
-                        if sc_year:
-                            year_from_online = sc_year
-                    except Exception:
-                        pass
-            
-            # Try Last.fm for year/album if we don't have them yet
-            if not year_from_online or not album_from_online:
-                try:
-                    lastfm_info = lastfm.track_info(artist, title)
-                    if not year_from_online and lastfm_info.get("year"):
-                        # For remixes, Last.fm returns original year - skip it
-                        if not version:
-                            year_from_online = lastfm_info["year"]
-                    if not album_from_online and lastfm_info.get("album"):
-                        album_from_online = lastfm_info["album"]
-                except Exception:
-                    pass
-            
-            # Fallback to Beatport for originals if Last.fm didn't provide
-            # OPTIMIZATION: genre_resolver already called search_track(artist, title, dur, version="")
-            # so this hits the in-process cache — no extra API call
-            if not version and (not year_from_online or not album_from_online):
-                try:
-                    beatport_data = beatport.search_track(artist, title, duration_s=dur_s)
-                    if beatport_data:
-                        if not year_from_online:
-                            release_date = beatport_data.get("release_date")
-                            if release_date and release_date.strip():
-                                year_from_online = release_date.split("-")[0]
-                        if not album_from_online:
-                            album_name = beatport_data.get("album")
-                            if album_name and album_name.strip():
-                                album_from_online = album_name
-                except Exception:
-                    pass
-            
-            if genre_res and genre_res.confidence >= 0.03:
-                genres = [genre_res.main] + genre_res.subs[:2]
-                genre_str = ", ".join(genres)
-                sources = [s.source for s in genre_res.breakdown]
-                meta_source = f"genres({','.join(sources)})" if sources else "genres"
-                # Prioritize online over tags (online has more context about releases)
-                final_year = year_from_online if year_from_online else year_from_tags
-                final_album = album_from_online if album_from_online else album_from_tags
-                result = {
-                    "artist_suggest": artist,
-                    "title_suggest": title,
-                    "version_suggest": version,
-                    "genre_suggest": genre_str,
-                    "album_suggest": final_album,
-                    "year_suggest": final_year,
-                    "duration_suggest": "",
-                    "meta_source": meta_source,
-                }
-                # Add release_group_id for cover art fetching (originals only)
-                if release_group_id_online:
-                    result["release_group_id"] = release_group_id_online
-                
-                # Try Archive.org for live recordings (when no fingerprint was used)
-                # This handles cases where skip_fingerprint=yes but we still want Archive.org cover
-                is_live = version and any(kw in version.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
-                if not is_live:
-                    # Check album tag for live indicators
-                    file_album = tags.get("album", "")
-                    is_live = any(kw in file_album.lower() for kw in ["live", "concert", "unplugged", "ao vivo", "in concert"])
-                
-                if is_live and dur_sec:
-                    try:
-                        archive_rec = archive_org.search_by_artist_title_duration(
-                            artist=artist,
-                            title=title,
-                            duration_seconds=dur_sec,
-                            tolerance_seconds=1.0
-                        )
-                        if archive_rec:
-                            result["archive_org_identifier"] = archive_rec.identifier
-                            if archive_rec.cover_url:
-                                result["archive_org_cover_url"] = archive_rec.cover_url
-                            # Update album and year from Archive.org if better
-                            if archive_rec.title and not final_album:
-                                result["album_suggest"] = archive_rec.title
-                            if archive_rec.year and not final_year:
-                                result["year_suggest"] = str(archive_rec.year)
-                    except Exception:
-                        pass
-                
-                return result
-        except Exception:
-            pass
-    
-    # Jeśli nie udało się online, użyj parsowania z nazwy pliku
-    # Ale najpierw spróbuj gatunku z tagów MP3
-    genre_fallback = (tags.get("genre") or "").strip()
-    if not genre_fallback:
-        # Spróbuj wywnioskować gatunek z tytułu/artysty
-        full_text = f"{artist} {title}".lower()
-        if any(word in full_text for word in ["house", "tech house", "deep house", "progressive house", "boom boom", "mind on fire", "born again", "nothing like this"]):
-            genre_fallback = "house"
-        elif any(word in full_text for word in ["techno", "melodic techno", "minimal techno", "the end club mix"]):
-            genre_fallback = "techno"
-        elif any(word in full_text for word in ["trance", "progressive trance"]):
-            genre_fallback = "trance"
-        elif any(word in full_text for word in ["electro", "electro swing"]):
-            genre_fallback = "electro"
-        elif any(word in full_text for word in ["hip hop", "hip-hop", "rap", "trap", "true skool"]):
-            genre_fallback = "hip hop"
-        elif any(word in full_text for word in ["r&b", "rnb", "soul"]):
-            genre_fallback = "r&b"
-        elif any(word in full_text for word in ["rock", "indie rock", "alternative"]):
-            genre_fallback = "rock"
-        elif any(word in full_text for word in ["pop", "dance pop"]):
-            genre_fallback = "pop"
-        elif any(word in full_text for word in ["reggae", "reggaeton", "dancehall", "blaze up the fire"]):
-            genre_fallback = "reggae"
-        elif any(word in full_text for word in ["latin", "salsa", "bachata"]):
-            genre_fallback = "latin"
-        elif any(word in full_text for word in ["jazz", "blues"]):
-            genre_fallback = "jazz"
-        elif any(word in full_text for word in ["classical", "orchestral"]):
-            genre_fallback = "classical"
-        elif any(word in full_text for word in ["folk", "country"]):
-            genre_fallback = "folk"
-        elif any(word in full_text for word in ["electronic", "edm", "dance"]):
-            genre_fallback = "house"  # Generic electronic -> house
-    
-    return {
-        "artist_suggest": artist,
-        "title_suggest": title,
-        "version_suggest": version,
-        "genre_suggest": genre_fallback,
-        "album_suggest": "",
-        "year_suggest": "",
-        "duration_suggest": "",
-        "meta_source": "filename|tags_fallback",
+    skip_fp = (tags.get("skip_fingerprint") or "").strip().lower() in {
+        "yes", "y", "true", "1",
     }
+
+    if not enable_online:
+        return _offline_fallback(artist, title, version, tags)
+
+    # ---- shared context for all online phases ----
+    fp = tags.get("fingerprint", "")
+    dur_sec = _parse_duration_tag(tags.get("duration", ""))
+    if not dur_sec:
+        dur_sec = get_audio_duration(path)
+    file_album = tags.get("album", "")
+    live = _is_live(version, file_album)
+
+    # ---- Phase 1: AcoustID fingerprint ----
+    if fp and dur_sec and not skip_fp:
+        online = lookup_acoustid(fp, dur_sec, file_album_tag=file_album)
+        if online and _acoustid_artist_matches(online, artist):
+            # Preserve filename-derived version if online lacks it
+            if version and not (online.get("version_suggest") or "").strip():
+                online = {**online, "version_suggest": version}
+            if live:
+                _enrich_archive_org(online, artist, title, dur_sec)
+                online.setdefault("version_suggest", "Live")
+            return online
+
+    # ---- Phase 2: MusicBrainz search (originals & live -- skip for remixes) ----
+    # For remixes MB returns original-track data, not remix-specific info.
+    # Exception: "Live" is not a remix.
+    if not version or live:
+        online = lookup_musicbrainz(artist, title)
+        if online:
+            if live and dur_sec:
+                _enrich_archive_org(online, artist, title, dur_sec)
+                online.setdefault("version_suggest", "Live")
+            return online
+
+    # ---- Phase 3: genre resolver (Last.fm / SoundCloud / Beatport) ----
+    result = _resolve_via_genre_sources(artist, title, version, dur_sec, live, tags)
+    if result is not None:
+        return result
+
+    # ---- Phase 4: offline fallback ----
+    return _offline_fallback(artist, title, version, tags)
 
 
 def _format_duration(ms: int | None) -> str:
@@ -856,13 +584,317 @@ def _format_duration(ms: int | None) -> str:
     return f"{m}:{r:02d}"
 
 
-def _join_artist_credit(ac: list) -> str:
-    parts = []
-    for c in ac or []:
-        n = c.get("name") or (c.get("artist") or {}).get("name")
-        if n:
-            parts.append(n)
-    return ", ".join(parts) if parts else ""
+# ---------------------------------------------------------------------------
+# Constants (P2 #14)
+# ---------------------------------------------------------------------------
+
+#: Minimum genre-resolver confidence to accept a result.
+MIN_GENRE_CONFIDENCE = 0.03
+
+#: Archive.org duration matching tolerance in seconds.
+ARCHIVE_TOLERANCE_S = 1.0
+
+#: MusicBrainz HTTP timeout in seconds.
+MB_HTTP_TIMEOUT = 15
+
+#: Minimum word length for AcoustID artist-similarity check.
+_MIN_WORD_LEN_SIMILARITY = 3
+
+#: Album-title keywords that indicate a compilation (not a studio release).
+_COMPILATION_KEYWORDS = frozenset([
+    "greatest hits", "best of", "the best", "collection",
+    "anthology", "ultimate", "essential", "gold", "platinum",
+])
+
+#: Version/album keywords that indicate a live recording.
+_LIVE_KEYWORDS = ("live", "concert", "unplugged", "ao vivo", "in concert")
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers — DRY replacements (P1 #5-#7)
+# ---------------------------------------------------------------------------
+
+def _is_live(version: str, album: str = "") -> bool:
+    """Return True if version or album indicates a live recording."""
+    v = (version or "").lower()
+    a = (album or "").lower()
+    for kw in _LIVE_KEYWORDS:
+        pat = rf"\b{re.escape(kw)}\b"
+        if re.search(pat, v) or re.search(pat, a):
+            return True
+    return False
+
+
+def _is_compilation_album(album_title: str) -> bool:
+    """Return True if *album_title* looks like a compilation / best-of."""
+    low = (album_title or "").lower()
+    return any(kw in low for kw in _COMPILATION_KEYWORDS)
+
+
+def _enrich_archive_org(
+    result: Dict[str, str],
+    artist: str,
+    title: str,
+    duration_seconds: float | int | None,
+) -> None:
+    """Search Archive.org for a live recording and merge into *result* in-place."""
+    if not duration_seconds or not artist or not title:
+        return
+    try:
+        archive_rec = archive_org.search_by_artist_title_duration(
+            artist=artist,
+            title=title,
+            duration_seconds=float(duration_seconds),
+            tolerance_seconds=ARCHIVE_TOLERANCE_S,
+        )
+        if archive_rec:
+            logger.debug(f"Archive.org match: {archive_rec.title}")
+            result["archive_org_identifier"] = archive_rec.identifier
+            if archive_rec.cover_url:
+                result["archive_org_cover_url"] = archive_rec.cover_url
+            if archive_rec.title and not result.get("album_suggest"):
+                result["album_suggest"] = archive_rec.title
+            if archive_rec.year and not result.get("year_suggest"):
+                result["year_suggest"] = str(archive_rec.year)
+    except Exception as exc:
+        logger.debug(f"Archive.org lookup failed: {exc}")
+
+
+def _resolve_first_release(
+    recording_mbid: str | None,
+    artist: str,
+    title: str,
+) -> Dict[str, str]:
+    """Try canonical MB dump then API to find earliest studio release.
+
+    Returns dict with ``original_*`` keys (may be empty).
+    """
+    # 1. Canonical offline dump (instant)
+    try:
+        canonical = lookup_canonical_release(artist, title, fetch_year=True)
+        if canonical and not _is_compilation_album(canonical["album_title"]):
+            data: Dict[str, str] = {
+                "original_album_title": canonical["album_title"],
+                "original_release_mbid": canonical["release_mbid"],
+                "recording_mbid": canonical["recording_mbid"],
+            }
+            if "release_year" in canonical:
+                data["original_release_year"] = canonical["release_year"]
+            return data
+        if canonical:
+            logger.debug(f"Rejecting canonical compilation: {canonical['album_title']}")
+    except Exception:
+        pass
+
+    # 2. API fallback
+    if recording_mbid or (artist and title):
+        try:
+            fr = mb_client.mb_fetch_first_release_for_recording(
+                recording_mbid or "", artist, title,
+            )
+            if fr:
+                return {
+                    "original_album_title": fr.album_title,
+                    "original_release_date": fr.original_release_date,
+                    "original_release_year": str(fr.original_release_year),
+                    "original_release_mbid": fr.release_mbid,
+                    "original_release_group_mbid": fr.release_group_mbid,
+                    "original_release_category": fr.release_category,
+                    "original_release_source": fr.source,
+                }
+        except Exception:
+            pass
+    return {}
+
+
+def _parse_duration_tag(dur_txt: str) -> int:
+    """Parse 'm:ss' string → seconds, or return 0."""
+    try:
+        if ":" in dur_txt:
+            m, s = dur_txt.split(":", 1)
+            return int(m) * 60 + int(s)
+    except Exception:
+        pass
+    return 0
+
+
+def _acoustid_artist_matches(online: Dict[str, str], tags_artist: str) -> bool:
+    """Return True when AcoustID artist is compatible with file tags artist.
+
+    A match requires at least one common word (≥ ``_MIN_WORD_LEN_SIMILARITY``
+    chars).  When either side is empty the check is skipped (trust AcoustID).
+    """
+    a_online = (online.get("artist_suggest") or "").lower().strip()
+    a_tags = tags_artist.lower().strip()
+    if not a_online or not a_tags:
+        return True  # can't verify — trust it
+    online_words = {w for w in a_online.replace(",", " ").split()
+                    if len(w) >= _MIN_WORD_LEN_SIMILARITY}
+    tags_words = {w for w in a_tags.replace(",", " ").split()
+                  if len(w) >= _MIN_WORD_LEN_SIMILARITY}
+    if online_words & tags_words:
+        return True
+    logger.warning(
+        "AcoustID mismatch: tags='%s' vs fingerprint='%s' — using tags",
+        tags_artist, online.get("artist_suggest"),
+    )
+    return False
+
+
+def _offline_fallback(
+    artist: str, title: str, version: str, tags: Dict[str, str],
+) -> Dict[str, str]:
+    """Return tag / filename-based metadata when online sources fail."""
+    return {
+        "artist_suggest": artist,
+        "title_suggest": title,
+        "version_suggest": version,
+        "genre_suggest": (tags.get("genre") or "").strip(),
+        "album_suggest": "",
+        "year_suggest": "",
+        "duration_suggest": "",
+        "meta_source": "filename|tags_fallback",
+    }
+
+
+def _resolve_via_genre_sources(
+    artist: str,
+    title: str,
+    version: str,
+    dur_sec: int,
+    live: bool,
+    tags: Dict[str, str],
+) -> Dict[str, str] | None:
+    """Phase 3 of suggest_metadata: genre resolver + online year/album.
+
+    Combines Last.fm, SoundCloud, Beatport and MusicBrainz release-group
+    data to produce genre, year and album suggestions.
+
+    Returns a result dict or *None* when genre confidence is too low.
+    """
+    year_from_tags = tags.get("year", "").strip()
+    album_from_tags = tags.get("album", "").strip()
+    year_online = ""
+    album_online = ""
+    release_group_id = None
+
+    # For originals: use MusicBrainz release-group for first-release date + album
+    if not version:
+        try:
+            mb_info = mb_client.get_original_release_info(artist, title)
+            if mb_info:
+                year_online, album_online, release_group_id = mb_info
+        except Exception:
+            pass
+
+    try:
+        from djlib.metadata.genre_resolver import resolve as resolve_genres, ALL_SOURCES
+        from djlib.metadata import lastfm, beatport
+
+        dur_s = dur_sec or None
+        is_remix = bool(version and not live)
+        genre_sources = set(ALL_SOURCES)
+        if is_remix:
+            genre_sources.discard("mb")
+
+        genre_res = resolve_genres(
+            artist, title, version=version, duration_s=dur_s,
+            sources=genre_sources,
+        )
+
+        # ---- year / album resolution ----
+        if version:
+            # Remix: try Beatport for specific remix release date
+            try:
+                bp_data = beatport.search_track(
+                    artist, title, duration_s=dur_s, version=version,
+                )
+                if bp_data:
+                    bp_title = bp_data.get("title", "").lower()
+                    bp_ver = (bp_data.get("version") or "").lower()
+                    ver_low = version.lower()
+                    version_found = (
+                        ver_low in bp_title
+                        or ver_low in bp_ver
+                        or any(w in bp_ver for w in ver_low.split() if len(w) > 3)
+                    )
+                    if version_found:
+                        rd = bp_data.get("release_date", "")
+                        if rd and rd.strip():
+                            year_online = rd.split("-")[0]
+                        alb = bp_data.get("album", "")
+                        if alb and alb.strip():
+                            album_online = alb
+            except Exception:
+                pass
+
+            # Fallback: SoundCloud for upload year
+            if not year_online:
+                try:
+                    from djlib.metadata import soundcloud
+                    sc_year = soundcloud.get_track_year(artist, title, version)
+                    if sc_year:
+                        year_online = sc_year
+                except Exception:
+                    pass
+
+        # Last.fm for year/album (skip year for remixes — returns original year)
+        if not year_online or not album_online:
+            try:
+                lf = lastfm.track_info(artist, title)
+                if not year_online and lf.get("year") and not version:
+                    year_online = lf["year"]
+                if not album_online and lf.get("album"):
+                    album_online = lf["album"]
+            except Exception:
+                pass
+
+        # Beatport fallback for originals
+        if not version and (not year_online or not album_online):
+            try:
+                bp = beatport.search_track(artist, title, duration_s=dur_s)
+                if bp:
+                    if not year_online:
+                        rd = bp.get("release_date", "")
+                        if rd and rd.strip():
+                            year_online = rd.split("-")[0]
+                    if not album_online:
+                        an = bp.get("album", "")
+                        if an and an.strip():
+                            album_online = an
+            except Exception:
+                pass
+
+        # ---- Build result if genre confidence is high enough ----
+        if genre_res and genre_res.confidence >= MIN_GENRE_CONFIDENCE:
+            genres = [genre_res.main] + genre_res.subs[:2]
+            src_names = [s.source for s in genre_res.breakdown]
+            meta_source = f"genres({','.join(src_names)})" if src_names else "genres"
+            final_year = year_online or year_from_tags
+            final_album = album_online or album_from_tags
+
+            result: Dict[str, str] = {
+                "artist_suggest": artist,
+                "title_suggest": title,
+                "version_suggest": version,
+                "genre_suggest": ", ".join(genres),
+                "album_suggest": final_album,
+                "year_suggest": final_year,
+                "duration_suggest": "",
+                "meta_source": meta_source,
+            }
+            if release_group_id:
+                result["release_group_id"] = release_group_id
+
+            if live and dur_sec:
+                _enrich_archive_org(result, artist, title, dur_sec)
+
+            return result
+    except Exception:
+        pass
+
+    return None
+
 
 def _clean_title(t: str) -> str:
     """Uprość tytuł do wyszukiwania: usuń nawiasy, 'feat.', 'ft.', itp., podwójne spacje.
@@ -871,7 +903,6 @@ def _clean_title(t: str) -> str:
     s = (t or "").strip()
     if not s:
         return s
-    import re
     # usuń (Original Mix), [Remix], itp.
     s = re.sub(r"[\(\[][^\)\]]*[\)\]]", "", s)
     # usuń feat/ft featuring
@@ -903,14 +934,7 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
     try:
         canonical_data = lookup_canonical_release(artist, title, fetch_year=True)
         if canonical_data:
-            # Reject compilations/best-of albums from canonical data
-            # These are unreliable - prefer to find original album via API
-            album_title_lower = canonical_data['album_title'].lower()
-            compilation_keywords = ['greatest hits', 'best of', 'the best', 'collection', 
-                                   'anthology', 'ultimate', 'essential', 'gold', 'platinum']
-            is_compilation = any(keyword in album_title_lower for keyword in compilation_keywords)
-            
-            if is_compilation:
+            if _is_compilation_album(canonical_data['album_title']):
                 logger.debug(f"Rejecting canonical compilation: {canonical_data['album_title']}")
                 canonical_data = None
             else:
@@ -1033,24 +1057,10 @@ def lookup_musicbrainz(artist: str, title: str) -> Dict[str, str] | None:
         genres = mb_client.get_recording_genres(match.recording_id, release_group_id=match.release_group_id, artist_id=match.artist_id)
         genre = genres[0] if genres else ""
 
-        # NEW: Try to resolve canonical first release from recording MBID
-        # This provides the earliest official studio album for canonical metadata
-        first_release_data = {}
-        if match.recording_id or (out_artist and out_title):
-            try:
-                first_release = mb_client.mb_fetch_first_release_for_recording(match.recording_id, out_artist, out_title)
-                if first_release:
-                    first_release_data = {
-                        "original_album_title": first_release.album_title,
-                        "original_release_date": first_release.original_release_date,
-                        "original_release_year": str(first_release.original_release_year),
-                        "original_release_mbid": first_release.release_mbid,
-                        "original_release_group_mbid": first_release.release_group_mbid,
-                        "original_release_category": first_release.release_category,
-                        "original_release_source": first_release.source,
-                    }
-            except Exception:
-                pass
+        # Resolve canonical first release (canonical dump -> API fallback)
+        first_release_data = _resolve_first_release(
+            match.recording_id, out_artist, out_title,
+        )
 
         # Check if MB title is more complete than local (e.g., "Lady" vs "Lady (Hear Me Tonight)")
         normalized_title, was_normalized = _normalize_title_from_canonical(original_title, out_title)
@@ -1130,11 +1140,11 @@ def lookup_acoustid(fp: str, duration_sec: int, file_album_tag: str = "") -> Dic
         url = f"https://musicbrainz.org/ws/2/recording/{best_id}"
         params = {"fmt": "json", "inc": "artists+releases+release-groups+tags+genres"}
         headers = {"User-Agent": MB_UA}
-        r = requests.get(url, params=params, headers=headers, timeout=15, allow_redirects=True)
+        r = requests.get(url, params=params, headers=headers, timeout=MB_HTTP_TIMEOUT, allow_redirects=True)
         if r.status_code != 200:
             return None
         rec = r.json()
-        out_artist = _join_artist_credit(rec.get("artist-credit") or []) or best_artist
+        out_artist = mb_client._join_artist_credit(rec.get("artist-credit") or []) or best_artist
         out_title = rec.get("title") or best_title
         releases = rec.get("releases") or []
         album = releases[0].get("title") if releases else ""
@@ -1283,50 +1293,13 @@ def lookup_acoustid(fp: str, duration_sec: int, file_album_tag: str = "") -> Dic
                     "original_release_group_mbid": rgid,
                 }
         else:
-            # Not live - try to find original studio release
-            # Try canonical lookup first (instant, no API)
-            try:
-                canonical_data = lookup_canonical_release(out_artist, out_title, fetch_year=True)
-                if canonical_data:
-                    # Reject compilations/best-of albums from canonical data
-                    album_title_lower = canonical_data['album_title'].lower()
-                    compilation_keywords = ['greatest hits', 'best of', 'the best', 'collection', 
-                                           'anthology', 'ultimate', 'essential', 'gold', 'platinum']
-                    is_compilation = any(keyword in album_title_lower for keyword in compilation_keywords)
-                    
-                    if is_compilation:
-                        logger.debug(f"Rejecting canonical compilation: {canonical_data['album_title']}")
-                        canonical_data = None
-                    else:
-                        first_release_data = {
-                            "original_album_title": canonical_data['album_title'],
-                            "original_release_mbid": canonical_data['release_mbid'],
-                            "recording_mbid": canonical_data['recording_mbid'],
-                        }
-                        # Use canonical data for suggest fields (don't override with API data)
-                        album = canonical_data['album_title']
-                        if 'release_year' in canonical_data:
-                            year = canonical_data['release_year']
-                            first_release_data['original_release_year'] = canonical_data['release_year']
-            except Exception:
-                pass
-            
-            # Fallback to API-based resolution (only if canonical didn't provide data)
-            if not canonical_data and (best_id or (out_artist and out_title)):
-                try:
-                    first_release = mb_client.mb_fetch_first_release_for_recording(best_id, out_artist, out_title)
-                    if first_release:
-                        first_release_data = {
-                            "original_album_title": first_release.album_title,
-                            "original_release_date": first_release.original_release_date,
-                            "original_release_year": str(first_release.original_release_year),
-                            "original_release_mbid": first_release.release_mbid,
-                            "original_release_group_mbid": first_release.release_group_mbid,
-                            "original_release_category": first_release.release_category,
-                            "original_release_source": first_release.source,
-                        }
-                except Exception:
-                    pass
+            # Not live — resolve original studio release (canonical dump → API)
+            first_release_data = _resolve_first_release(best_id, out_artist, out_title)
+            if first_release_data:
+                if first_release_data.get("original_album_title"):
+                    album = first_release_data["original_album_title"]
+                if first_release_data.get("original_release_year"):
+                    year = first_release_data["original_release_year"]
         
         result = {
             "artist_suggest": out_artist,
@@ -1346,43 +1319,9 @@ def lookup_acoustid(fp: str, duration_sec: int, file_album_tag: str = "") -> Dic
         # Merge first release data
         result.update(first_release_data)
         
-        # Try Archive.org for live recordings (duration-based matching)
-        # Archive.org has exact track durations - better for live concerts than MusicBrainz
-        duration_seconds = None
-        try:
-            if isinstance(duration, (int, float)):
-                duration_seconds = float(duration)
-            else:
-                dur_str = (duration or "").strip()
-                if dur_str and ":" in dur_str:
-                    parts = dur_str.split(":")
-                    if len(parts) == 2:
-                        duration_seconds = float(int(parts[0]) * 60 + float(parts[1]))
-        except Exception:
-            duration_seconds = None
-
-        if is_live_recording and out_artist and out_title and duration_seconds:
-            try:
-                logger.debug(f"Searching Archive.org for live: {out_artist} - {out_title} ({duration_seconds}s)")
-                archive_rec = archive_org.search_by_artist_title_duration(
-                    artist=out_artist,
-                    title=out_title,
-                    duration_seconds=duration_seconds,
-                    tolerance_seconds=1.0  # ±1s tolerance for precise duration matching
-                )
-                
-                if archive_rec:
-                    logger.info(f"✓ Archive.org match: {archive_rec.title}")
-                    result["archive_org_identifier"] = archive_rec.identifier
-                    if archive_rec.cover_url:
-                        result["archive_org_cover_url"] = archive_rec.cover_url
-                    # Use Archive.org metadata if better than MusicBrainz
-                    if archive_rec.year and not year:
-                        result["year_suggest"] = archive_rec.year
-                    if archive_rec.title and not album:
-                        result["album_suggest"] = archive_rec.title
-            except Exception as e:
-                logger.debug(f"Archive.org lookup failed: {e}")
+        # Archive.org for live recordings (uses function param duration_sec directly)
+        if is_live_recording:
+            _enrich_archive_org(result, out_artist, out_title, duration_sec)
         
         return result
     except Exception:
@@ -1390,63 +1329,22 @@ def lookup_acoustid(fp: str, duration_sec: int, file_album_tag: str = "") -> Dic
 
 
 def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | None:
-    """Spróbuj wzbogacić metadane online (AcoustID + MusicBrainz + Beatport + Last.fm).
-    Nie rusza BPM/Key. Zwraca uzupełnienia sugerowanych pól albo None.
+    """Enrich metadata online (AcoustID + MusicBrainz + Beatport + Last.fm).
+
+    Preserves BPM/Key.  Returns suggested field updates or None.
     """
-    # Read album tag from file for live detection
-    file_album = ""
-    try:
-        from mutagen import File
-        audio = File(path)
-        if audio:
-            album_vals = audio.get("album", audio.get("ALBUM", []))
-            if album_vals:
-                file_album = album_vals[0] if isinstance(album_vals, list) else str(album_vals)
-    except Exception:
-        pass
-    
-    # Use full suggest_metadata with enable_online=True
-    # This includes AcoustID, MusicBrainz, and fallback to Beatport/Last.fm for year
+    # Read album tag via shared utility (avoids extra mutagen open)
+    file_tags = read_tags(path) or {}
+    file_album = file_tags.get("album", "")
+
     tags = {
         "fingerprint": row.get("fingerprint", ""),
         "duration": row.get("duration_suggest", ""),
         "artist": row.get("artist", ""),
         "title": row.get("title", ""),
         "genre": row.get("genre", ""),
-        "version_info": row.get("version_suggest", ""),  # Pass version from row to avoid reparsing filename
-        "album": file_album,  # For live detection when MB has incomplete data
+        "version_info": row.get("version_suggest", ""),
+        "album": file_album,
     }
-    
+
     return suggest_metadata(path, tags, enable_online=True)
-    # b) z uproszczonym tytułem
-    t2 = _clean_title(title)
-    if t2 and t2 != title:
-        out = lookup_musicbrainz(artist, t2)
-        if out:
-            genre_cur = (out.get("genre_suggest") or "").lower()
-            if ("zeppelin" in (artist.lower() + " " + t2.lower())) and any(g in genre_cur for g in ["gospel","christian","worship"]):
-                out["genre_suggest"] = "rock, hard rock"
-            return out
-    # c) jeśli mamy tagi w pliku — użyj ich
-    try:
-        tags = read_tags(path)
-        a3 = (tags.get("artist") or "").strip()
-        t3 = _clean_title((tags.get("title") or "").strip())
-        if a3 or t3:
-            out = lookup_musicbrainz(a3, t3)
-            if out:
-                genre_cur = (out.get("genre_suggest") or "").lower()
-                if ("zeppelin" in (a3.lower() + " " + t3.lower())) and any(g in genre_cur for g in ["gospel","christian","worship"]):
-                    out["genre_suggest"] = "rock, hard rock"
-                return out
-    except Exception:
-        pass
-    # d) sam tytuł (np. bootlegi bez artysty)
-    if title and not artist:
-        out = lookup_musicbrainz("", _clean_title(title))
-        if out:
-            genre_cur = (out.get("genre_suggest") or "").lower()
-            if ("zeppelin" in _clean_title(title).lower()) and any(g in genre_cur for g in ["gospel","christian","worship"]):
-                out["genre_suggest"] = "rock, hard rock"
-            return out
-    return None
