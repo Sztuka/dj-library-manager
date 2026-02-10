@@ -33,27 +33,6 @@ def _norm(s: str) -> str:
     return s
 
 
-def _extract_primary_remixer(version: str) -> str:
-    """Extract main remixer name from version string (max 2 words to keep queries short).
-    'Merchant vs Vidojean & Oliver Loenn City Boys Edit' -> 'Merchant'
-    'Blue Purple Afro House Remix' -> 'Blue Purple'
-    'Audien Remix' -> 'Audien'
-    """
-    if not version:
-        return ""
-    # Split by common multi-artist separators and take first part
-    for sep in [" vs ", " vs. ", " x ", " X ", " & ", " and ", " feat. ", " feat ", " ft. ", " ft "]:
-        if sep in version:
-            version = version.split(sep)[0].strip()
-            break
-    # Remove common version keywords to get just the name
-    for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix", "house", "afro"]:
-        version = re.sub(rf"\b{kw}\b", "", version, flags=re.IGNORECASE)
-    # Limit to first 2 words (longer names cause 403 errors)
-    words = version.split()[:2]
-    return " ".join(words).strip()
-
-
 def _clean_for_query(s: str) -> str:
     """Clean string for SoundCloud query - remove special chars, normalize spaces."""
     # Remove parentheses content, x/&/feat separators, clean up
@@ -65,6 +44,27 @@ def _clean_for_query(s: str) -> str:
     return s
 
 
+def _light_clean(s: str) -> str:
+    """Minimal cleaning: strip brackets/parens, normalize whitespace.  Preserves & and vs."""
+    s = re.sub(r'\([^)]*\)', '', s or "")
+    s = re.sub(r'\[[^\]]*\]', '', s)
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+# Pre-compiled patterns for remixer extraction from version strings
+_RE_VERSION_KEYWORDS = re.compile(
+    r'\b(?:remix|edit|mix|version|bootleg|rework|refix|mashup|extended|radio|club|vip|dub)\b',
+    re.IGNORECASE,
+)
+# Genre names that pollute remixer extraction from version strings.
+# TODO: derive from genres.yml instead of hardcoding
+_RE_VERSION_GENRES = re.compile(
+    r'\b(?:afro\s+house|tech\s+house|deep\s+house|house|techno|trance|dnb|drum\s+and\s+bass)\b',
+    re.IGNORECASE,
+)
+_MAX_QUERY_WORDS = 10  # Cap Strategy 1 length to avoid noisy long queries
+
+
 def _candidate_queries(artist: str, title: str, version: str, max_queries: int = 5) -> List[str]:
     """Generate query list for SoundCloud search.
     
@@ -72,7 +72,7 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
     
     For remixes/mashups:
       1. artist + title + full version (most precise – exactly what a human would type)
-      2. first_remixer + title (handles "A & B Remix" where SC only has A)
+      2. first_remixer + title (handles "A vs B & C Remix" where SC only has A)
       3. full_remixer + title (when there's only one remixer)
       4. artist + title + "remix" (generic fallback)
       5. remixer + artist (last resort)
@@ -86,25 +86,24 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
     clean_title = _clean_for_query(title)
     
     if version:
-        # ---- Strategy 1: artist + title + full version (unmodified) ----
-        # This is the highest-precision query — exactly what a user would search.
-        # E.g. "Bastille Pompeii Merchant vs Vidojean Oliver Loenn City Boys Edit"
-        clean_version = _clean_for_query(version)
-        if clean_artist and clean_title and clean_version:
-            queries.append(f"{clean_artist} {clean_title} {clean_version}".strip())
+        # ---- Strategy 1: artist + title + full version ----
+        # Light cleaning preserves & and vs for maximum search fidelity.
+        # Capped at _MAX_QUERY_WORDS — overly long queries return noise.
+        s1 = f"{_light_clean(artist)} {_light_clean(title)} {_light_clean(version)}"
+        s1_words = s1.split()
+        if len(s1_words) > _MAX_QUERY_WORDS:
+            s1 = " ".join(s1_words[:_MAX_QUERY_WORDS])
+        if s1.strip():
+            queries.append(s1.strip())
 
-        # Extract remixer name: remove keywords AND genre names that hurt search precision
-        remixer = version
-        # Remove version type keywords
-        for kw in ["remix", "edit", "mix", "version", "bootleg", "rework", "refix", "mashup", "extended", "radio", "club", "vip", "dub"]:
-            remixer = re.sub(rf"\b{kw}\b", "", remixer, flags=re.IGNORECASE)
-        # Remove genre names that appear in version strings (e.g., "Blue Purple Afro House Remix")
-        # These words hurt SoundCloud search precision
-        for genre in ["afro house", "tech house", "deep house", "house", "techno", "trance", "dnb", "drum and bass"]:
-            remixer = re.sub(rf"\b{genre}\b", "", remixer, flags=re.IGNORECASE)
+        # Extract remixer name: strip keywords and genre names (compiled patterns)
+        remixer = _RE_VERSION_KEYWORDS.sub('', version)
+        remixer = _RE_VERSION_GENRES.sub('', remixer)
         remixer = re.sub(r'\s+', ' ', remixer).strip()
-        
-        # Extract first remixer (before &, "and", or "vs") — handles:
+
+        # Extract first remixer (before &, "and", or "vs").
+        # NOTE: operates on `remixer` (not _clean_for_query output),
+        # so separators like & and vs are still present for splitting.
         #   "Okan Evci & Emre Yuksel"  → "Okan Evci"
         #   "Merchant vs Vidojean & Oliver Loenn City Boys" → "Merchant"
         first_remixer = re.split(r'\s*[&]\s*|\s+(?:and|vs\.?)\s+', remixer, maxsplit=1)[0].strip()
@@ -142,13 +141,12 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
 
 @lru_cache(maxsize=1000)
 def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optional[List[str]]:
-    """Public SoundCloud search – optimized 2-query strategy for genre/tag extraction.
+    """Public SoundCloud search for genre/tag extraction.
 
-    Queries (limited to 2 for performance):
-      For remixes: title + remixer, then artist + remixer
-      For originals: artist + title
+    Uses up to 5 ranked queries (see :func:`_candidate_queries`) with early
+    exit when strong genre tokens are found.
 
-    For each query we take up to top 3 results (skipping DJ mixes >10min), 
+    For each query we take up to top 3 results (skipping DJ mixes >10min),
     merge tokens and filter noise.
     Returns unique, normalized tokens sorted (for stable CSV diffs) or None.
     """
