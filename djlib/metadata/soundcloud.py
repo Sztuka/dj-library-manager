@@ -101,12 +101,13 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
         remixer = _RE_VERSION_GENRES.sub('', remixer)
         remixer = re.sub(r'\s+', ' ', remixer).strip()
 
-        # Extract first remixer (before &, "and", or "vs").
+        # Extract first remixer (before &, "and", "vs", or "x"/"X").
         # NOTE: operates on `remixer` (not _clean_for_query output),
-        # so separators like & and vs are still present for splitting.
+        # so separators like &, vs, X are still present for splitting.
         #   "Okan Evci & Emre Yuksel"  → "Okan Evci"
         #   "Merchant vs Vidojean & Oliver Loenn City Boys" → "Merchant"
-        first_remixer = re.split(r'\s*[&]\s*|\s+(?:and|vs\.?)\s+', remixer, maxsplit=1)[0].strip()
+        #   "Vidojean X Oliver Loenn"  → "Vidojean"
+        first_remixer = re.split(r'\s*[&]\s*|\s+(?:and|vs\.?|[xX])\s+', remixer, maxsplit=1)[0].strip()
         
         # Strategy 2: first_remixer + title (most precise when there are multiple remixers)
         if first_remixer and clean_title and first_remixer != remixer:
@@ -193,6 +194,10 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
         # For multi-word phrases: check if it looks like a genre vs title fragment
         if " " in t:
             words = set(t.split())
+            # Reject if ALL words come from artist/title (e.g. "depeche mode",
+            # "enjoy the silence") — these are title/artist fragments, not genres.
+            if words <= at_words:
+                return False
             # Reject if >50% of words are title/lyric indicators
             title_word_count = len(words & title_indicator_words)
             if title_word_count > len(words) * 0.5:
