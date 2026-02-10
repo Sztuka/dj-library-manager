@@ -606,18 +606,17 @@ def resolve(
     if "soundcloud" in enabled and is_remix:
         sc_result = _fetch_soundcloud(artist, title, version)
 
-    # If SC found remix-specific tags and Beatport missed, skip MB/LFM
-    # (they return original-track info which is misleading for remixes)
-    skip_mb_lfm_for_remix = (is_remix and not bp_result
-                             and sc_result and sc_result.get("tags"))
-
-    # Step 3: Last.fm + MusicBrainz
+    # Step 3: Last.fm + MusicBrainz — always query even for remixes.
+    # SC search can return tags from *wrong* remixes (generic "artist title
+    # remix" query hits unrelated tracks).  LFM/MB provide a safety net with
+    # original-track genre info which the scoring weights will deprioritise
+    # for remixes anyway (WEIGHT_LASTFM_REMIX=0.5, WEIGHT_MB_REMIX=1.5).
     lfm_result = None
-    if "lastfm" in enabled and not skip_mb_lfm_for_remix:
+    if "lastfm" in enabled:
         lfm_result = _fetch_lastfm(artist, title)
 
     mb_result = None
-    if "mb" in enabled and not skip_mb_lfm_for_remix:
+    if "mb" in enabled:
         mb_result = _fetch_musicbrainz(artist, title, duration_s, mb_recording)
 
     # Step 4: Score all remaining sources
