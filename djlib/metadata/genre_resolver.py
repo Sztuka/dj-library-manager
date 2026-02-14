@@ -478,13 +478,25 @@ def _score_soundcloud(
     is_remix: bool,
     scores: Dict[str, float],
 ) -> Optional[SourceScore]:
-    """Process SoundCloud tags."""
+    """Process SoundCloud tags.
+
+    For remixes: electronic subgenre tags get a 1.5× boost.  SC is the only
+    source that can find remix-specific genre info (LFM/MB always return the
+    original-track genre).  Without this boost, non-electronic tags from the
+    original (e.g. hip-hop for an Akon deep-house remix) can dominate.
+    """
     if not sc_result or not sc_result.get("tags"):
         return None
     sc_w = WEIGHT_SC_REMIX if is_remix else WEIGHT_SC_BASE
     sc_local: Dict[str, float] = {}
+    electronic = _get_electronic_genres()
     for name in sc_result["tags"]:
-        _score_tag(name, sc_w, scores, sc_local)
+        tag_w = sc_w
+        # For remixes: boost electronic/dance subgenre tags — these are much
+        # more likely to reflect the actual remix rather than the original.
+        if is_remix and canonical(name) in electronic:
+            tag_w *= 1.5
+        _score_tag(name, tag_w, scores, sc_local)
     return SourceScore("soundcloud", sc_w, sc_local) if sc_local else None
 
 

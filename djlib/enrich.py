@@ -810,29 +810,27 @@ def _resolve_via_genre_sources(
                     artist, title, duration_s=dur_s, version=version,
                 )
                 if bp_data:
-                    bp_title = bp_data.get("title", "").lower()
-                    bp_ver = (bp_data.get("version") or "").lower()
-                    ver_low = version.lower()
-                    version_found = (
-                        ver_low in bp_title
-                        or ver_low in bp_ver
-                        or any(w in bp_ver for w in ver_low.split() if len(w) > 3)
-                    )
-                    if version_found:
-                        rd = bp_data.get("release_date", "")
-                        if rd and rd.strip():
-                            year_online = rd.split("-")[0]
-                        alb = bp_data.get("album", "")
-                        if alb and alb.strip():
-                            album_online = alb
+                    # Beatport's search_track already validates version
+                    # match (version_score > 0) before returning a result,
+                    # so if bp_data is not None the match is acceptable.
+                    rd = bp_data.get("release_date", "")
+                    if rd and rd.strip():
+                        year_online = rd.split("-")[0]
+                    alb = bp_data.get("album", "")
+                    if alb and alb.strip():
+                        album_online = alb
             except Exception:
                 pass
 
-            # Fallback: SoundCloud for upload year
+            # Fallback: SoundCloud upload year (captured during genre fetch
+            # — no extra API call, uses _sc_year_cache).
             if not year_online:
                 try:
                     from djlib.metadata import soundcloud
-                    sc_year = soundcloud.get_track_year(artist, title, version)
+                    sc_year = soundcloud.get_cached_year(artist, title, version)
+                    if not sc_year:
+                        # Cache miss (genre fetch not called yet?) → full lookup
+                        sc_year = soundcloud.get_track_year(artist, title, version)
                     if sc_year:
                         year_online = sc_year
                 except Exception:

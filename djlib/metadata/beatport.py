@@ -734,7 +734,18 @@ def _search_track_impl(artist: str, title: str, duration_s: Optional[int] = None
             if not artist_match:
                 continue
             
-            # Artist matches - check duration if provided
+            # Title validation: at least one significant title word must appear
+            # in the Beatport track name.  This prevents matching a completely
+            # different track by the same artist (e.g. searching "Melodica" but
+            # Beatport returns "Blue" because that's the only track by "Abyss").
+            track_title_norm = _normalize(track.get("name", ""))
+            title_norm = _normalize(title)
+            title_words = {w for w in title_norm.split() if len(w) > 2}
+            track_title_words = set(track_title_norm.split())
+            if title_words and not (title_words & track_title_words):
+                continue
+            
+            # Artist matches, title validated - check duration if provided
             if duration_s:
                 track_duration_s = track.get("length_ms", 0) // 1000
                 duration_diff = abs(track_duration_s - duration_s)

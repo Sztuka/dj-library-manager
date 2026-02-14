@@ -667,6 +667,21 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                         any_change = True
                 except Exception:
                     pass
+            elif not genre_res and force_genres:
+                # All online sources returned nothing (e.g. SC remixer
+                # validation failed — track not found on any platform).
+                # Fall back to original file tag genre so the track isn't
+                # left with stale/wrong data from a previous enrich run.
+                original_tag_genre = (r.get("tag_genre_original") or "").strip()
+                if original_tag_genre:
+                    r["genre_suggest"] = original_tag_genre.lower()
+                    r["meta_source"] = "filename|tags_fallback"
+                    # Clear per-source columns to avoid stale data
+                    for col in ("genres_soundcloud", "genres_beatport", "genres_lastfm", "genres_musicbrainz"):
+                        if r.get(col):
+                            r[col] = None
+                    any_change = True
+                    print(f"      ⚠️  No online data — falling back to original tag: {original_tag_genre}")
         except Exception as e:
             # Debug: print exception for troubleshooting
             print(f"Genre resolution failed for {a} - {t}: {e}")

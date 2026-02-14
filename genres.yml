@@ -88,7 +88,7 @@ PROGRESSIVE_HOUSE:
 DEEP_HOUSE:
   label: "Deep House"
   category: electronic
-  boost: 1.5
+  boost: 1.8
   synonyms:
     - "deep house"
     - "deep-house"

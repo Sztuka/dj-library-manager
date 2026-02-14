@@ -14,6 +14,10 @@ _SC_REQUESTS = 0
 # Track last live (non-cached) request time for smart rate limiting
 _SC_LAST_LIVE_REQUEST = 0.0
 
+# Year cache: populated during get_soundcloud_genres so that the same API
+# results used for genre extraction also yield the upload year — no extra call.
+_sc_year_cache: Dict[str, str] = {}
+
 API_SEARCH = "https://api-v2.soundcloud.com/search/tracks"
 _DEF_TIMEOUT = 10
 
@@ -38,6 +42,8 @@ def _clean_for_query(s: str) -> str:
     # Remove parentheses content, x/&/feat separators, clean up
     s = re.sub(r'\([^)]*\)', '', s or "")  # Remove (...)
     s = re.sub(r'\[[^\]]*\]', '', s)  # Remove [...]
+    # Remove "feat./ft./featuring" and everything after (featured artist names dilute queries)
+    s = re.sub(r'\b(?:feat\.?|ft\.?|featuring)\s+.*', '', s, flags=re.IGNORECASE)
     s = re.sub(r'\s+x\s+', ' ', s, flags=re.IGNORECASE)  # "A x B" -> "A B"
     s = re.sub(r'\s*[,&]\s*', ' ', s)  # "A, B" or "A & B" -> "A B"
     s = re.sub(r'\s+', ' ', s).strip()
@@ -45,9 +51,11 @@ def _clean_for_query(s: str) -> str:
 
 
 def _light_clean(s: str) -> str:
-    """Minimal cleaning: strip brackets/parens, normalize whitespace.  Preserves & and vs."""
+    """Minimal cleaning: strip brackets/parens, feat., normalize whitespace.  Preserves & and vs."""
     s = re.sub(r'\([^)]*\)', '', s or "")
     s = re.sub(r'\[[^\]]*\]', '', s)
+    # Remove "feat./ft./featuring" and everything after
+    s = re.sub(r'\b(?:feat\.?|ft\.?|featuring)\s+.*', '', s, flags=re.IGNORECASE)
     return re.sub(r'\s+', ' ', s).strip()
 
 
@@ -85,6 +93,9 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
     clean_artist = _clean_for_query(artist)
     clean_title = _clean_for_query(title)
     
+    # Strip quality markers from version (not remix info, just noise)
+    version = re.sub(r',\s*(?:Dirty|Clean)\b', '', version or '', flags=re.IGNORECASE).strip()
+
     if version:
         # ---- Strategy 1: artist + title + full version ----
         # Light cleaning preserves & and vs for maximum search fidelity.
@@ -160,6 +171,9 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
 
     collected: List[str] = []
     global _SC_REQUESTS
+
+    # Cache key for year extraction (populated during the search loop)
+    _year_cache_key = _norm(f"{artist}|{title}|{version}")
 
     # Build stopword set from artist/title to drop self-referential tokens
     at_words = set(_norm((artist or "") + " " + (title or "")).split())
@@ -257,6 +271,17 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
             out.append(t)
         return out
 
+    # Extract remixer name for validation (same logic as _candidate_queries)
+    _remixer_name = ""
+    if version:
+        _rv = re.sub(r',\s*(?:Dirty|Clean)\b', '', version, flags=re.IGNORECASE).strip()
+        _remixer_name = _RE_VERSION_KEYWORDS.sub('', _rv)
+        _remixer_name = _RE_VERSION_GENRES.sub('', _remixer_name)
+        _remixer_name = re.sub(r'\s+', ' ', _remixer_name).strip()
+
+    # Track SC result titles/artists for remixer validation
+    _sc_result_items: List[Dict[str, str]] = []
+
     try:
         for q in queries:
             _SC_REQUESTS += 1
@@ -287,13 +312,67 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
                 if duration_s > _MAX_TRACK_DURATION:
                     continue
                 collected.extend(_extract_from_item(item))
+                # Track item info for remixer validation
+                _sc_result_items.append({
+                    "title": (item.get("title") or ""),
+                    "artist": ((item.get("user") or {}).get("username") or ""),
+                    "genre": (item.get("genre") or ""),
+                    "tag_list": (item.get("tag_list") or ""),
+                })
+                # Capture upload year from the first valid result
+                if _year_cache_key not in _sc_year_cache:
+                    ca = item.get("created_at") or ""
+                    if ca and ca[:4].isdigit():
+                        _sc_year_cache[_year_cache_key] = ca[:4]
                 count += 1
                 if count >= 3:  # Top 3 per query
                     break
             
             # Early exit if we already captured strong genre tokens
-            if any(t in collected for t in ["afro house", "afro tech", "tech house", "house", "afrohouse"]):
+            if any(t in collected for t in ["afro house", "afro tech", "tech house", "deep house", "melodic house", "house", "afrohouse"]):
                 break
+
+        # Remixer validation: when searching for a specific remix, verify that
+        # at least one SC result mentions BOTH the remixer AND the track title.
+        # This prevents two failure modes:
+        #   A) SC returns other remixes of the same song (right title, wrong remixer)
+        #   B) SC returns other songs by the remixer (right artist, wrong title)
+        # Same principle as the Beatport title validation fix.
+        #
+        # Uses FIRST remixer name (before &/vs/x) — full multi-remixer strings
+        # like "Merchant vs Vidojean & Oliver Loenn" never match as substrings.
+        # Also checks genre + tag_list fields (remixer names often appear in tags
+        # rather than the track title on SC).
+        if _remixer_name and len(_remixer_name) > 2 and _sc_result_items:
+            # Extract first remixer name (before separators)
+            first_rmx = re.split(
+                r'\s*[&]\s*|\s+(?:and|vs\.?|[xX])\s+', _remixer_name, maxsplit=1
+            )[0].strip().lower()
+            # Extract significant title words (>2 chars) for matching
+            title_words = [w.lower() for w in re.split(r'\W+', title or '') if len(w) > 2]
+            
+            remix_match_found = False
+            for it in _sc_result_items:
+                # Include genre/tag_list — SC remix uploads often have remixer in tags
+                it_text = (
+                    f"{it['title']} {it['artist']} {it.get('genre', '')} "
+                    f"{it.get('tag_list', '')}"
+                ).lower()
+                has_remixer = first_rmx in it_text if first_rmx else True
+                has_title = any(tw in it_text for tw in title_words) if title_words else True
+                if has_remixer and has_title:
+                    remix_match_found = True
+                    break
+            
+            if not remix_match_found:
+                import logging
+                logging.getLogger(__name__).debug(
+                    "SC remixer validation failed: '%s' + title words %s not found together "
+                    "in any SC result for %s - %s (%s). Discarding %d collected tags.",
+                    _remixer_name, title_words, artist, title, version, len(collected),
+                )
+                return None
+
     # de-dup preserve order
         seen = set()
         uniq = [t for t in collected if not (t in seen or seen.add(t))]
@@ -308,6 +387,17 @@ def track_tags(artist: str, title: str, version: str = "") -> Dict[str, List[str
     if not genres:
         return {}
     return {"genre": genres[:1], "tags": genres}
+
+
+def get_cached_year(artist: str, title: str, version: str = "") -> Optional[str]:
+    """Return upload year captured during get_soundcloud_genres, or None.
+
+    This avoids a separate API call — the year is extracted from the same SC
+    results that provided genre tags.  Call *after* get_soundcloud_genres (or
+    track_tags) so the cache is populated.
+    """
+    key = _norm(f"{artist}|{title}|{version}")
+    return _sc_year_cache.get(key)
 
 
 def get_track_year(artist: str, title: str, version: str = "") -> Optional[str]:

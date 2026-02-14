@@ -18,7 +18,8 @@ def _install_requests_cache() -> None:
             cache_name=cache_name,
             backend="filesystem",
             use_cache_dir=True,  # Uses ~/.cache/djlib_http_cache on macOS/Linux
-            expire_after=expire_days * 24 * 3600
+            expire_after=expire_days * 24 * 3600,
+            allowable_codes=[200],  # Never cache error responses (403, 404, 500, 504…)
         )
     except Exception:
         # cache optional
