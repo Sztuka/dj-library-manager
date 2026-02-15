@@ -367,6 +367,8 @@ def _sanitize_title(val: str) -> str:
     s = re.sub(r"\s+-\s+", " - ", s)
     s = re.sub(r"\s+", " ", s)
     s = s.strip()
+    # Strip trailing punctuation that isn't part of valid titles
+    s = re.sub(r'[,;]+$', '', s).strip()
     
     # Apply title case for lowercase or UPPERCASE strings (preserve MixedCase)
     if s and (s.islower() or s.isupper()):
