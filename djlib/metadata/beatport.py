@@ -584,6 +584,12 @@ def _search_track_impl(artist: str, title: str, duration_s: Optional[int] = None
     if not artist and not title:
         return None
     
+    # Skip Beatport when artist is missing — without a known artist,
+    # title-only queries produce false positive matches (e.g. random tracks
+    # matching noise titles like "Afro House start 1 augFeeling good").
+    if not (artist or "").strip():
+        return None
+
     try:
         token = get_valid_token()
     except Exception as e:
