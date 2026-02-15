@@ -111,6 +111,7 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
         remixer = _RE_VERSION_KEYWORDS.sub('', version)
         remixer = _RE_VERSION_GENRES.sub('', remixer)
         remixer = re.sub(r'[,;]+', ' ', remixer)  # clean dangling commas after keyword removal
+        remixer = re.sub(r'\b\d+\b', '', remixer)  # strip orphaned numbers (e.g. "4" from "Version 4")
         remixer = re.sub(r'\s+', ' ', remixer).strip()
 
         # Extract first remixer (before &, "and", "vs", or "x"/"X").
@@ -307,6 +308,7 @@ def _get_soundcloud_genres_impl(artist: str, title: str, version: str = "") -> O
         _remixer_name = _RE_VERSION_KEYWORDS.sub('', _rv)
         _remixer_name = _RE_VERSION_GENRES.sub('', _remixer_name)
         _remixer_name = re.sub(r'[,;]+', ' ', _remixer_name)  # clean dangling commas
+        _remixer_name = re.sub(r'\b\d+\b', '', _remixer_name)  # strip orphaned numbers
         _remixer_name = re.sub(r'\s+', ' ', _remixer_name).strip()
 
     # Track SC result titles/artists for remixer validation
