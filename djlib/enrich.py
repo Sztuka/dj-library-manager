@@ -359,6 +359,10 @@ def _sanitize_title(val: str) -> str:
     s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
+    # Remove website watermarks: [site.com], (site.com), | site.com, bare domain.tld
+    s = re.sub(r"[\[\(]\s*\w+\.(?:com|net|org|pl|info|club|xyz|io)\s*[\]\)]", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*\|\s*\w+\.(?:com|net|org|pl|info|club|xyz|io)\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b\w+\.(?:com|net|org|pl|info|club|xyz|io)\b", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\.(?:mp3|wav|flac|aiff|m4a|aac)$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s+-\s+", " - ", s)
     s = re.sub(r"\s+", " ", s)
@@ -377,6 +381,10 @@ def _sanitize_version(val: str) -> str:
     s = re.sub(r"\b(pobrano|pobrane)\s+z\b.*$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\bdownloaded\s+from\b.*$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\bwww\.[\w\.-]+\b", "", s, flags=re.IGNORECASE)
+    # Remove website watermarks: [site.com], (site.com), | site.com, bare domain.tld
+    s = re.sub(r"[\[\(]\s*\w+\.(?:com|net|org|pl|info|club|xyz|io)\s*[\]\)]", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*\|\s*\w+\.(?:com|net|org|pl|info|club|xyz|io)\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b\w+\.(?:com|net|org|pl|info|club|xyz|io)\b", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\.(?:mp3|wav|flac|aiff|m4a|aac)$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s+", " ", s)
     return s.strip()
