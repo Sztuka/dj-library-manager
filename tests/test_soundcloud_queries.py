@@ -163,7 +163,7 @@ class TestKeepTokenFiltering:
     """Verify _keep_token rejects artist/title fragments from SC tags."""
 
     @staticmethod
-    def _fake_sc_response(genre: str, tag_list: str):
+    def _fake_sc_response(genre: str, tag_list: str, title: str = "", artist: str = ""):
         """Build a fake SC API JSON response with one track."""
         return {
             "collection": [
@@ -171,6 +171,8 @@ class TestKeepTokenFiltering:
                     "duration": 180_000,  # 3 min
                     "genre": genre,
                     "tag_list": tag_list,
+                    "title": title,
+                    "user": {"username": artist},
                 }
             ]
         }
@@ -181,7 +183,11 @@ class TestKeepTokenFiltering:
 
         fake_resp = MagicMock()
         fake_resp.status_code = 200
-        fake_resp.json.return_value = self._fake_sc_response(genre, tag_list)
+        fake_resp.json.return_value = self._fake_sc_response(
+            genre, tag_list,
+            title=f"{artist} - {title} ({version})" if version else f"{artist} - {title}",
+            artist=artist,
+        )
         fake_resp.from_cache = False
 
         # Clear LRU cache so each test gets a fresh call
