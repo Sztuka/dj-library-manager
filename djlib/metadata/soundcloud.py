@@ -151,7 +151,16 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
     return [q for q in queries if q and not (q in seen or seen.add(q))][:max_queries]
 
 
-@lru_cache(maxsize=1000)
+# Cache that does NOT store None results — transient SC failures (403, timeout)
+# must not poison the cache for the entire process lifetime.
+_sc_genre_cache: Dict[tuple, Optional[List[str]]] = {}
+
+
+def _clear_sc_genre_cache():
+    """Clear the SC genre cache. Used by tests."""
+    _sc_genre_cache.clear()
+
+
 def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optional[List[str]]:
     """Public SoundCloud search for genre/tag extraction.
 
@@ -162,6 +171,25 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     merge tokens and filter noise.
     Returns unique, normalized tokens sorted (for stable CSV diffs) or None.
     """
+    # Check manual cache (only stores successful results, not None)
+    cache_key = (artist, title, version)
+    if cache_key in _sc_genre_cache:
+        return _sc_genre_cache[cache_key]
+
+    result = _get_soundcloud_genres_impl(artist, title, version)
+    # Cache ONLY non-None results — transient failures (403, timeout, rate
+    # limit) must not poison the cache for the whole process.
+    if result is not None:
+        _sc_genre_cache[cache_key] = result
+    return result
+
+
+# Backward-compatible .cache_clear() for tests
+get_soundcloud_genres.cache_clear = _clear_sc_genre_cache  # type: ignore[attr-defined]
+
+
+def _get_soundcloud_genres_impl(artist: str, title: str, version: str = "") -> Optional[List[str]]:
+    """Internal implementation — called by get_soundcloud_genres with caching wrapper."""
     cid = get_valid_client_id()  # Use auto-refresh version
     if not cid:
         return None
