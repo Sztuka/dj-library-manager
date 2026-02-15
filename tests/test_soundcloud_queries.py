@@ -198,7 +198,7 @@ class TestKeepTokenFiltering:
             "Enjoy The Silence",
             "Vidojean Mashup",
             genre="Afro House",
-            tag_list='"depeche mode" "enjoy the silence" "afro house"',
+            tag_list='"depeche mode" "enjoy the silence" "afro house" "vidojean"',
         )
         assert result is not None
         assert "depeche mode" not in result
@@ -210,7 +210,7 @@ class TestKeepTokenFiltering:
         result = self._call_with_mock(
             "Drake", "Fake Love", "SomeGuy Remix",
             genre="Hip Hop",
-            tag_list='"drake" "hip hop"',
+            tag_list='"drake" "hip hop" "someguy"',
         )
         assert result is not None
         assert "drake" not in result
@@ -220,7 +220,7 @@ class TestKeepTokenFiltering:
         result = self._call_with_mock(
             "SomeArtist", "SomeTrack", "SomeGuy Remix",
             genre="Afro House",
-            tag_list='"tech house" "deep house"',
+            tag_list='"tech house" "deep house" "someguy"',
         )
         assert result is not None
         assert "afro house" in result
