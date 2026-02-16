@@ -193,37 +193,7 @@ def write_unsorted_rows(path: Path, rows: Iterable[Dict[str, str]], bucket_choic
                 except (ValueError, TypeError):
                     pass  # Keep as string if conversion fails
             
-            # Special handling for final_filename - use Excel formula
-            if spec.name == "final_filename":
-                # Find column indices for formula
-                artist_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "artist")
-                title_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "title")
-                version_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "version_info")
-                key_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "key_camelot")
-                bpm_col = next(i for i, s in enumerate(UNSORTED_COLUMNS, start=1) if s.name == "bpm")
-                
-                # Convert to Excel column letters
-                artist_letter = get_column_letter(artist_col)
-                title_letter = get_column_letter(title_col)
-                version_letter = get_column_letter(version_col)
-                key_letter = get_column_letter(key_col)
-                bpm_letter = get_column_letter(bpm_col)
-                
-                # Get file extension from original path
-                file_path_val = data.get("file_path", "")
-                ext = file_path_val.split(".")[-1] if "." in file_path_val else "mp3"
-                
-                # Build Excel formula for filename
-                # Format: Artist - Title (Version) [Key BPM].ext
-                # Version part is added only if not empty
-                formula = (
-                    f'={artist_letter}{row_idx}&" - "&{title_letter}{row_idx}'
-                    f'&IF({version_letter}{row_idx}<>""," ("&{version_letter}{row_idx}&")","")'
-                    f'&" ["&{key_letter}{row_idx}&" "&ROUND({bpm_letter}{row_idx},0)&"].{ext}"'
-                )
-                cell = ws.cell(row=row_idx, column=col_idx, value=formula)
-            else:
-                cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
+            cell = ws.cell(row=row_idx, column=col_idx, value=cell_value)
             
             cell.fill = row_fill
             

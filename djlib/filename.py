@@ -193,6 +193,8 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     cleaned = re.sub(r"\s+-", " - ", cleaned)
     cleaned = re.sub(r"\s*[–—]\s*", " - ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # strip trailing commas/semicolons — junk from bad filenames (e.g. "…Remix),")
+    cleaned = re.sub(r"[,;]+$", "", cleaned).strip()
 
     dash_pattern = r"\s+-\s+" if " - " in cleaned else r"\s*-\s*"
 
