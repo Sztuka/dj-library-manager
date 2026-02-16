@@ -110,17 +110,20 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
         # Extract remixer name: strip keywords and genre names (compiled patterns)
         remixer = _RE_VERSION_KEYWORDS.sub('', version)
         remixer = _RE_VERSION_GENRES.sub('', remixer)
-        remixer = re.sub(r'[,;]+', ' ', remixer)  # clean dangling commas after keyword removal
         remixer = re.sub(r'\b\d+\b', '', remixer)  # strip orphaned numbers (e.g. "4" from "Version 4")
         remixer = re.sub(r'\s+', ' ', remixer).strip()
 
-        # Extract first remixer (before &, "and", "vs", or "x"/"X").
-        # NOTE: operates on `remixer` (not _clean_for_query output),
-        # so separators like &, vs, X are still present for splitting.
+        # Extract first remixer BEFORE merging comma-separated names.
+        # Split on comma/semicolon/& and "and"/"vs"/"x" separators.
+        #   "Hoodia, La Hara, EMNL"    → "Hoodia"
         #   "Okan Evci & Emre Yuksel"  → "Okan Evci"
         #   "Merchant vs Vidojean & Oliver Loenn City Boys" → "Merchant"
         #   "Vidojean X Oliver Loenn"  → "Vidojean"
-        first_remixer = re.split(r'\s*[&]\s*|\s+(?:and|vs\.?|[xX])\s+', remixer, maxsplit=1)[0].strip()
+        first_remixer = re.split(r'\s*[,;&]\s*|\s+(?:and|vs\.?|[xX])\s+', remixer, maxsplit=1)[0].strip()
+
+        # Now merge comma-separated parts for the full remixer string
+        remixer = re.sub(r'[,;]+', ' ', remixer)
+        remixer = re.sub(r'\s+', ' ', remixer).strip()
         
         # Strategy 2: first_remixer + title (most precise when there are multiple remixers)
         if first_remixer and clean_title and first_remixer != remixer:
@@ -307,9 +310,10 @@ def _get_soundcloud_genres_impl(artist: str, title: str, version: str = "") -> O
         _rv = re.sub(r',\s*(?:Dirty|Clean)\b', '', version, flags=re.IGNORECASE).strip()
         _remixer_name = _RE_VERSION_KEYWORDS.sub('', _rv)
         _remixer_name = _RE_VERSION_GENRES.sub('', _remixer_name)
-        _remixer_name = re.sub(r'[,;]+', ' ', _remixer_name)  # clean dangling commas
         _remixer_name = re.sub(r'\b\d+\b', '', _remixer_name)  # strip orphaned numbers
         _remixer_name = re.sub(r'\s+', ' ', _remixer_name).strip()
+        # NOTE: commas kept intact here — they separate multiple remixer names
+        # and are used below for first_rmx splitting
 
     # Track SC result titles/artists for remixer validation
     _sc_result_items: List[Dict[str, str]] = []
@@ -376,9 +380,9 @@ def _get_soundcloud_genres_impl(artist: str, title: str, version: str = "") -> O
         # Also checks genre + tag_list fields (remixer names often appear in tags
         # rather than the track title on SC).
         if _remixer_name and len(_remixer_name) > 2 and _sc_result_items:
-            # Extract first remixer name (before separators)
+            # Extract first remixer name (before comma/&/and/vs/x separators)
             first_rmx = re.split(
-                r'\s*[&]\s*|\s+(?:and|vs\.?|[xX])\s+', _remixer_name, maxsplit=1
+                r'\s*[,;&]\s*|\s+(?:and|vs\.?|[xX])\s+', _remixer_name, maxsplit=1
             )[0].strip().lower()
             # Extract significant title words (>2 chars) for matching
             title_words = [w.lower() for w in re.split(r'\W+', title or '') if len(w) > 2]
