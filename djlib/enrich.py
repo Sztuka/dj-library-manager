@@ -388,6 +388,11 @@ def _sanitize_version(val: str) -> str:
     s = re.sub(r"\s*\|\s*\w+\.(?:com|net|org|pl|info|club|xyz|io)\b", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\b\w+\.(?:com|net|org|pl|info|club|xyz|io)\b", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\.(?:mp3|wav|flac|aiff|m4a|aac)$", "", s, flags=re.IGNORECASE)
+    # Strip junk "Version N" / "Ver N" / "V.N" tokens from download sites
+    s = re.sub(r",?\s*\b(?:version|ver\.?|v\.?)\s*\d+\b", "", s, flags=re.IGNORECASE)
+    # Clean leftover punctuation: trailing, leading, and doubled commas/semicolons
+    s = re.sub(r"[,;]\s*[,;]", ",", s)  # collapse doubled separators
+    s = re.sub(r"^[,;\s]+|[,;\s]+$", "", s)  # strip leading/trailing
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
