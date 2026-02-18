@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import shutil
 import tempfile
+import unicodedata
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -156,7 +157,7 @@ def get_rekordbox_track_ids() -> Dict[Path, str]:
             if not full_path:
                 continue
             
-            file_path = Path(full_path)
+            file_path = Path(unicodedata.normalize('NFC', full_path))
             rekordbox_id = str(getattr(content, 'ID', ''))
             
             if rekordbox_id:
@@ -271,7 +272,7 @@ def get_traktor_track_ids(collection_nml_path: Optional[Path] = None) -> Dict[Pa
             traktor_id = entry.get("AUDIO_ID", "") or entry.get("PRIMARYKEY", "")
             
             if traktor_id:
-                mapping[full_path] = traktor_id
+                mapping[Path(unicodedata.normalize('NFC', str(full_path)))] = traktor_id
         
         return mapping
     except Exception as e:

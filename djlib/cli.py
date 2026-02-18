@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, csv, time, os, json, shutil
+import argparse, csv, time, os, json, shutil, unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -289,8 +289,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
             traktor_id = djlib_tags.get('traktor_id', '')
             
             # ✅ VALIDATION: Check if IDs in tags match current DJ software databases
-            current_rekordbox_id = rekordbox_mapping.get(p, '')
-            current_traktor_id = traktor_mapping.get(p, '')
+            p_nfc = Path(unicodedata.normalize('NFC', str(p)))
+            current_rekordbox_id = rekordbox_mapping.get(p_nfc, '')
+            current_traktor_id = traktor_mapping.get(p_nfc, '')
             
             if current_rekordbox_id and current_rekordbox_id != rekordbox_id:
                 print(f"   🔧 Fixing Rekordbox ID for {p.name}: {rekordbox_id} → {current_rekordbox_id}")
@@ -306,8 +307,9 @@ def cmd_scan(args: argparse.Namespace) -> None:
             track_id = generate_track_id(p, tags.get("artist", ""), tags.get("title", ""))
             
             # Get DJ software IDs from current DBs (if file is in Rekordbox/Traktor)
-            rekordbox_id = rekordbox_mapping.get(p, '')
-            traktor_id = traktor_mapping.get(p, '')
+            p_nfc = Path(unicodedata.normalize('NFC', str(p)))
+            rekordbox_id = rekordbox_mapping.get(p_nfc, '')
+            traktor_id = traktor_mapping.get(p_nfc, '')
             needs_id_update = True
         
         # Tag file with DJLIB custom tags (always on first scan, or if IDs changed)
@@ -1057,12 +1059,15 @@ def cmd_apply(args: argparse.Namespace) -> None:
             print(f"[WARN] Nie znaleziono pliku: {src}")
             continue
         
+        # Normalize path to NFC for consistent matching (macOS uses NFD, Rekordbox uses NFC)
+        src_nfc = Path(unicodedata.normalize('NFC', str(src)))
+        
         # Skip DJ software ID validation for rejected files
         # Rejected files are just moved to reject folder, no DJ software sync needed
         if destination != "reject":
             # ✅ VALIDATE & FIX DJ software IDs before moving
-            current_rekordbox_id = rekordbox_mapping.get(src, '')
-            current_traktor_id = traktor_mapping.get(src, '')
+            current_rekordbox_id = rekordbox_mapping.get(src_nfc, '')
+            current_traktor_id = traktor_mapping.get(src_nfc, '')
             
             # Also check file tags for rekordbox_id
             file_rekordbox_id = r.get("rekordbox_id", "")
