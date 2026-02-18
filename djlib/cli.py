@@ -11,9 +11,9 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
+    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
 )
-from djlib.csvdb import load_records, save_records
+from djlib.csvdb import load_records, save_records, load_rejected, save_rejected
 from djlib.tags import read_tags, write_tags
 from djlib.rekordbox_status import was_analyzed, extract_metadata_from_db
 from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
@@ -161,6 +161,13 @@ def cmd_scan(args: argparse.Namespace) -> None:
     known_hashes.update({r.get("file_hash", "") for r in staging_rows if r.get("file_hash")})
     known_fps.update({r.get("fingerprint", "") for r in staging_rows if r.get("fingerprint")})
     
+    # ── Load rejected registry (previously rejected files should not re-enter) ──
+    rejected_rows = load_rejected(REJECTED_CSV_PATH)
+    rejected_hashes = {r.get("file_hash", "") for r in rejected_rows if r.get("file_hash")}
+    rejected_fps = {r.get("fingerprint", "") for r in rejected_rows if r.get("fingerprint")}
+    if rejected_rows:
+        print(f"🚫 Loaded {len(rejected_rows)} previously rejected files (will skip matches)")
+    
     # Also track known file paths to prevent duplicates when tags change
     known_paths = {r.get("file_path", "") for r in library_rows if r.get("file_path")}
     known_paths.update({r.get("file_path", "") for r in staging_rows if r.get("file_path")})
@@ -245,6 +252,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
         if fhash in known_hashes:
             processed += 1
             continue
+        
+        # ── Check rejected registry ──
+        if fhash in rejected_hashes:
+            print(f"   🚫 [REJECTED] {p.name} (hash matches previously rejected file)")
+            processed += 1
+            continue
 
         tags = read_tags(p)
         tags_original = dict(tags)
@@ -270,6 +283,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 missing_fpcalc = True
 
         is_dup = "true" if (fp and fp in known_fps) else "false"
+        
+        # ── Check rejected registry by fingerprint ──
+        if fp and fp in rejected_fps:
+            print(f"   🚫 [REJECTED] {p.name} (fingerprint matches previously rejected file)")
+            processed += 1
+            continue
 
         # Scan uses only local metadata (fast) - online enrichment is separate workflow
         sugg = suggest_metadata(p, tags, enable_online=False)
@@ -990,6 +1009,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         return
     library_rows = load_records(CSV_PATH)
     archive_rows = load_records(ARCHIVE_CSV_PATH)  # Load archive for duplicate checking
+    rejected_registry = load_rejected(REJECTED_CSV_PATH)  # Load rejected registry for appending
     processed_ids: set[str] = set()
     # Track DJ software IDs to remove for rejected/archived files
     rejected_rekordbox_ids: List[str] = []
@@ -1318,6 +1338,18 @@ def cmd_apply(args: argparse.Namespace) -> None:
             if r.get("traktor_id"):
                 rejected_traktor_ids.append(str(r.get("traktor_id") or ""))
                 print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
+            
+            # ── Save to rejected registry (so cmd_scan skips these in the future) ──
+            rejected_registry.append({
+                "file_hash": r.get("file_hash") or "",
+                "fingerprint": r.get("fingerprint") or "",
+                "artist": artist,
+                "title": title,
+                "original_path": r.get("file_path") or "",
+                "reject_date": utc_now_str(),
+                "reason": "user_reject",
+            })
+            
             print(f"   🚫 Rejected: {dest_path.name} (moved to reject folder, no further processing)")
             continue
         
@@ -1514,6 +1546,12 @@ def cmd_apply(args: argparse.Namespace) -> None:
     if archived_rekordbox_ids or archived_traktor_ids:
         save_records(ARCHIVE_CSV_PATH, archive_rows)
         print(f"📦 Zapisano {len(archive_rows)} rekordów do library-archive.csv")
+    
+    # Save rejected registry (always — append-only, even if no new rejects this run)
+    _new_rejects = len([r for r in ready if (r.get("destination") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
+    if _new_rejects > 0:
+        save_rejected(REJECTED_CSV_PATH, rejected_registry)
+        print(f"🚫 Zapisano {len(rejected_registry)} rekordów do library-rejected.csv (+{_new_rejects} nowych)")
     
     # Count actual library additions (not archive/reject)
     rejected_count = len(rejected_rekordbox_ids) + len(rejected_traktor_ids)

@@ -44,6 +44,36 @@ FIELDNAMES = [
     "archive_org_cover_url",   # Cover art URL from Archive.org
 ]
 
+# ── Rejected registry (lightweight: only identity + reason) ──────────────
+REJECTED_FIELDNAMES = [
+    "file_hash",
+    "fingerprint",
+    "artist",
+    "title",
+    "original_path",
+    "reject_date",
+    "reason",       # e.g. "user_reject", "low_quality", "duplicate"
+]
+
+
+def load_rejected(csv_path: Path) -> List[Dict[str, str]]:
+    """Load rejected registry CSV."""
+    if not csv_path.exists():
+        return []
+    with csv_path.open("r", newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def save_rejected(csv_path: Path, rows: List[Dict[str, str]]) -> None:
+    """Save rejected registry CSV."""
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=REJECTED_FIELDNAMES)
+        w.writeheader()
+        for r in rows:
+            clean = {k: r.get(k, "") for k in REJECTED_FIELDNAMES}
+            w.writerow(clean)
+
+
 def load_records(csv_path: Path) -> List[Dict[str, str]]:
     if not csv_path.exists():
         return []

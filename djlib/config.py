@@ -325,6 +325,10 @@ CSV_PATH = _REPO / "data" / "library.csv"
 # library-archive.csv for archived tracks (separate from active library)
 ARCHIVE_CSV_PATH = _REPO / "data" / "library-archive.csv"
 
+# library-rejected.csv — persistent registry of rejected files (hash/fp)
+# Used by cmd_scan to skip files that were previously rejected
+REJECTED_CSV_PATH = _REPO / "data" / "library-rejected.csv"
+
 # UNSORTED_XLSX - computed from config file at runtime, default is ./data/unsorted.xlsx in repo
 def _get_unsorted_xlsx() -> Path:
     """Get UNSORTED_XLSX from config file, avoiding circular dependency."""
