@@ -1303,9 +1303,21 @@ def remove_tracks_from_traktor(
         return 0
     
     if collection_nml_path is None:
+        # Auto-detect collection.nml (same logic as get_traktor_track_ids)
         from djlib.config import load_config
         cfg = load_config()
-        collection_nml_path = Path(cfg.get("TRAKTOR_COLLECTION", "")).expanduser()
+        _cfg_path = cfg.get("TRAKTOR_COLLECTION", "")
+        if _cfg_path:
+            collection_nml_path = Path(_cfg_path).expanduser()
+        else:
+            # Try default locations
+            docs = Path.home() / "Documents" / "Native Instruments"
+            if docs.exists():
+                for traktor_dir in docs.glob("Traktor*"):
+                    nml = traktor_dir / "collection.nml"
+                    if nml.exists():
+                        collection_nml_path = nml
+                        break
     
     if not collection_nml_path or not collection_nml_path.exists():
         print(f"⚠️  Traktor collection not found: {collection_nml_path}")

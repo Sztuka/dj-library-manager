@@ -11,9 +11,9 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
+    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
 )
-from djlib.csvdb import load_records, save_records
+from djlib.csvdb import load_records, save_records, load_rejected, save_rejected
 from djlib.tags import read_tags, write_tags
 from djlib.rekordbox_status import was_analyzed, extract_metadata_from_db
 from djlib.enrich import suggest_metadata, enrich_online_for_row, derive_local_metadata
@@ -161,6 +161,13 @@ def cmd_scan(args: argparse.Namespace) -> None:
     known_hashes.update({r.get("file_hash", "") for r in staging_rows if r.get("file_hash")})
     known_fps.update({r.get("fingerprint", "") for r in staging_rows if r.get("fingerprint")})
     
+    # ── Load rejected registry (previously rejected files should not re-enter) ──
+    rejected_rows = load_rejected(REJECTED_CSV_PATH)
+    rejected_hashes = {r.get("file_hash", "") for r in rejected_rows if r.get("file_hash")}
+    rejected_fps = {r.get("fingerprint", "") for r in rejected_rows if r.get("fingerprint")}
+    if rejected_rows:
+        print(f"🚫 Loaded {len(rejected_rows)} previously rejected files (will skip matches)")
+    
     # Also track known file paths to prevent duplicates when tags change
     known_paths = {r.get("file_path", "") for r in library_rows if r.get("file_path")}
     known_paths.update({r.get("file_path", "") for r in staging_rows if r.get("file_path")})
@@ -245,6 +252,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
         if fhash in known_hashes:
             processed += 1
             continue
+        
+        # ── Check rejected registry ──
+        if fhash in rejected_hashes:
+            print(f"   🚫 [REJECTED] {p.name} (hash matches previously rejected file)")
+            processed += 1
+            continue
 
         tags = read_tags(p)
         tags_original = dict(tags)
@@ -270,6 +283,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 missing_fpcalc = True
 
         is_dup = "true" if (fp and fp in known_fps) else "false"
+        
+        # ── Check rejected registry by fingerprint ──
+        if fp and fp in rejected_fps:
+            print(f"   🚫 [REJECTED] {p.name} (fingerprint matches previously rejected file)")
+            processed += 1
+            continue
 
         # Scan uses only local metadata (fast) - online enrichment is separate workflow
         sugg = suggest_metadata(p, tags, enable_online=False)
@@ -990,6 +1009,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         return
     library_rows = load_records(CSV_PATH)
     archive_rows = load_records(ARCHIVE_CSV_PATH)  # Load archive for duplicate checking
+    rejected_registry = load_rejected(REJECTED_CSV_PATH)  # Load rejected registry for appending
     processed_ids: set[str] = set()
     # Track DJ software IDs to remove for rejected/archived files
     rejected_rekordbox_ids: List[str] = []
@@ -1049,6 +1069,35 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     if _info and _info.artist and _info.title:
                         library_index[_info.match_key] = _info
 
+    # ── Pre-flight: validate xlsx for duplicate entries ──────────────
+    _seen_hashes: Dict[str, str] = {}  # hash -> file_path (first occurrence)
+    _seen_paths: set[str] = set()
+    _batch_dupes: list[str] = []
+    for _r in ready:
+        _fp = _r.get("file_path", "")
+        _fh = _r.get("file_hash", "")
+        if _fp and _fp in _seen_paths:
+            _batch_dupes.append(f"  DUPE PATH: {_fp}")
+        _seen_paths.add(_fp)
+        if _fh and _fh in _seen_hashes:
+            _batch_dupes.append(f"  DUPE HASH: {_fp}  (same hash as {_seen_hashes[_fh]})")
+        if _fh:
+            _seen_hashes[_fh] = _fp
+    if _batch_dupes:
+        print(f"\n⚠️  WARNING: Found {len(_batch_dupes)} duplicate entries in unsorted.xlsx:")
+        for _d in _batch_dupes:
+            print(_d)
+        print("   These will be handled during export (only first occurrence exported).\n")
+
+    # Track match_keys seen in THIS batch to catch intra-batch duplicates
+    _batch_match_keys: Dict[str, str] = {}  # match_key -> file_path (first in batch)
+    skipped_reasons: Dict[str, int] = {}  # reason -> count
+
+    def _skip(reason: str, detail: str) -> None:
+        """Log a skip with structured reason."""
+        skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
+        print(f"[SKIP:{reason}] {detail}")
+
     for r in ready:
         # Determine destination path (new model or legacy fallback)
         destination = (r.get("destination") or "").lower().strip()
@@ -1056,7 +1105,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         
         src = Path(r.get("file_path") or "")
         if not src.exists():
-            print(f"[WARN] Nie znaleziono pliku: {src}")
+            _skip("FILE_MISSING", str(src))
             continue
         
         # Normalize path to NFC for consistent matching (macOS uses NFD, Rekordbox uses NFC)
@@ -1082,8 +1131,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             # Block export if no rekordbox_id found anywhere
             final_rekordbox_id = current_rekordbox_id or file_rekordbox_id
             if not final_rekordbox_id:
-                print(f"[SKIP] Brak rekordbox_id dla: {src.name}")
-                print(f"       Uruchom najpierw 'sync-dj-libraries --write' aby przypisać ID")
+                _skip("NO_REKORDBOX_ID", f"{src.name}  → Uruchom 'sync-dj-libraries --write' aby przypisać ID")
                 continue
             
             if current_rekordbox_id and current_rekordbox_id != r.get("rekordbox_id", ""):
@@ -1145,10 +1193,18 @@ def cmd_apply(args: argparse.Namespace) -> None:
         artist = r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or ""
         title = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
         
-        # Check for duplicates in library when exporting to library
-        if destination == "library":
-            _load_library_index()  # Lazy-load on first library export
+        # Check for duplicates in library/archive when exporting
+        if destination in ("library", "archive"):
+            _load_library_index()  # Lazy-load on first library/archive export
             match_key = normalize_for_match(artist, title)
+            
+            # ── Intra-batch duplicate check ──
+            if match_key in _batch_match_keys:
+                _skip("DUPLICATE_IN_BATCH",
+                      f"{artist} - {title}  (already in this export batch from {_batch_match_keys[match_key]})")
+                continue
+            
+            # ── Library/archive duplicate check ──
             if match_key in library_index:
                 existing = library_index[match_key]
                 src_info = get_audio_info(src)
@@ -1177,7 +1233,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 
                 choice = input("   Continue anyway? [y/N]: ").strip().lower()
                 if choice != 'y':
-                    print("   → Skipped")
+                    _skip("ALREADY_IN_LIBRARY", f"{artist} - {title}")
                     continue
         
         # Determine destination path
@@ -1207,22 +1263,72 @@ def cmd_apply(args: argparse.Namespace) -> None:
         if args.dry_run:
             continue
 
-        # Ensure parent directory exists and handle naming conflicts
+        # Ensure parent directory exists
         dest_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # ── Handle file-already-exists at destination ──
         if dest_path.exists():
-            stem = dest_path.stem
-            ext = dest_path.suffix
-            i = 2
-            while True:
-                cand = dest_path.parent / f"{stem} ({i}){ext}"
-                if not cand.exists():
-                    dest_path = cand
-                    break
-                i += 1
+            if destination in ("library", "archive", "mixes"):
+                # NEVER silently create (2) copies in library/archive/mixes
+                # This means a duplicate slipped past the artist+title check
+                # (e.g. same file re-exported, or metadata-level dedup missed it)
+                from djlib.fingerprint import file_sha256 as _fsha
+                existing_hash = _fsha(dest_path)
+                new_hash = r.get("file_hash") or _fsha(src)
+                
+                if existing_hash == new_hash:
+                    _skip("IDENTICAL_FILE_EXISTS",
+                          f"{dest_path.name}  (exact same file already at destination)")
+                    continue
+                
+                # Different file, same name — ask user
+                print(f"\n⚠️  FILE CONFLICT at destination:")
+                print(f"   Target: {dest_path}")
+                print(f"   A file with this name already exists (different content).")
+                print(f"   Source hash:   {new_hash[:16]}...")
+                print(f"   Existing hash: {existing_hash[:16]}...")
+                conflict_choice = input("   [S]kip / [R]ename with (2) / [O]verwrite? [S/r/o]: ").strip().lower()
+                
+                if conflict_choice == 'o':
+                    dest_path.unlink()
+                    print(f"   → Overwriting existing file")
+                elif conflict_choice == 'r':
+                    stem = dest_path.stem
+                    ext = dest_path.suffix
+                    i = 2
+                    while True:
+                        cand = dest_path.parent / f"{stem} ({i}){ext}"
+                        if not cand.exists():
+                            dest_path = cand
+                            break
+                        i += 1
+                    print(f"   → Renamed to: {dest_path.name}")
+                else:
+                    _skip("FILE_CONFLICT", f"{dest_path.name}  (user chose to skip)")
+                    continue
+            else:
+                # For reject destination: silent (2) rename is OK
+                stem = dest_path.stem
+                ext = dest_path.suffix
+                i = 2
+                while True:
+                    cand = dest_path.parent / f"{stem} ({i}){ext}"
+                    if not cand.exists():
+                        dest_path = cand
+                        break
+                    i += 1
         
         shutil.move(str(src), str(dest_path))
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
+        
+        # ── Update library_index so next files in this batch are caught ──
+        if destination in ("library", "archive"):
+            _mk = normalize_for_match(artist, title)
+            new_info = get_audio_info(dest_path)
+            if new_info:
+                library_index[_mk] = new_info
+            _batch_match_keys[_mk] = src.name
         
         # Track rejected/archived files for DJ software removal
         if destination == "reject":
@@ -1232,6 +1338,18 @@ def cmd_apply(args: argparse.Namespace) -> None:
             if r.get("traktor_id"):
                 rejected_traktor_ids.append(str(r.get("traktor_id") or ""))
                 print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
+            
+            # ── Save to rejected registry (so cmd_scan skips these in the future) ──
+            rejected_registry.append({
+                "file_hash": r.get("file_hash") or "",
+                "fingerprint": r.get("fingerprint") or "",
+                "artist": artist,
+                "title": title,
+                "original_path": r.get("file_path") or "",
+                "reject_date": utc_now_str(),
+                "reason": "user_reject",
+            })
+            
             print(f"   🚫 Rejected: {dest_path.name} (moved to reject folder, no further processing)")
             continue
         
@@ -1429,6 +1547,12 @@ def cmd_apply(args: argparse.Namespace) -> None:
         save_records(ARCHIVE_CSV_PATH, archive_rows)
         print(f"📦 Zapisano {len(archive_rows)} rekordów do library-archive.csv")
     
+    # Save rejected registry (always — append-only, even if no new rejects this run)
+    _new_rejects = len([r for r in ready if (r.get("destination") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
+    if _new_rejects > 0:
+        save_rejected(REJECTED_CSV_PATH, rejected_registry)
+        print(f"🚫 Zapisano {len(rejected_registry)} rekordów do library-rejected.csv (+{_new_rejects} nowych)")
+    
     # Count actual library additions (not archive/reject)
     rejected_count = len(rejected_rekordbox_ids) + len(rejected_traktor_ids)
     # Use max of rekordbox/traktor IDs for count since track may have both or one
@@ -1441,6 +1565,13 @@ def cmd_apply(args: argparse.Namespace) -> None:
     print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")
     print(f"🎨 Okładki: applied={covers_applied}, skipped={covers_skipped}, failed={covers_failed}")
     print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
+    
+    # ── Skip summary ──
+    total_skipped = sum(skipped_reasons.values())
+    if total_skipped > 0:
+        print(f"\n⏭️  Skipped {total_skipped} files:")
+        for reason, count in sorted(skipped_reasons.items()):
+            print(f"   {reason}: {count}")
     
     # Remove rejected/archived tracks from DJ software
     all_rekordbox_to_remove = rejected_rekordbox_ids + archived_rekordbox_ids

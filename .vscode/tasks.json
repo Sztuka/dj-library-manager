@@ -136,6 +136,22 @@
       "command": "find ~/Music\\ Unsorted -name '.DS_Store' -delete && find ~/Music\\ Unsorted -depth -type d -empty -print -delete && echo '✅ Empty folders removed from Music Unsorted'",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Audit library duplicates (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/cleanup_library_dupes.py",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Fix library duplicates (move to reject + DJ software cleanup)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python ${workspaceFolder}/scripts/cleanup_library_dupes.py --fix --force-same-quality",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }
