@@ -641,12 +641,15 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 enabled_sources.discard("soundcloud")
             if getattr(args, "skip_beatport", False):
                 enabled_sources.discard("beatport")
+            # Pass tag_genre for weak fallback signal
+            original_tag_genre = (r.get("tag_genre_original") or "").strip()
             genre_res = resolve_genres(
                 a,
                 t,
                 version=v,
                 duration_s=dur_s,
                 sources=enabled_sources,
+                tag_genre=original_tag_genre,
             )
             print(f"      Result: main={genre_res.main if genre_res else None}, conf={genre_res.confidence if genre_res else None}")
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres

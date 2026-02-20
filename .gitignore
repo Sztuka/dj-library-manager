@@ -58,3 +58,4 @@ htmlcov/
 # ===== Runtime logs and cache =====
 LOGS/
 djlib_http_cache.sqlite
+djlib_http_cache/

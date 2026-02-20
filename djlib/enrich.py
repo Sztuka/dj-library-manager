@@ -815,6 +815,7 @@ def _resolve_via_genre_sources(
         genre_res = resolve_genres(
             artist, title, version=version, duration_s=dur_s,
             sources=genre_sources,
+            tag_genre=(tags.get("genre") or "").strip(),
         )
 
         # ---- year / album resolution ----
