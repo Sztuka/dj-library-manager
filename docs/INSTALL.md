@@ -165,7 +165,7 @@ After setup, you should have:
 
 dj-library-manager/
 ├── data/
-│   ├── unsorted.xlsx # Staging spreadsheet
+│   ├── unsorted.csv  # Staging CSV
 │   └── library.csv   # Master database
 ├── LOGS/             # Operation logs
 ├── config.local.yml  # Your configuration
@@ -194,7 +194,7 @@ python -m djlib.cli analyze-audio --check-env
 ```bash
 # Put some tracks in ~/Music Unsorted/
 python -m djlib.cli scan
-# Check data/unsorted.xlsx
+# Check data/unsorted.csv
 ```
 
 ---

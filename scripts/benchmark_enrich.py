@@ -3,7 +3,7 @@
 Benchmark script for enrich-online performance testing.
 
 Usage:
-    # Run benchmark on current unsorted.xlsx:
+    # Run benchmark on current unsorted.csv:
     python scripts/benchmark_enrich.py --run
     
     # Run benchmark with specific number of tracks (first N rows):
@@ -53,18 +53,12 @@ def get_git_info() -> tuple[str, str]:
 
 
 def count_pending_tracks() -> int:
-    """Count tracks in unsorted.xlsx that need enrichment."""
+    """Count tracks in unsorted.csv that need enrichment."""
     try:
-        import openpyxl
-        xlsx_path = Path(__file__).parent.parent / "data" / "unsorted.xlsx"
-        if not xlsx_path.exists():
-            return 0
-        wb = openpyxl.load_workbook(xlsx_path, read_only=True)
-        ws = wb.active
-        # Count rows with data (skip header)
-        count = sum(1 for row in ws.iter_rows(min_row=2) if row[0].value)
-        wb.close()
-        return count
+        from djlib.unsorted import load_unsorted_rows
+        from djlib.config import UNSORTED_CSV
+        rows = load_unsorted_rows(UNSORTED_CSV)
+        return len(rows)
     except Exception as e:
         print(f"Warning: Could not count tracks: {e}")
         return 0
@@ -76,7 +70,7 @@ def run_benchmark(limit: int | None = None, note: str = "") -> dict:
     
     track_count = count_pending_tracks()
     if track_count == 0:
-        print("❌ No tracks in unsorted.xlsx. Run scan first.")
+        print("❌ No tracks in unsorted.csv. Run scan first.")
         return {}
     
     if limit:
@@ -147,26 +141,16 @@ def run_detailed_benchmark(limit: int = 5, note: str = "") -> dict:
     """Run in-process benchmark with per-phase timing (accurate cache stats)."""
     from djlib.metadata import mb_client
     from djlib.enrich import enrich_online_for_row
-    import openpyxl
+    from djlib.unsorted import load_unsorted_rows
+    from djlib.config import UNSORTED_CSV
     
-    xlsx_path = Path(__file__).parent.parent / "data" / "unsorted.xlsx"
-    if not xlsx_path.exists():
-        print("❌ No unsorted.xlsx found. Run scan first.")
+    rows = load_unsorted_rows(UNSORTED_CSV)
+    if not rows:
+        print("❌ No unsorted.csv found or empty. Run scan first.")
         return {}
     
-    # Load tracks from xlsx
-    wb = openpyxl.load_workbook(xlsx_path)
-    ws = wb.active
-    headers = [cell.value for cell in ws[1]]
-    
-    rows = []
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        if row[0]:  # has path
-            row_dict = dict(zip(headers, row))
-            rows.append(row_dict)
-            if len(rows) >= limit:
-                break
-    wb.close()
+    # Limit rows
+    rows = rows[:limit]
     
     track_count = len(rows)
     if track_count == 0:

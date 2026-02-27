@@ -14,9 +14,9 @@ MVP v1 is the first stable, end-to-end workflow for organizing a DJ library with
 
 ### Core Workflow
 
-1. **Scan** UNSORTED folder → generate `data/unsorted.xlsx`
+1. **Scan** UNSORTED folder → generate `data/unsorted.csv`
 2. **Enrich** metadata online (Beatport, MusicBrainz, Last.fm, SoundCloud)
-3. **Curate** in Excel (artist/title/genre/year + destination + done)
+3. **Curate** via Review UI (artist/title/genre/year + destination + done)
 4. **Apply** → move files, write tags, embed cover art, sync DJ software
 5. **Undo** → revert last export if needed
 

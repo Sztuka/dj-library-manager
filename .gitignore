@@ -32,6 +32,7 @@ taxonomy.local.yml
 # ===== Data / artifacts =====
 data/
 !data/.gitkeep
+unsorted.csv
 unsorted.xlsx
 *.xlsx
 

@@ -75,7 +75,7 @@ dj-library-manager/
 │       ├── export_dataset.py   # Training dataset generation
 │       └── models.py           # Model utilities
 ├── data/
-│   ├── unsorted.xlsx           # Staging spreadsheet
+│   ├── unsorted.csv            # Staging CSV
 │   ├── library.csv             # Master track database
 │   └── training_dataset_full.csv
 ├── LOGS/
@@ -120,9 +120,9 @@ FIELDNAMES = [
 ]
 ```
 
-### unsorted.xlsx (Staging Spreadsheet)
+### unsorted.csv (Staging CSV)
 
-Excel file with all pending tracks. Key columns:
+CSV file with all pending tracks. Key columns:
 
 | Column          | Type      | Description                        |
 | --------------- | --------- | ---------------------------------- |

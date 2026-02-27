@@ -12,8 +12,8 @@ tenacity          # retry/backoff na 429/5xx
 requests-cache    # cache HTTP (TTL)
 pandas            # data processing dla ML i CSV
 scikit-learn>=1.3.0  # ML dla bucket assigner
-openpyxl>=3.1.2   # eksport/import XLSX z dropdownami (data validation)
-Pillow            # image handling for cover art thumbnails in Excel
+# openpyxl — removed: XLSX staging replaced by CSV + Review UI
+# Pillow  — removed: cover thumbnails no longer embedded in Excel
 flask>=3.0        # review UI server (djlib review)
 playwright        # headless browser for Beatport/SoundCloud token refresh
 keyring           # secure credential storage (Beatport email/password)

@@ -4,6 +4,8 @@ The baseline file (data/unsorted_baseline_sot.xlsx) represents the expected
 enrich results. Any changes to the enrich logic should be validated against
 this baseline to ensure no regressions.
 
+Note: baseline file remains as .xlsx (historical snapshot). Current data uses CSV.
+
 Run with: pytest tests/test_enrich_regression.py -v
 """
 
@@ -44,7 +46,7 @@ ENRICH_COLUMNS = {
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_FILE = REPO_ROOT / "data" / "unsorted_baseline_sot.xlsx"
-CURRENT_FILE = REPO_ROOT / "data" / "unsorted.xlsx"
+CURRENT_FILE = REPO_ROOT / "data" / "unsorted.csv"
 
 
 def _normalize_value(val) -> str:
@@ -72,7 +74,7 @@ def current_df() -> pd.DataFrame:
     """Load current enrich results (cached for module)."""
     if not CURRENT_FILE.exists():
         pytest.skip(f"Current file not found: {CURRENT_FILE}")
-    return pd.read_excel(CURRENT_FILE)
+    return pd.read_csv(CURRENT_FILE)
 
 
 @pytest.fixture(scope="module")

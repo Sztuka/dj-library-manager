@@ -57,7 +57,7 @@ def test_tracks_unsorted(client):
     assert resp.status_code == 200
     data = json.loads(resp.data)
     assert isinstance(data, list)
-    # If unsorted.xlsx exists, should have data
+    # If unsorted.csv exists, should have data
     # (may be empty in CI, but structure should be valid)
 
 

@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_XLSX
+    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_CSV
 )
 from djlib.csvdb import load_records, save_records, load_rejected, save_rejected
 from djlib.tags import read_tags, write_tags
@@ -60,13 +60,13 @@ def _safe_str(value: Any) -> str:
 
 
 def _load_unsorted() -> List[Dict[str, str]]:
-    return load_unsorted_rows(UNSORTED_XLSX)
+    return load_unsorted_rows(UNSORTED_CSV)
 
 
 def _save_unsorted(rows: List[Dict[str, str]]) -> None:
-    """Save rows to unsorted.xlsx."""
+    """Save rows to unsorted.csv."""
     # No longer needs bucket choices (legacy system removed)
-    write_unsorted_rows(UNSORTED_XLSX, rows, [])
+    write_unsorted_rows(UNSORTED_CSV, rows, [])
 
 # ============ KOMENDY ============
 
@@ -220,7 +220,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
         for p in not_analyzed_paths:
             print(f"     - {p.relative_to(INBOX_DIR)}")
         print()
-        return  # Abort without generating unsorted.xlsx
+        return  # Abort without generating unsorted.csv
     
     processed = 0
     added = 0
@@ -413,7 +413,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
     if new_rows:
         _save_unsorted(staging_rows)
-        print(f"Scanned {len(new_rows)} files. Saved to {UNSORTED_XLSX}.")
+        print(f"Scanned {len(new_rows)} files. Saved to {UNSORTED_CSV}.")
     else:
         print("No new files to add.")
 
@@ -431,7 +431,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
 # REMOVED: _load_rules, _decide_for_row, cmd_auto_decide, cmd_auto_decide_smart
 # Legacy bucketing system (CLUB/OPEN FORMAT) has been replaced with LIBRARY/Artist/Album structure.
-# Auto-bucketing logic is no longer relevant. Use manual genre selection in unsorted.xlsx instead.
+# Auto-bucketing logic is no longer relevant. Use manual genre selection in unsorted.csv instead.
 
 def cmd_enrich_online(args: argparse.Namespace) -> None:
     """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
@@ -791,7 +791,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             genre_unmapped.append((file_path, genre_suggest))
     
     # Always save — recalculates final_filename from current artist/title/version/key/bpm
-    # (picks up manual xlsx edits even when enrich itself changed nothing)
+    # (picks up manual edits even when enrich itself changed nothing)
     _save_unsorted(rows)
     # Oblicz źródła użycia na podstawie wypełnionych kolumn per-source
     mb_cnt = lfm_cnt = sc_cnt = 0
@@ -987,7 +987,7 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
     print(f"🛠️  Fix titles from filenames: updated={updated}")
 
 def cmd_apply(args: argparse.Namespace) -> None:
-    """Apply approved changes from unsorted.xlsx.
+    """Apply approved changes from unsorted.csv.
     
     New model: Uses status/destination columns (library/reject/archive/mixes).
     Legacy model: Falls back to target_subfolder if destination is empty.
@@ -1073,7 +1073,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     if _info and _info.artist and _info.title:
                         library_index[_info.match_key] = _info
 
-    # ── Pre-flight: validate xlsx for duplicate entries ──────────────
+    # ── Pre-flight: validate staging for duplicate entries ────────────
     _seen_hashes: Dict[str, str] = {}  # hash -> file_path (first occurrence)
     _seen_paths: set[str] = set()
     _batch_dupes: list[str] = []
@@ -1088,7 +1088,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         if _fh:
             _seen_hashes[_fh] = _fp
     if _batch_dupes:
-        print(f"\n⚠️  WARNING: Found {len(_batch_dupes)} duplicate entries in unsorted.xlsx:")
+        print(f"\n⚠️  WARNING: Found {len(_batch_dupes)} duplicate entries in unsorted.csv:")
         for _d in _batch_dupes:
             print(_d)
         print("   These will be handled during export (only first occurrence exported).\n")
@@ -1689,22 +1689,22 @@ def cmd_dupes(_: argparse.Namespace) -> None:
     print(f"Zapisano raport duplikatów: {out}")
 
 
-def cmd_refresh_xlsx(args: argparse.Namespace) -> None:
-    """Re-read unsorted.xlsx, recalculate final_filename for every row, and save.
-    Useful after manual edits (title, artist, version_info, key, bpm) in xlsx."""
+def cmd_refresh_staging(args: argparse.Namespace) -> None:
+    """Re-read unsorted.csv, recalculate final_filename for every row, and save.
+    Useful after manual edits (title, artist, version_info, key, bpm) in the review UI."""
     rows = _load_unsorted()
     if not rows:
-        print("No rows in unsorted.xlsx.")
+        print("No rows in unsorted.csv.")
         return
     _save_unsorted(rows)
     print(f"\u2705 Refreshed {len(rows)} rows — final_filename recalculated.")
 
 
 def cmd_fix_unsorted_dupes(args: argparse.Namespace) -> None:
-    """Remove duplicate entries from unsorted.xlsx (keeps first occurrence)."""
+    """Remove duplicate entries from unsorted.csv (keeps first occurrence)."""
     rows = _load_unsorted()
     if not rows:
-        print("unsorted.xlsx is empty")
+        print("unsorted.csv is empty")
         return
     
     seen_paths: set[str] = set()
@@ -1721,13 +1721,13 @@ def cmd_fix_unsorted_dupes(args: argparse.Namespace) -> None:
             unique_rows.append(r)
     
     if removed == 0:
-        print("✅ No duplicates found in unsorted.xlsx")
+        print("✅ No duplicates found in unsorted.csv")
         return
     
     print(f"\nFound {removed} duplicate entries")
     
     if args.write:
-        write_unsorted_rows(UNSORTED_XLSX, unique_rows, [])  # bucket_choices ignored
+        write_unsorted_rows(UNSORTED_CSV, unique_rows, [])  # bucket_choices ignored
         print(f"✅ Removed {removed} duplicates, {len(unique_rows)} entries remain")
     else:
         print(f"\n📝 DRY-RUN: Would remove {removed} duplicates")
@@ -1735,9 +1735,9 @@ def cmd_fix_unsorted_dupes(args: argparse.Namespace) -> None:
 
 
 def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
-    """DEPRECATED: Essentia analysis is now cache-only and does not write to tags or unsorted.xlsx.
+    """DEPRECATED: Essentia analysis is now cache-only and does not write to tags or unsorted.csv.
     
-    BPM/Key in unsorted.xlsx come from Rekordbox tags only.
+    BPM/Key in unsorted.csv come from Rekordbox tags only.
     Please analyze files in Rekordbox before running scan workflow.
     
     This command has been disabled to maintain data integrity.
@@ -1745,7 +1745,7 @@ def cmd_sync_audio_metrics(args: argparse.Namespace) -> None:
     print("❌ DEPRECATED: sync-audio-metrics command is no longer available.")
     print()
     print("   Essentia analysis is cache-only (for ML training features).")
-    print("   BPM/Key in unsorted.xlsx must come from Rekordbox tags.")
+    print("   BPM/Key in unsorted.csv must come from Rekordbox tags.")
     print()
     print("   Please:")
     print("   1. Analyze your files in Rekordbox (sets TBPM/TKEY tags)")
@@ -1899,7 +1899,7 @@ def cmd_analyze_audio(args: argparse.Namespace) -> None:
     _write_status("done", "")
     print(f"🎧 Analyze-audio: files={total}, analyzed={updated}")
     
-    # NOTE: Essentia analysis is cache-only. BPM/Key in unsorted.xlsx come from Rekordbox tags only.
+    # NOTE: Essentia analysis is cache-only. BPM/Key in unsorted.csv come from Rekordbox tags only.
     # If you need to sync, use Rekordbox analysis, not Essentia.
 
 def cmd_ml_predict(_: argparse.Namespace) -> None:
@@ -2908,7 +2908,7 @@ def cmd_sync_traktor(args: argparse.Namespace) -> None:
 
 def cmd_add_to_traktor(args: argparse.Namespace) -> None:
     """
-    Add tracks from unsorted.xlsx to Traktor collection.nml.
+    Add tracks from unsorted.csv to Traktor collection.nml.
     """
     from djlib.external_sync import add_tracks_to_traktor
     
@@ -2924,13 +2924,13 @@ def cmd_add_to_traktor(args: argparse.Namespace) -> None:
     print("=" * 60)
     print()
     
-    # Load tracks from unsorted.xlsx
+    # Load tracks from unsorted.csv
     staging_rows = _load_unsorted()
     if not staging_rows:
-        print("❌ No tracks in unsorted.xlsx")
+        print("❌ No tracks in unsorted.csv")
         return
     
-    print(f"📋 Found {len(staging_rows)} tracks in unsorted.xlsx")
+    print(f"📋 Found {len(staging_rows)} tracks in unsorted.csv")
     print()
     
     # Convert to format expected by add_tracks_to_traktor
@@ -2977,7 +2977,7 @@ def cmd_add_to_traktor(args: argparse.Namespace) -> None:
 
 def cmd_add_to_rekordbox(args: argparse.Namespace) -> None:
     """
-    Add tracks from unsorted.xlsx to Rekordbox database.
+    Add tracks from unsorted.csv to Rekordbox database.
     """
     from djlib.external_sync import add_tracks_to_rekordbox
     
@@ -2992,13 +2992,13 @@ def cmd_add_to_rekordbox(args: argparse.Namespace) -> None:
     print("=" * 60)
     print()
     
-    # Load tracks from unsorted.xlsx
+    # Load tracks from unsorted.csv
     staging_rows = _load_unsorted()
     if not staging_rows:
-        print("❌ No tracks in unsorted.xlsx")
+        print("❌ No tracks in unsorted.csv")
         return
     
-    print(f"📋 Found {len(staging_rows)} tracks in unsorted.xlsx")
+    print(f"📋 Found {len(staging_rows)} tracks in unsorted.csv")
     print()
     
     # Convert to format expected by add_tracks_to_rekordbox
@@ -3285,7 +3285,7 @@ def cmd_library_dedup(args: argparse.Namespace) -> None:
 def cmd_review(args: argparse.Namespace) -> None:
     """Launch interactive review UI in browser.
 
-    Serves unsorted.xlsx and library.csv as a sortable, filterable table
+    Serves unsorted.csv and library.csv as a sortable, filterable table
     with inline audio playback. Keyboard-driven: Space=play/pause,
     arrows=navigate, A/R/V=accept/reject/review.
     """
@@ -3350,13 +3350,13 @@ def build_parser() -> argparse.ArgumentParser:
     str_parser.set_defaults(func=cmd_sync_traktor)
     
     # Add tracks to Traktor (NEW)
-    att = sp.add_parser("add-to-traktor", help="Add tracks from unsorted.xlsx to Traktor collection.nml")
+    att = sp.add_parser("add-to-traktor", help="Add tracks from unsorted.csv to Traktor collection.nml")
     att.add_argument("--collection", required=True, help="Path to Traktor collection.nml")
     att.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
     att.set_defaults(func=cmd_add_to_traktor)
     
     # Add tracks to Rekordbox (NEW)
-    arb = sp.add_parser("add-to-rekordbox", help="Add tracks from unsorted.xlsx to Rekordbox database")
+    arb = sp.add_parser("add-to-rekordbox", help="Add tracks from unsorted.csv to Rekordbox database")
     arb.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
     arb.set_defaults(func=cmd_add_to_rekordbox)
     
@@ -3398,8 +3398,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
-    sp.add_parser("refresh-xlsx", help="Recalculate final_filename after manual xlsx edits").set_defaults(func=cmd_refresh_xlsx)
-    fud = sp.add_parser("fix-unsorted-dupes", help="Remove duplicate entries from unsorted.xlsx")
+    sp.add_parser("refresh-staging", help="Recalculate final_filename after manual edits").set_defaults(func=cmd_refresh_staging)
+    fud = sp.add_parser("fix-unsorted-dupes", help="Remove duplicate entries from unsorted.csv")
     fud.add_argument("--write", action="store_true", help="Actually remove duplicates (default is dry-run)")
     fud.set_defaults(func=cmd_fix_unsorted_dupes)
     sap = sp.add_parser("sync-audio-metrics")
@@ -3452,7 +3452,7 @@ def build_parser() -> argparse.ArgumentParser:
     qa.add_argument("--min-confidence", type=float, default=0.65, help="Licz tylko predykcje powyżej tego progu")
     qa.set_defaults(func=cmd_qa_acceptance)
 
-    # XLSX export/import z dropdownem na bucket
+    # Genre resolution commands
     # genres resolve (single lookup)
     gp = sp.add_parser("genres")
     gsp = gp.add_subparsers(dest="subcmd", required=True)

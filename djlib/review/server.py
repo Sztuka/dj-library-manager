@@ -3,7 +3,7 @@
 Usage:
     python -m djlib.cli review [--port 8899] [--no-browser]
 
-Serves unsorted.xlsx (editable) and library.csv (read-only) as interactive
+Serves unsorted.csv (editable) and library.csv (read-only) as interactive
 tables with inline audio playback. Keyboard-driven: Space to play/pause,
 arrows to navigate, A/R/V for accept/reject/review.
 """
@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 import yaml
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-from djlib.config import UNSORTED_XLSX
+from djlib.config import UNSORTED_CSV
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
 
 # ── Flask app ────────────────────────────────────────────────────────────────
@@ -78,10 +78,10 @@ def index():
 
 @app.route("/api/tracks")
 def api_tracks():
-    """Return JSON list of tracks from unsorted.xlsx or library.csv."""
+    """Return JSON list of tracks from unsorted.csv or library.csv."""
     source = request.args.get("source", "unsorted")
     if source == "unsorted":
-        rows = load_unsorted_rows(UNSORTED_XLSX)
+        rows = load_unsorted_rows(UNSORTED_CSV)
     elif source == "library":
         rows = _load_library_csv()
     else:
@@ -126,7 +126,7 @@ def api_update_track():
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
 
-    rows = load_unsorted_rows(UNSORTED_XLSX)
+    rows = load_unsorted_rows(UNSORTED_CSV)
     updated = False
     for row in rows:
         if row.get("track_id") == tid or row.get("file_hash") == tid:
@@ -139,7 +139,7 @@ def api_update_track():
     if not updated:
         return jsonify({"error": f"Track not found: {tid}"}), 404
 
-    write_unsorted_rows(UNSORTED_XLSX, rows, [])
+    write_unsorted_rows(UNSORTED_CSV, rows, [])
     return jsonify({"ok": True})
 
 
@@ -159,7 +159,7 @@ def run_server(
     """Start the review UI server."""
     url = f"http://{host}:{port}"
     print(f"\n🎧  Review UI: {url}")
-    print(f"   Source:  unsorted.xlsx → {UNSORTED_XLSX}")
+    print(f"   Source:  unsorted.csv → {UNSORTED_CSV}")
     print(f"   Library: data/library.csv")
     print(f"\n   Keyboard shortcuts:")
     print(f"   [Space] Play/Pause  [↑↓] Navigate  [Enter] Play selected")

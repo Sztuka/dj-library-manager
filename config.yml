@@ -4,7 +4,7 @@ REJECT_ROOT: ~/Music Rejected # Rejected tracks (flat structure)
 ARCHIVE_ROOT: ~/Music Archive # Archived tracks (Artist/file.ext)
 MIXES_ROOT: ~/Music Library/MIXES # DJ mixes (flat structure, no metadata)
 LOGS_DIR: ./LOGS # Application logs (inside project repo)
-UNSORTED_XLSX: ./data/unsorted.xlsx # Work-in-progress Excel file (inside repo)
+UNSORTED_CSV: ./data/unsorted.csv   # Staging CSV file (inside repo)
 
 # Application API keys (public, can be committed)
 acoustid_api_key: REDACTED_ACOUSTID_KEY

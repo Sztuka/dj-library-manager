@@ -329,20 +329,34 @@ ARCHIVE_CSV_PATH = _REPO / "data" / "library-archive.csv"
 # Used by cmd_scan to skip files that were previously rejected
 REJECTED_CSV_PATH = _REPO / "data" / "library-rejected.csv"
 
-# UNSORTED_XLSX - computed from config file at runtime, default is ./data/unsorted.xlsx in repo
-def _get_unsorted_xlsx() -> Path:
-    """Get UNSORTED_XLSX from config file, avoiding circular dependency."""
+# UNSORTED_CSV — staging file for unsorted tracks (migrated from .xlsx to .csv)
+def _get_unsorted_csv() -> Path:
+    """Get UNSORTED_CSV path from config file, avoiding circular dependency.
+
+    Reads UNSORTED_CSV (preferred) or legacy UNSORTED_XLSX from config, then
+    ensures the path ends with .csv.  If only an .xlsx path is configured,
+    the extension is swapped to .csv — the actual migration of data happens
+    lazily in unsorted.load_unsorted_rows().
+    """
     existing = _first_existing(_CANDIDATES)
     if existing:
         try:
             data = _read_yaml(existing)
-            xlsx_path = data.get("UNSORTED_XLSX", str(_REPO / "data" / "unsorted.xlsx"))
-            return Path(xlsx_path).resolve()
+            # Try new key first, fall back to legacy
+            raw = data.get("UNSORTED_CSV") or data.get("UNSORTED_XLSX", str(_REPO / "data" / "unsorted.csv"))
+            p = Path(raw).resolve()
+            # Force .csv extension regardless of config value
+            if p.suffix in (".xlsx", ".xls"):
+                p = p.with_suffix(".csv")
+            return p
         except Exception:
             pass
-    return (_REPO / "data" / "unsorted.xlsx").resolve()
+    return (_REPO / "data" / "unsorted.csv").resolve()
 
-UNSORTED_XLSX = _get_unsorted_xlsx()
+UNSORTED_CSV = _get_unsorted_csv()
+
+# Backward-compat alias — modules that still import UNSORTED_XLSX get the CSV path
+UNSORTED_XLSX = UNSORTED_CSV
 
 AUDIO_EXTS = {
     ".mp3", ".wav", ".aiff", ".aif", ".flac", ".m4a", ".aac", ".ogg", ".alac", ".wv"
@@ -394,7 +408,7 @@ def load_config() -> Dict[str, Any]:
         "ARCHIVE_ROOT": config_dict.get("ARCHIVE_ROOT", str(cfg.library_root.parent / "Music Archive")),
         "MIXES_ROOT": config_dict.get("MIXES_ROOT", str(cfg.library_root / "MIXES")),
         "LOGS_DIR": config_dict.get("LOGS_DIR", "./LOGS"),
-        "UNSORTED_XLSX": config_dict.get("UNSORTED_XLSX", "./data/unsorted.xlsx"),
+        "UNSORTED_CSV": config_dict.get("UNSORTED_CSV", config_dict.get("UNSORTED_XLSX", "./data/unsorted.csv")),
     }
 
 def save_config_paths(lib_root: str, inbox: str) -> None:
