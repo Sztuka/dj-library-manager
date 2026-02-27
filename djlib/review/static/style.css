@@ -73,11 +73,41 @@ body {
 }
 
 .toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   color: var(--text-dim);
   font-size: 11px;
   font-family: var(--font-mono);
   white-space: nowrap;
 }
+
+.auto-play-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.auto-play-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+  width: 13px;
+  height: 13px;
+}
+
+#stats-bar {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+#stats-bar .stat-accept  { color: var(--green); }
+#stats-bar .stat-reject  { color: var(--red); }
+#stats-bar .stat-review  { color: var(--yellow); }
+#stats-bar .stat-undecided { color: var(--text-dim); }
 
 #search-input {
   background: var(--bg);
@@ -192,6 +222,16 @@ tbody tr:hover {
 }
 
 tbody tr.active {
+  background: var(--bg-active);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+tbody tr.selected {
+  background: rgba(124, 108, 255, 0.08);
+  box-shadow: inset 3px 0 0 rgba(124, 108, 255, 0.5);
+}
+
+tbody tr.selected.active {
   background: var(--bg-active);
   box-shadow: inset 3px 0 0 var(--accent);
 }
@@ -344,22 +384,29 @@ td input[type="checkbox"] {
 
 #player-progress-container {
   flex: 1;
-  height: 4px;
+  height: 28px;
   background: var(--border);
-  border-radius: 2px;
+  border-radius: 4px;
   cursor: pointer;
   position: relative;
-  transition: height 0.1s;
+  overflow: hidden;
 }
 
-#player-progress-container:hover {
-  height: 6px;
+#waveform-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 #player-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
   height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
+  background: rgba(124, 108, 255, 0.12);
   width: 0%;
   pointer-events: none;
 }
@@ -370,7 +417,7 @@ td input[type="checkbox"] {
   left: 0;
   height: 100%;
   background: rgba(255,255,255,0.08);
-  border-radius: 2px;
+  border-radius: 4px;
   width: 0%;
   pointer-events: none;
 }

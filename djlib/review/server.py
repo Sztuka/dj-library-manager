@@ -40,6 +40,7 @@ mimetypes.add_type("audio/mp4", ".m4a")
 mimetypes.add_type("audio/wav", ".wav")
 
 _REPO = Path(__file__).resolve().parents[2]
+_CSV_LOCK = threading.Lock()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -105,7 +106,9 @@ def api_audio():
         return jsonify({"error": f"File not found: {path_str}"}), 404
 
     mime = mimetypes.guess_type(str(p))[0] or "audio/mpeg"
-    return send_file(p, mimetype=mime, conditional=True)
+    resp = send_file(p, mimetype=mime, conditional=True)
+    resp.headers["Cache-Control"] = "private, max-age=3600, immutable"
+    return resp
 
 
 @app.route("/api/tracks/update", methods=["POST"])
@@ -126,20 +129,21 @@ def api_update_track():
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
 
-    rows = load_unsorted_rows(UNSORTED_CSV)
-    updated = False
-    for row in rows:
-        if row.get("track_id") == tid or row.get("file_hash") == tid:
-            for key, value in fields.items():
-                if key in row:
-                    row[key] = str(value)
-            updated = True
-            break
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(UNSORTED_CSV)
+        updated = False
+        for row in rows:
+            if row.get("track_id") == tid or row.get("file_hash") == tid:
+                for key, value in fields.items():
+                    if key in row:
+                        row[key] = str(value)
+                updated = True
+                break
 
-    if not updated:
-        return jsonify({"error": f"Track not found: {tid}"}), 404
+        if not updated:
+            return jsonify({"error": f"Track not found: {tid}"}), 404
 
-    write_unsorted_rows(UNSORTED_CSV, rows, [])
+        write_unsorted_rows(UNSORTED_CSV, rows, [])
     return jsonify({"ok": True})
 
 
