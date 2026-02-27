@@ -49,14 +49,16 @@
   const COLUMNS = {
     unsorted: [
       { key: '_index',       label: '#',       width: '36px' },
-      { key: 'artist',       label: 'Artist',  width: '18%' },
-      { key: 'title',        label: 'Title',   width: '22%' },
-      { key: 'version_info', label: 'Version', width: '14%' },
-      { key: 'genre',        label: 'Genre',   width: '12%', type: 'genre-select' },
-      { key: 'bpm',          label: 'BPM',     width: '50px',  cls: 'col-bpm' },
-      { key: 'key_camelot',  label: 'Key',     width: '44px',  cls: 'col-key' },
-      { key: 'status',       label: 'Status',  width: '80px',  type: 'status-display' },
-      { key: 'done',         label: '✓',       width: '32px',  type: 'checkbox' },
+      { key: 'artist',       label: 'Artist',  width: '16%',  type: 'editable' },
+      { key: 'title',        label: 'Title',   width: '18%',  type: 'editable' },
+      { key: 'version_info', label: 'Version', width: '11%',  type: 'editable' },
+      { key: 'genre',        label: 'Genre',   width: '11%',  type: 'genre-select' },
+      { key: 'year',         label: 'Year',    width: '48px', type: 'editable', cls: 'col-bpm' },
+      { key: 'bpm',          label: 'BPM',     width: '46px', cls: 'col-bpm' },
+      { key: 'key_camelot',  label: 'Key',     width: '40px', cls: 'col-key' },
+      { key: 'destination',  label: 'Dest',    width: '72px', type: 'dest-select' },
+      { key: 'status',       label: 'Status',  width: '68px', type: 'status-display' },
+      { key: 'done',         label: '\u2713', width: '32px', type: 'checkbox' },
     ],
     library: [
       { key: '_index',           label: '#',      width: '36px' },
@@ -237,6 +239,25 @@
           sel.addEventListener('mousedown', (e) => e.stopPropagation());
           td.appendChild(sel);
 
+        } else if (col.type === 'dest-select') {
+          const sel = buildDestSelect(track[col.key]);
+          sel.addEventListener('change', (e) => {
+            e.stopPropagation();
+            track[col.key] = sel.value;
+            saveTrackField(track, col.key, sel.value);
+          });
+          sel.addEventListener('mousedown', (e) => e.stopPropagation());
+          td.appendChild(sel);
+
+        } else if (col.type === 'editable') {
+          td.textContent = track[col.key] || '';
+          td.title = track[col.key] || '';
+          td.classList.add('cell-editable');
+          td.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            startInlineEdit(td, track, col.key);
+          });
+
         } else if (col.type === 'status-display') {
           td.textContent = track[col.key] || '—';
           td.classList.add('col-status');
@@ -279,7 +300,52 @@
     }
     return sel;
   }
+  const DEST_OPTIONS = ['', 'library', 'reject', 'archive', 'mixes'];
 
+  function buildDestSelect(currentValue) {
+    const sel = document.createElement('select');
+    sel.classList.add('inline-select');
+    for (const d of DEST_OPTIONS) {
+      const o = document.createElement('option');
+      o.value = d;
+      o.textContent = d || '\u2014';
+      if (d === currentValue) o.selected = true;
+      sel.appendChild(o);
+    }
+    return sel;
+  }
+
+  // ── Inline editing (double-click on artist/title/version/year) ──
+  function startInlineEdit(td, track, key) {
+    if (td.querySelector('input')) return;  // already editing
+    const oldVal = track[key] || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldVal;
+    input.className = 'inline-edit';
+    td.textContent = '';
+    td.appendChild(input);
+    input.focus();
+    input.select();
+
+    function commit() {
+      const newVal = input.value.trim();
+      td.textContent = newVal;
+      td.title = newVal;
+      if (newVal !== oldVal) {
+        track[key] = newVal;
+        saveTrackField(track, key, newVal);
+        showToast(key + ' updated', '');
+      }
+    }
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { input.value = oldVal; input.blur(); }
+      e.stopPropagation();  // Prevent keyboard shortcuts while editing
+    });
+  }
   // ── Row selection ─────────────────────────────────────────
   function selectRow(index) {
     if (index < 0 || index >= filteredTracks.length) return;
@@ -318,8 +384,28 @@
     if (track.genres_beatport)
       parts.push('<span class="gs gs-bp">BP: ' + escHtml(track.genres_beatport) + '</span>');
     if (track.genre_suggest)
-      parts.push('<span class="gs gs-suggest">→ ' + escHtml(track.genre_suggest) + '</span>');
+      parts.push('<span class="gs gs-suggest clickable" data-genre="' + escHtml(track.genre_suggest) + '">\u2192 ' + escHtml(track.genre_suggest) + '</span>');
     genreSources.innerHTML = parts.join('');
+
+    // Make genre suggestion clickable to apply it
+    genreSources.querySelectorAll('.gs-suggest.clickable').forEach(el => {
+      el.addEventListener('click', () => {
+        const g = el.dataset.genre;
+        if (!g || currentSource !== 'unsorted' || currentIndex < 0) return;
+        const t = filteredTracks[currentIndex];
+        t.genre = g;
+        saveTrackField(t, 'genre', g);
+        showToast('Genre: ' + g, '');
+        // Update the dropdown in the current row
+        const cols = COLUMNS.unsorted;
+        const genreColIdx = cols.findIndex(c => c.key === 'genre');
+        if (genreColIdx >= 0 && tableBody.children[currentIndex]) {
+          const cell = tableBody.children[currentIndex].children[genreColIdx];
+          const sel = cell.querySelector('select');
+          if (sel) sel.value = g;
+        }
+      });
+    });
   }
 
   function escHtml(s) {
