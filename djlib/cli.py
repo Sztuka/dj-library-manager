@@ -790,8 +790,9 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             file_path = r.get("file_path", "")
             genre_unmapped.append((file_path, genre_suggest))
     
-    if changed or genre_mapped or genre_unmapped:
-        _save_unsorted(rows)
+    # Always save — recalculates final_filename from current artist/title/version/key/bpm
+    # (picks up manual xlsx edits even when enrich itself changed nothing)
+    _save_unsorted(rows)
     # Oblicz źródła użycia na podstawie wypełnionych kolumn per-source
     mb_cnt = lfm_cnt = sc_cnt = 0
     for r in rows:
@@ -1686,6 +1687,17 @@ def cmd_dupes(_: argparse.Namespace) -> None:
                 w.writerow([fp, r.get("track_id",""), r.get("artist",""), r.get("title",""),
                             r.get("file_path",""), r.get("final_path",""), r.get("file_hash","")])
     print(f"Zapisano raport duplikatów: {out}")
+
+
+def cmd_refresh_xlsx(args: argparse.Namespace) -> None:
+    """Re-read unsorted.xlsx, recalculate final_filename for every row, and save.
+    Useful after manual edits (title, artist, version_info, key, bpm) in xlsx."""
+    rows = _load_unsorted()
+    if not rows:
+        print("No rows in unsorted.xlsx.")
+        return
+    _save_unsorted(rows)
+    print(f"\u2705 Refreshed {len(rows)} rows — final_filename recalculated.")
 
 
 def cmd_fix_unsorted_dupes(args: argparse.Namespace) -> None:
@@ -3268,6 +3280,28 @@ def cmd_library_dedup(args: argparse.Namespace) -> None:
         traceback.print_exc()
 
 
+# ============ REVIEW UI ============
+
+def cmd_review(args: argparse.Namespace) -> None:
+    """Launch interactive review UI in browser.
+
+    Serves unsorted.xlsx and library.csv as a sortable, filterable table
+    with inline audio playback. Keyboard-driven: Space=play/pause,
+    arrows=navigate, A/R/V=accept/reject/review.
+    """
+    try:
+        from djlib.review.server import run_server
+    except ImportError as e:
+        print(f"\n❌  Missing dependency: {e}")
+        print("   Install Flask:  pip install flask")
+        return
+    run_server(
+        host=args.host,
+        port=args.port,
+        no_browser=args.no_browser,
+    )
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3364,6 +3398,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
+    sp.add_parser("refresh-xlsx", help="Recalculate final_filename after manual xlsx edits").set_defaults(func=cmd_refresh_xlsx)
     fud = sp.add_parser("fix-unsorted-dupes", help="Remove duplicate entries from unsorted.xlsx")
     fud.add_argument("--write", action="store_true", help="Actually remove duplicates (default is dry-run)")
     fud.set_defaults(func=cmd_fix_unsorted_dupes)
@@ -3435,7 +3470,14 @@ def build_parser() -> argparse.ArgumentParser:
     icd.add_argument("--dump", required=False, help="Path to .tar.zst dump file (auto-detect if not provided)")
     icd.add_argument("--force", action="store_true", help="Rebuild database even if it exists")
     icd.set_defaults(func=cmd_import_canonical_dump)
-    
+
+    # ========== REVIEW UI ==========
+    rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")
+    rev.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
+    rev.add_argument("--port", type=int, default=8899, help="Server port (default: 8899)")
+    rev.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")
+    rev.set_defaults(func=cmd_review)
+
     return p
 
 def main() -> None:

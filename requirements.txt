@@ -14,6 +14,7 @@ pandas            # data processing dla ML i CSV
 scikit-learn>=1.3.0  # ML dla bucket assigner
 openpyxl>=3.1.2   # eksport/import XLSX z dropdownami (data validation)
 Pillow            # image handling for cover art thumbnails in Excel
+flask>=3.0        # review UI server (djlib review)
 playwright        # headless browser for Beatport/SoundCloud token refresh
 keyring           # secure credential storage (Beatport email/password)
 traktor-nml-utils @ git+https://github.com/wolkenarchitekt/traktor-nml-utils.git  # bezpieczny zapis/parsowanie Traktor collection.nml (3.3.0 dla Traktor 3.11+)
