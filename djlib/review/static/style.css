@@ -521,6 +521,76 @@ kbd {
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
+/* ── Rating stars ──────────────────────────────────────────── */
+
+.col-rating {
+  font-size: 12px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+.col-rating .star-on  { color: #ffc107; }
+.col-rating .star-off { color: rgba(255, 193, 7, 0.15); }
+
+/* ── Source badge ──────────────────────────────────────────── */
+
+.badge-source {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.badge-source.src-both      { background: rgba(124,108,255,0.2); color: #a89cff; }
+.badge-source.src-rekordbox  { background: rgba(39,174,96,0.2);  color: #2ecc71; }
+.badge-source.src-traktor    { background: rgba(230,126,34,0.2); color: #e67e22; }
+
+/* ── Color dot (Rekordbox color code) ─────────────────────── */
+
+.color-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.color-dot.c-0, .color-dot.c-none { background: transparent; border: 1px solid var(--border); }
+.color-dot.c-1  { background: #f870ff; }  /* pink */
+.color-dot.c-2  { background: #ff3232; }  /* red */
+.color-dot.c-3  { background: #ff8c00; }  /* orange */
+.color-dot.c-4  { background: #ffe100; }  /* yellow */
+.color-dot.c-5  { background: #10b41a; }  /* green */
+.color-dot.c-6  { background: #00e5ff; }  /* aqua */
+.color-dot.c-7  { background: #287eff; }  /* blue */
+.color-dot.c-8  { background: #b432ff; }  /* purple */
+
+/* ── "In library" badge (unsorted view) ───────────────────── */
+
+.badge-in-lib {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  background: rgba(39, 174, 96, 0.2);
+  color: #2ecc71;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+
+/* ── Library stats (in stats bar) ─────────────────────────── */
+
+.stat-lib-sources,
+.stat-lib-rated { font-size: 11px; }
+
+.stat-lib-sources .badge-source { font-size: 8px; }
+
 /* ── Responsive ────────────────────────────────────────────── */
 
 @media (max-width: 900px) {

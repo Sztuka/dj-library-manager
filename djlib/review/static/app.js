@@ -35,7 +35,7 @@
   const AUTO_DEST = { accept: 'library', reject: 'reject' };
 
   // Batch selection
-  let selectedSet = new Set();   // indices of selected rows
+  let selectedSet = new Set();
   let selectionAnchor = -1;
 
   // Undo stack (max 50)
@@ -49,6 +49,9 @@
   // Preload debounce
   let _preloadTimer = null;
 
+  // Library index for "already in library" matching
+  let libraryIndex = new Set();
+
   // -- DOM refs -----------------------------------------------
   const audio            = document.getElementById('audio-player');
   const tableHead        = document.getElementById('table-head');
@@ -58,6 +61,9 @@
   const searchInput      = document.getElementById('search-input');
   const filterStatus     = document.getElementById('filter-status');
   const filterDone       = document.getElementById('filter-done');
+  const filterBpm        = document.getElementById('filter-bpm');
+  const filterKey        = document.getElementById('filter-key');
+  const filterRating     = document.getElementById('filter-rating');
   const trackCount       = document.getElementById('track-count');
   const statsBar         = document.getElementById('stats-bar');
   const autoPlayCheckbox = document.getElementById('auto-play-checkbox');
@@ -76,26 +82,42 @@
   const COLUMNS = {
     unsorted: [
       { key: '_index',       label: '#',       width: '36px' },
-      { key: 'artist',       label: 'Artist',  width: '16%',  type: 'editable' },
-      { key: 'title',        label: 'Title',   width: '18%',  type: 'editable' },
-      { key: 'version_info', label: 'Version', width: '11%',  type: 'editable' },
+      { key: 'artist',       label: 'Artist',  width: '15%',  type: 'editable' },
+      { key: 'title',        label: 'Title',   width: '16%',  type: 'editable' },
+      { key: 'version_info', label: 'Version', width: '10%',  type: 'editable' },
+      { key: '_in_library',  label: 'Lib',     width: '36px', type: 'in-library' },
       { key: 'genre',        label: 'Genre',   width: '11%',  type: 'genre-select' },
       { key: 'year',         label: 'Year',    width: '48px', type: 'editable', cls: 'col-bpm' },
       { key: 'bpm',          label: 'BPM',     width: '46px', cls: 'col-bpm' },
       { key: 'key_camelot',  label: 'Key',     width: '40px', cls: 'col-key' },
       { key: 'destination',  label: 'Dest',    width: '72px', type: 'dest-select' },
       { key: 'status',       label: 'Status',  width: '68px', type: 'status-display' },
-      { key: 'done',         label: '\u2713', width: '32px', type: 'checkbox' },
+      { key: 'done',         label: '\u2713',  width: '32px', type: 'checkbox' },
     ],
     library: [
       { key: '_index',           label: '#',      width: '36px' },
-      { key: 'artist',           label: 'Artist', width: '22%' },
-      { key: 'title',            label: 'Title',  width: '28%' },
+      { key: 'artist',           label: 'Artist', width: '18%' },
+      { key: 'title',            label: 'Title',  width: '22%' },
       { key: 'bpm',              label: 'BPM',    width: '50px',  cls: 'col-bpm' },
       { key: 'key',              label: 'Key',    width: '44px',  cls: 'col-key' },
       { key: 'duration_seconds', label: 'Dur',    width: '55px',  cls: 'col-bpm', fmt: fmtDuration },
+      { key: 'rating',           label: 'Rating', width: '72px',  type: 'rating' },
+      { key: 'color',            label: 'Clr',    width: '32px',  type: 'color-dot' },
+      { key: 'cue_count',        label: 'Cues',   width: '38px',  cls: 'col-bpm' },
       { key: 'play_count',       label: 'Plays',  width: '44px',  cls: 'col-bpm' },
+      { key: 'external_source',  label: 'Src',    width: '50px',  type: 'source-badge' },
       { key: 'date_added',       label: 'Added',  width: '90px' },
+    ],
+    processed: [
+      { key: '_index',       label: '#',       width: '36px' },
+      { key: 'artist',       label: 'Artist',  width: '18%' },
+      { key: 'title',        label: 'Title',   width: '22%' },
+      { key: 'version_info', label: 'Version', width: '12%' },
+      { key: 'genre',        label: 'Genre',   width: '12%' },
+      { key: 'bpm',          label: 'BPM',     width: '46px', cls: 'col-bpm' },
+      { key: 'key_camelot',  label: 'Key',     width: '40px', cls: 'col-key' },
+      { key: 'destination',  label: 'Dest',    width: '72px' },
+      { key: 'status',       label: 'Status',  width: '68px', type: 'status-display' },
     ],
   };
 
@@ -128,7 +150,59 @@
     toast._timer = setTimeout(function() { toast.className = 'toast hidden'; }, 1200);
   }
 
+  // -- Rating helpers -----------------------------------------
+  function ratingToStars(val) {
+    const n = parseFloat(val);
+    if (!n || isNaN(n) || n <= 0) return '';
+    const full = Math.round(n);
+    let html = '';
+    for (let i = 1; i <= 5; i++) {
+      html += i <= full
+        ? '<span class="star-on">\u2605</span>'
+        : '<span class="star-off">\u2605</span>';
+    }
+    return html;
+  }
+
+  // -- Source badge helper ------------------------------------
+  function sourceBadgeHtml(val) {
+    const v = (val || '').toLowerCase();
+    if (v === 'rekordbox+traktor' || v === 'traktor+rekordbox')
+      return '<span class="badge-source src-both">RB+TR</span>';
+    if (v === 'rekordbox')
+      return '<span class="badge-source src-rekordbox">RB</span>';
+    if (v === 'traktor')
+      return '<span class="badge-source src-traktor">TR</span>';
+    return escHtml(val || '');
+  }
+
+  // -- Color dot helper ---------------------------------------
+  function colorDotHtml(val) {
+    const n = Math.round(parseFloat(val) || 0);
+    const cls = n >= 1 && n <= 8 ? 'c-' + n : 'c-none';
+    return '<span class="color-dot ' + cls + '" title="Color ' + n + '"></span>';
+  }
+
+  // -- "In library" check -------------------------------------
+  function isInLibrary(track) {
+    const a = (track.artist || '').trim().toLowerCase();
+    const t = (track.title || '').trim().toLowerCase();
+    if (!a || !t) return false;
+    return libraryIndex.has(a + '::' + t);
+  }
+
   // -- Data loading -------------------------------------------
+  async function loadLibraryIndex() {
+    try {
+      const resp = await fetch('/api/library-index');
+      const keys = await resp.json();
+      libraryIndex = new Set(keys);
+    } catch (e) {
+      libraryIndex = new Set();
+      console.warn('Failed to load library index:', e);
+    }
+  }
+
   async function loadTracks(source) {
     currentSource = source;
     try {
@@ -158,30 +232,109 @@
     }
   }
 
+  // -- Populate key filter from library data ------------------
+  function camelotOrder(k) {
+    // Sort keys in Camelot wheel order: 1A, 1B, 2A, 2B, ..., 12A, 12B
+    const m = k.match(/^(\d+)([ABdm])/i);
+    if (!m) return 999;
+    const num = parseInt(m[1], 10);
+    const letter = m[2].toUpperCase();
+    // A/d = minor, B/m = major; sort A before B within same number
+    const sub = (letter === 'A' || letter === 'D') ? 0 : 1;
+    return num * 2 + sub;
+  }
+
+  function populateKeyFilter() {
+    const keys = new Set();
+    for (const t of allTracks) {
+      const k = (t.key || '').trim();
+      if (k) keys.add(k);
+    }
+    const sorted = Array.from(keys).sort(function(a, b) {
+      return camelotOrder(a) - camelotOrder(b);
+    });
+    filterKey.innerHTML = '<option value="">Key: All</option>';
+    for (const k of sorted) {
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = k;
+      filterKey.appendChild(o);
+    }
+  }
+
+  // -- Filter visibility --------------------------------------
+  function updateFilterVisibility() {
+    const isLib = currentSource === 'library';
+    const isUnsorted = currentSource === 'unsorted';
+    // Unsorted-only filters (hidden on library & processed)
+    filterStatus.style.display = isUnsorted ? '' : 'none';
+    filterDone.style.display   = isUnsorted ? '' : 'none';
+    // Library-only filters
+    filterBpm.style.display    = isLib ? '' : 'none';
+    filterKey.style.display    = isLib ? '' : 'none';
+    filterRating.style.display = isLib ? '' : 'none';
+  }
+
   // -- Filtering & sorting ------------------------------------
   function applyFilters() {
     const q = searchInput.value.toLowerCase().trim();
     const sf = filterStatus.value;
     const df = filterDone.value;
+    const bf = filterBpm.value;
+    const kf = filterKey.value;
+    const rf = filterRating.value;
+    const isLib = currentSource === 'library';
 
     filteredTracks = allTracks.filter(function(t) {
       // Text search
       if (q) {
-        const hay = [t.artist, t.title, t.version_info, t.genre, t.tag_genre_original]
+        const hay = [t.artist, t.title, t.version_info, t.genre, t.tag_genre_original, t.key, t.external_source]
           .filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
-      // Status filter
-      if (sf) {
-        if (sf === 'undecided') {
-          if (t.status && t.status !== '') return false;
-        } else {
-          if (t.status !== sf) return false;
+      // Unsorted-specific filters
+      if (!isLib) {
+        if (sf) {
+          if (sf === 'undecided') {
+            if (t.status && t.status !== '') return false;
+          } else {
+            if (t.status !== sf) return false;
+          }
+        }
+        if (df) {
+          if (t.done !== df) return false;
         }
       }
-      // Done filter
-      if (df) {
-        if (t.done !== df) return false;
+      // Library-specific filters
+      if (isLib) {
+        // BPM range
+        if (bf) {
+          const bpm = parseFloat(t.bpm) || 0;
+          if (bf === '0-100'    && !(bpm > 0 && bpm < 100)) return false;
+          if (bf === '100-120'  && !(bpm >= 100 && bpm < 120)) return false;
+          if (bf === '120-130'  && !(bpm >= 120 && bpm < 130)) return false;
+          if (bf === '130-140'  && !(bpm >= 130 && bpm < 140)) return false;
+          if (bf === '140-160'  && !(bpm >= 140 && bpm < 160)) return false;
+          if (bf === '160+'     && !(bpm >= 160)) return false;
+        }
+        // Key
+        if (kf) {
+          if ((t.key || '').trim() !== kf) return false;
+        }
+        // Rating
+        if (rf) {
+          const rat = parseFloat(t.rating) || 0;
+          if (rf === 'unrated') {
+            if (rat > 0) return false;
+          } else {
+            const minRat = parseFloat(rf);
+            if (rf === '5') {
+              if (Math.round(rat) !== 5) return false;
+            } else {
+              if (rat < minRat) return false;
+            }
+          }
+        }
       }
       return true;
     });
@@ -206,23 +359,53 @@
 
   // -- Stats bar ----------------------------------------------
   function updateStats() {
-    if (currentSource !== 'unsorted') {
+    if (currentSource === 'unsorted') {
+      var acc = 0, rej = 0, rev = 0, und = 0;
+      for (var i = 0; i < allTracks.length; i++) {
+        var t = allTracks[i];
+        if (t.status === 'accept') acc++;
+        else if (t.status === 'reject') rej++;
+        else if (t.status === 'review') rev++;
+        else und++;
+      }
+      statsBar.innerHTML =
+        '<span class="stat-accept">' + acc + ' acc</span> \u00b7 ' +
+        '<span class="stat-reject">' + rej + ' rej</span> \u00b7 ' +
+        '<span class="stat-review">' + rev + ' rev</span> \u00b7 ' +
+        '<span class="stat-undecided">' + und + ' todo</span>';
+    } else if (currentSource === 'library') {
+      // Library stats: source breakdown, rated, BPM range
+      var srcBoth = 0, srcRb = 0, srcTr = 0, rated = 0;
+      var bpmMin = Infinity, bpmMax = 0, bpmCount = 0;
+      for (var i = 0; i < allTracks.length; i++) {
+        var t = allTracks[i];
+        var src = (t.external_source || '').toLowerCase();
+        if (src.indexOf('rekordbox') >= 0 && src.indexOf('traktor') >= 0) srcBoth++;
+        else if (src.indexOf('rekordbox') >= 0) srcRb++;
+        else if (src.indexOf('traktor') >= 0) srcTr++;
+        var rat = parseFloat(t.rating) || 0;
+        if (rat > 0) rated++;
+        var bpm = parseFloat(t.bpm) || 0;
+        if (bpm > 0) {
+          if (bpm < bpmMin) bpmMin = bpm;
+          if (bpm > bpmMax) bpmMax = bpm;
+          bpmCount++;
+        }
+      }
+      var parts = [];
+      parts.push('<span class="badge-source src-both">RB+TR</span> ' + srcBoth);
+      parts.push('<span class="badge-source src-rekordbox">RB</span> ' + srcRb);
+      parts.push('<span class="badge-source src-traktor">TR</span> ' + srcTr);
+      parts.push('\u00b7 <span class="star-on">\u2605</span> ' + rated + ' rated');
+      if (bpmCount > 0) {
+        parts.push('\u00b7 BPM ' + Math.round(bpmMin) + '\u2013' + Math.round(bpmMax));
+      }
+      statsBar.innerHTML = '<span class="stat-lib-sources">' + parts.join(' ') + '</span>';
+    } else if (currentSource === 'processed') {
+      statsBar.innerHTML = '<span style="color:var(--green);">' + allTracks.length + ' processed</span>';
+    } else {
       statsBar.innerHTML = '';
-      return;
     }
-    var acc = 0, rej = 0, rev = 0, und = 0;
-    for (var i = 0; i < allTracks.length; i++) {
-      var t = allTracks[i];
-      if (t.status === 'accept') acc++;
-      else if (t.status === 'reject') rej++;
-      else if (t.status === 'review') rev++;
-      else und++;
-    }
-    statsBar.innerHTML =
-      '<span class="stat-accept">' + acc + ' acc</span> \u00b7 ' +
-      '<span class="stat-reject">' + rej + ' rej</span> \u00b7 ' +
-      '<span class="stat-review">' + rev + ' rev</span> \u00b7 ' +
-      '<span class="stat-undecided">' + und + ' todo</span>';
   }
 
   // -- Table rendering ----------------------------------------
@@ -323,6 +506,23 @@
           td.textContent = track[col.key] || '\u2014';
           td.classList.add('col-status');
           if (track[col.key]) td.classList.add(track[col.key]);
+
+        } else if (col.type === 'rating') {
+          td.classList.add('col-rating');
+          td.innerHTML = ratingToStars(track[col.key]);
+
+        } else if (col.type === 'color-dot') {
+          td.innerHTML = colorDotHtml(track[col.key]);
+          td.style.textAlign = 'center';
+
+        } else if (col.type === 'source-badge') {
+          td.innerHTML = sourceBadgeHtml(track[col.key]);
+
+        } else if (col.type === 'in-library') {
+          if (isInLibrary(track)) {
+            td.innerHTML = '<span class="badge-in-lib">LIB</span>';
+            td.title = 'Already in library (artist + title match)';
+          }
 
         } else {
           const raw = track[col.key] || '';
@@ -503,7 +703,7 @@
     if (track.genres_beatport)
       parts.push('<span class="gs gs-bp">BP: ' + escHtml(track.genres_beatport) + '</span>');
     if (track.genre_suggest)
-      parts.push('<span class="gs gs-suggest clickable" data-genre="' + escHtml(track.genre_suggest) + '">\u2192 ' + escHtml(track.genre_suggest) + '</span>');
+      parts.push('<span class="gs gs-suggest clickable" data-genre="' + escHtml(track.genre_suggest).replace(/"/g, '&quot;') + '">\u2192 ' + escHtml(track.genre_suggest) + '</span>');
     genreSources.innerHTML = parts.join('');
 
     // Make genre suggestion clickable to apply it
@@ -519,7 +719,6 @@
     t.genre = g;
     saveTrackField(t, 'genre', g);
     showToast('Genre: ' + g, '');
-    // Update the dropdown in the current row
     const cols = COLUMNS.unsorted;
     const genreColIdx = cols.findIndex(function(c) { return c.key === 'genre'; });
     if (genreColIdx >= 0 && tableBody.children[currentIndex]) {
@@ -540,7 +739,6 @@
     track.genre = g;
     saveTrackField(track, 'genre', g);
     showToast('Genre: ' + g, '');
-    // Update the dropdown in the current row
     const cols = COLUMNS.unsorted;
     const genreColIdx = cols.findIndex(function(c) { return c.key === 'genre'; });
     if (genreColIdx >= 0 && tableBody.children[currentIndex]) {
@@ -625,7 +823,6 @@
       const preloadAudio = new Audio();
       preloadAudio.preload = 'auto';
       preloadAudio.src = '/api/audio?path=' + encodeURIComponent(path);
-      // Let it load into the browser cache, then discard
       preloadAudio.addEventListener('canplaythrough', function() {
         preloadAudio.src = '';
       }, { once: true });
@@ -644,7 +841,6 @@
     const url = '/api/audio?path=' + encodeURIComponent(path);
     fetch(url).then(function(r) { return r.arrayBuffer(); }).then(function(buf) {
       const ctx = getAudioContext();
-      // Clone buffer for decoding (some browsers consume it)
       const clone = buf.slice(0);
       ctx.decodeAudioData(clone, function(audioBuffer) {
         drawWaveform(audioBuffer);
@@ -690,7 +886,6 @@
   }
 
   function resizeWaveform() {
-    // Re-draw if we have audio data
     if (audio.src && playingIndex >= 0) {
       const path = audioPath(filteredTracks[playingIndex]);
       if (path) loadWaveform(path);
@@ -717,7 +912,6 @@
 
   audio.addEventListener('ended', function() {
     nowIndicator.classList.remove('visible');
-    // Auto-advance
     if (currentIndex < filteredTracks.length - 1) {
       selectRow(currentIndex + 1);
       playTrack(currentIndex);
@@ -786,16 +980,13 @@
       return;
     }
     const entry = undoStack.pop();
-    // Find the track in allTracks
     const track = allTracks.find(function(t) { return trackId(t) === entry.trackId; });
     if (!track) {
       showToast('Undo: track not found', '');
       return;
     }
-    // Restore fields
     for (const [k, v] of Object.entries(entry.prev)) {
       track[k] = v;
-      // Flush to server immediately
       const id = trackId(track);
       fetch('/api/tracks/update', {
         method: 'POST',
@@ -804,10 +995,8 @@
       }).catch(function(e) { console.error('Undo save failed:', e); });
     }
 
-    // Always re-filter/re-render to handle filtered-out tracks
     applyFilters();
 
-    // Try to navigate to the undone track in filtered view
     const idx = filteredTracks.indexOf(track);
     if (idx >= 0) {
       selectRow(idx);
@@ -820,7 +1009,6 @@
   function setStatus(status) {
     if (currentSource !== 'unsorted') return;
 
-    // Determine target tracks: batch selection or single
     const targets = [];
     if (selectedSet.size > 0) {
       for (const idx of selectedSet) {
@@ -834,9 +1022,7 @@
 
     if (targets.length === 0) return;
 
-    // Apply to each target
     for (const { idx, track } of targets) {
-      // Push undo BEFORE changing
       const undoFields = { status: status };
       if (AUTO_DEST[status]) undoFields.destination = AUTO_DEST[status];
       pushUndo(track, undoFields);
@@ -844,20 +1030,17 @@
       track.status = status;
       saveTrackField(track, 'status', status);
 
-      // Auto-dest
       if (AUTO_DEST[status]) {
         track.destination = AUTO_DEST[status];
         saveTrackField(track, 'destination', AUTO_DEST[status]);
       }
 
-      // Re-render row status cell & classes
       const row = tableBody.children[idx];
       if (row) {
         row.classList.remove('status-accept', 'status-reject');
         if (status === 'accept') row.classList.add('status-accept');
         else if (status === 'reject') row.classList.add('status-reject');
 
-        // Update status cell text
         const cols = COLUMNS[currentSource];
         const statusColIdx = cols.findIndex(function(c) { return c.key === 'status'; });
         if (statusColIdx >= 0 && row.children[statusColIdx]) {
@@ -866,7 +1049,6 @@
           td.className = 'col-status' + (status ? ' ' + status : '');
         }
 
-        // Update destination cell if auto-dest was applied
         if (AUTO_DEST[status]) {
           const destColIdx = cols.findIndex(function(c) { return c.key === 'destination'; });
           if (destColIdx >= 0 && row.children[destColIdx]) {
@@ -883,10 +1065,8 @@
     showToast(label, status);
     updateStats();
 
-    // Clear batch selection after action
     clearSelection();
 
-    // Auto-advance (single track only)
     if (targets.length === 1 && currentIndex < filteredTracks.length - 1) {
       setTimeout(function() { navigateRow(1, false); }, 150);
     }
@@ -903,7 +1083,6 @@
     const row = tableBody.children[currentIndex];
     if (row) {
       row.classList.toggle('is-done', newVal === 'TRUE');
-      // Update checkbox
       const cols = COLUMNS[currentSource];
       const doneColIdx = cols.findIndex(function(c) { return c.key === 'done'; });
       if (doneColIdx >= 0 && row.children[doneColIdx]) {
@@ -917,7 +1096,6 @@
   function jumpNextUndecided() {
     if (filteredTracks.length === 0) return;
     const start = currentIndex + 1;
-    // Search forward from current position, then wrap
     for (let offset = 0; offset < filteredTracks.length; offset++) {
       const idx = (start + offset) % filteredTracks.length;
       const t = filteredTracks[idx];
@@ -932,7 +1110,7 @@
 
   // -- Sort ---------------------------------------------------
   function handleSort(key) {
-    if (key === '_index') return;
+    if (key === '_index' || key === '_in_library') return;
     if (sortKey === key) {
       sortDir *= -1;
     } else {
@@ -940,7 +1118,6 @@
       sortDir = 1;
     }
     applyFilters();
-    // Re-select closest row
     if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
       selectRow(currentIndex);
     }
@@ -950,7 +1127,6 @@
   document.addEventListener('keydown', function(e) {
     const tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
-      // Allow Escape to blur inputs
       if (e.code === 'Escape') { e.target.blur(); e.preventDefault(); }
       return;
     }
@@ -1029,7 +1205,6 @@
         }
         break;
 
-      // Page navigation for speed
       case 'PageDown':
         e.preventDefault();
         navigateRow(10, e.shiftKey);
@@ -1060,10 +1235,18 @@
     selectedSet.clear();
     selectionAnchor = -1;
     undoStack = [];
-    // Show/hide unsorted-only filters
-    filterStatus.style.display = sourceSelect.value === 'unsorted' ? '' : 'none';
-    filterDone.style.display = sourceSelect.value === 'unsorted' ? '' : 'none';
-    loadTracks(sourceSelect.value);
+    // Reset all filters
+    filterStatus.value = '';
+    filterDone.value = '';
+    filterBpm.value = '';
+    filterKey.value = '';
+    filterRating.value = '';
+    updateFilterVisibility();
+    loadTracks(sourceSelect.value).then(function() {
+      if (sourceSelect.value === 'library') {
+        populateKeyFilter();
+      }
+    });
   });
 
   searchInput.addEventListener('input', function() {
@@ -1081,8 +1264,23 @@
     if (filteredTracks.length > 0) selectRow(0);
   });
 
+  filterBpm.addEventListener('change', function() {
+    applyFilters();
+    if (filteredTracks.length > 0) selectRow(0);
+  });
+
+  filterKey.addEventListener('change', function() {
+    applyFilters();
+    if (filteredTracks.length > 0) selectRow(0);
+  });
+
+  filterRating.addEventListener('change', function() {
+    applyFilters();
+    if (filteredTracks.length > 0) selectRow(0);
+  });
+
   // -- Init ---------------------------------------------------
-  Promise.all([loadGenres()]).then(function() {
+  Promise.all([loadGenres(), loadLibraryIndex()]).then(function() {
     loadTracks('unsorted');
   });
 

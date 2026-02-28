@@ -79,15 +79,37 @@ def index():
 
 @app.route("/api/tracks")
 def api_tracks():
-    """Return JSON list of tracks from unsorted.csv or library.csv."""
+    """Return JSON list of tracks from unsorted.csv, library.csv, or processed."""
     source = request.args.get("source", "unsorted")
     if source == "unsorted":
         rows = load_unsorted_rows(UNSORTED_CSV)
     elif source == "library":
         rows = _load_library_csv()
+    elif source == "processed":
+        rows = [
+            r for r in load_unsorted_rows(UNSORTED_CSV)
+            if r.get("status") == "accept" and r.get("done") == "TRUE"
+        ]
     else:
         return jsonify({"error": f"Unknown source: {source}"}), 400
     return jsonify(rows)
+
+
+@app.route("/api/library-index")
+def api_library_index():
+    """Return normalised artist::title keys for duplicate detection.
+
+    The client uses this to show an 'already in library' badge on
+    unsorted tracks that match an existing library entry.
+    """
+    lib = _load_library_csv()
+    keys: set[str] = set()
+    for row in lib:
+        a = (row.get("artist") or "").strip().lower()
+        t = (row.get("title") or "").strip().lower()
+        if a and t:
+            keys.add(f"{a}::{t}")
+    return jsonify(sorted(keys))
 
 
 @app.route("/api/audio")
