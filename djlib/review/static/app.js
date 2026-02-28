@@ -109,15 +109,16 @@
       { key: 'date_added',       label: 'Added',  width: '90px' },
     ],
     processed: [
-      { key: '_index',       label: '#',       width: '36px' },
-      { key: 'artist',       label: 'Artist',  width: '18%' },
-      { key: 'title',        label: 'Title',   width: '22%' },
-      { key: 'version_info', label: 'Version', width: '12%' },
-      { key: 'genre',        label: 'Genre',   width: '12%' },
-      { key: 'bpm',          label: 'BPM',     width: '46px', cls: 'col-bpm' },
-      { key: 'key_camelot',  label: 'Key',     width: '40px', cls: 'col-key' },
-      { key: 'destination',  label: 'Dest',    width: '72px' },
-      { key: 'status',       label: 'Status',  width: '68px', type: 'status-display' },
+      { key: '_index',          label: '#',       width: '36px' },
+      { key: 'artist',          label: 'Artist',  width: '16%' },
+      { key: 'title',           label: 'Title',   width: '20%' },
+      { key: 'bpm',             label: 'BPM',     width: '46px', cls: 'col-bpm' },
+      { key: 'key',             label: 'Key',     width: '40px', cls: 'col-key' },
+      { key: 'rating',          label: 'Rating',  width: '72px', type: 'rating' },
+      { key: 'move_date',       label: 'Moved',   width: '90px' },
+      { key: 'destination',     label: 'Dest',    width: '68px', type: 'dest-badge' },
+      { key: 'play_count',      label: 'Plays',   width: '44px', cls: 'col-bpm' },
+      { key: 'in_dj_software',  label: 'DJ',      width: '42px', type: 'in-dj-badge' },
     ],
   };
 
@@ -174,6 +175,22 @@
     if (v === 'traktor')
       return '<span class="badge-source src-traktor">TR</span>';
     return escHtml(val || '');
+  }
+
+  // -- Destination badge helper (processed tab) ---------------
+  function destBadgeHtml(val) {
+    const v = (val || '').toLowerCase();
+    if (v === 'library')  return '<span class="badge-dest dest-library">library</span>';
+    if (v === 'archive')  return '<span class="badge-dest dest-archive">archive</span>';
+    if (v === 'rejected') return '<span class="badge-dest dest-rejected">rejected</span>';
+    if (v === 'mixes')    return '<span class="badge-dest dest-mixes">mixes</span>';
+    return escHtml(val || '');
+  }
+
+  // -- In-DJ-software badge helper ----------------------------
+  function inDjBadgeHtml(val) {
+    if (val === 'yes') return '<span class="badge-in-lib">YES</span>';
+    return '<span class="badge-no-dj">\u2014</span>';
   }
 
   // -- Color dot helper ---------------------------------------
@@ -402,7 +419,26 @@
       }
       statsBar.innerHTML = '<span class="stat-lib-sources">' + parts.join(' ') + '</span>';
     } else if (currentSource === 'processed') {
-      statsBar.innerHTML = '<span style="color:var(--green);">' + allTracks.length + ' processed</span>';
+      // Processed stats: total, in library, rated, dest breakdown
+      var inLib = 0, prRated = 0, prLib = 0, prArch = 0, prRej = 0;
+      for (var i = 0; i < allTracks.length; i++) {
+        var t = allTracks[i];
+        if (t.in_dj_software === 'yes') inLib++;
+        var rat = parseFloat(t.rating) || 0;
+        if (rat > 0) prRated++;
+        var dest = (t.destination || '').toLowerCase();
+        if (dest === 'library') prLib++;
+        else if (dest === 'archive') prArch++;
+        else if (dest === 'rejected') prRej++;
+      }
+      var prParts = [];
+      prParts.push('<span class="stat-processed-total">' + allTracks.length + ' processed</span>');
+      prParts.push('<span class="badge-dest dest-library">' + prLib + ' library</span>');
+      if (prArch) prParts.push('<span class="badge-dest dest-archive">' + prArch + ' archive</span>');
+      if (prRej) prParts.push('<span class="badge-dest dest-rejected">' + prRej + ' rejected</span>');
+      prParts.push('\u00b7 <span class="badge-in-lib">' + inLib + '</span> in DJ software');
+      prParts.push('\u00b7 <span class="star-on">\u2605</span> ' + prRated + ' rated');
+      statsBar.innerHTML = prParts.join(' ');
     } else {
       statsBar.innerHTML = '';
     }
@@ -517,6 +553,12 @@
 
         } else if (col.type === 'source-badge') {
           td.innerHTML = sourceBadgeHtml(track[col.key]);
+
+        } else if (col.type === 'dest-badge') {
+          td.innerHTML = destBadgeHtml(track[col.key]);
+
+        } else if (col.type === 'in-dj-badge') {
+          td.innerHTML = inDjBadgeHtml(track[col.key]);
 
         } else if (col.type === 'in-library') {
           if (isInLibrary(track)) {

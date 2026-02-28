@@ -549,6 +549,36 @@ kbd {
 .badge-source.src-rekordbox  { background: rgba(39,174,96,0.2);  color: #2ecc71; }
 .badge-source.src-traktor    { background: rgba(230,126,34,0.2); color: #e67e22; }
 
+/* ── Destination badge (processed tab) ────────────────────── */
+
+.badge-dest {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.badge-dest.dest-library  { background: rgba(39,174,96,0.2);  color: #2ecc71; }
+.badge-dest.dest-archive  { background: rgba(149,165,166,0.2); color: #95a5a6; }
+.badge-dest.dest-rejected { background: rgba(231,76,60,0.2);  color: #e74c3c; }
+.badge-dest.dest-mixes    { background: rgba(52,152,219,0.2); color: #3498db; }
+
+/* ── "Not in DJ software" muted text ─────────────────────── */
+
+.badge-no-dj {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* ── Processed stats ─────────────────────────────────────── */
+
+.stat-processed-total { color: var(--green); font-weight: 600; }
+
 /* ── Color dot (Rekordbox color code) ─────────────────────── */
 
 .color-dot {
