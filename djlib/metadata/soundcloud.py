@@ -342,19 +342,45 @@ def _get_soundcloud_genres_impl(artist: str, title: str, version: str = "") -> O
             coll = data.get("collection") or []
             
             # Filter results: skip mixes/sets (duration > 10 min)
+            # For remixes, separate matched (remixer found) from unmatched items
+            # to avoid genre contamination from the original track or other remixes.
             count = 0
             for item in coll:
                 duration_s = (item.get("duration") or 0) // 1000
                 if duration_s > _MAX_TRACK_DURATION:
                     continue
-                collected.extend(_extract_from_item(item))
-                # Track item info for remixer validation
-                _sc_result_items.append({
+
+                item_tags = _extract_from_item(item)
+                item_info = {
                     "title": (item.get("title") or ""),
                     "artist": ((item.get("user") or {}).get("username") or ""),
                     "genre": (item.get("genre") or ""),
                     "tag_list": (item.get("tag_list") or ""),
-                })
+                }
+
+                # Classify: does this SC result mention our remixer?
+                is_remix_match = False
+                if _remixer_name and len(_remixer_name) > 2:
+                    _first_rmx = re.split(
+                        r'\s*[,;&]\s*|\s+(?:and|vs\.?|[xX])\s+',
+                        _remixer_name, maxsplit=1,
+                    )[0].strip().lower()
+                    it_text = (
+                        f"{item_info['title']} {item_info['artist']} "
+                        f"{item_info['genre']} {item_info['tag_list']}"
+                    ).lower()
+                    is_remix_match = bool(_first_rmx and _first_rmx in it_text)
+
+                if _remixer_name and len(_remixer_name) > 2:
+                    # For remix searches: only collect tags from matched items
+                    if is_remix_match:
+                        collected.extend(item_tags)
+                else:
+                    # Non-remix: collect from everything as before
+                    collected.extend(item_tags)
+
+                _sc_result_items.append(item_info)
+
                 # Capture upload year from the first valid result
                 if _year_cache_key not in _sc_year_cache:
                     ca = item.get("created_at") or ""

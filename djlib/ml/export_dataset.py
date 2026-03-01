@@ -105,7 +105,7 @@ def export_training_dataset(
         record["file_path"] = (row.get("final_path") or row.get("file_path") or "").strip()
         record["track_id"] = row.get("track_id")
         
-        # Rekordbox tags (from unsorted.xlsx, which are sourced from TBPM/TKEY)
+        # Rekordbox tags (from unsorted.csv, which are sourced from TBPM/TKEY)
         record["tag_bpm"] = row.get("bpm")
         record["tag_key_camelot"] = row.get("key_camelot")
         

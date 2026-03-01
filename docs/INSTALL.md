@@ -129,11 +129,9 @@ Expected output:
 For best results, configure Rekordbox:
 
 1. **Preferences → Advanced → Browse**
-
    - Enable: "Write metadata to files" (Every time)
 
 2. **Preferences → Analysis**
-
    - Enable: "Advanced Analysis"
 
 3. **Preferences → View**
@@ -165,7 +163,7 @@ After setup, you should have:
 
 dj-library-manager/
 ├── data/
-│   ├── unsorted.xlsx # Staging spreadsheet
+│   ├── unsorted.csv  # Staging CSV
 │   └── library.csv   # Master database
 ├── LOGS/             # Operation logs
 ├── config.local.yml  # Your configuration
@@ -194,7 +192,7 @@ python -m djlib.cli analyze-audio --check-env
 ```bash
 # Put some tracks in ~/Music Unsorted/
 python -m djlib.cli scan
-# Check data/unsorted.xlsx
+# Check data/unsorted.csv
 ```
 
 ---

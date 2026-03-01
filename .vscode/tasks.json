@@ -152,6 +152,14 @@
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    },
+    {
+      "label": "REVIEW — Open track review UI",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli review",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }

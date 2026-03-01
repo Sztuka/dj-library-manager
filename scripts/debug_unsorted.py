@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
-import openpyxl
+import sys
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
 
-wb = openpyxl.load_workbook('data/unsorted.xlsx')
-ws = wb.active
+from djlib.unsorted import load_unsorted_rows
+from djlib.config import UNSORTED_CSV
 
-# Get header row to find column indices
-headers = [cell.value for cell in ws[1]]
-
-# Find column indices
-cols = {h: i for i, h in enumerate(headers)}
+rows = load_unsorted_rows(UNSORTED_CSV)
 
 # Print tracks without genre
 print('=== TRACKI BEZ GATUNKU ===')
 count = 0
-for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
-    genre = row[cols.get('genre')] if 'genre' in cols else None
+for idx, row in enumerate(rows, 2):
+    genre = row.get('genre')
     if not genre or genre == 'None':
-        artist = row[cols.get('artist', 0)] or row[cols.get('artist_suggest', 0)] or ''
-        title = row[cols.get('title', 0)] or row[cols.get('title_suggest', 0)] or ''
-        version_info = row[cols.get('version_info', 0)] or ''
-        version_suggest = row[cols.get('version_suggest', 0)] or ''
+        artist = row.get('artist') or row.get('artist_suggest') or ''
+        title = row.get('title') or row.get('title_suggest') or ''
+        version_info = row.get('version_info') or ''
+        version_suggest = row.get('version_suggest') or ''
         print(f'{idx}: {artist} - {title}')
         print(f'    version_info={version_info!r}')
         print(f'    version_suggest={version_suggest!r}')

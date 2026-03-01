@@ -243,9 +243,131 @@ WEIGHT_MB_BASE = 3.0
 WEIGHT_MB_REMIX = 1.5
 WEIGHT_SC_BASE = 2.0
 WEIGHT_SC_REMIX = 20.0                  # High for remixes: SC often has remix-specific tags
+WEIGHT_VERSION_HINT = 40.0              # Version text IS the remixer's declared genre
+WEIGHT_TAG_GENRE_HINT = 3.0             # File ID3 tag genre — weak fallback signal
 
 # Confidence threshold for Beatport early exit
 BEATPORT_EARLY_EXIT_CONFIDENCE = 0.8
+
+
+# ============================================================================
+# VERSION / TAG GENRE HINTS
+# ============================================================================
+# Remixers often name their work "X Afro House Remix" — this is the single
+# strongest genre signal available.  We also fall back to
+# ID3/FLAC tag_genre_original when no online source returns useful data.
+
+@functools.lru_cache(maxsize=1)
+def _get_genre_synonyms_for_hint() -> List[Tuple[str, str]]:
+    """Build (normalized_synonym, genre_key) pairs sorted longest-first.
+
+    Used by :func:`_genre_hints_from_version` to match genre names inside
+    version/remix strings like "DJ Davy Afro House Remix".
+    Only includes electronic, caribbean, and world categories — the kinds of
+    genres that appear in remix names.
+    """
+    pairs: List[Tuple[str, str]] = []
+    keep_categories = {"electronic", "caribbean", "world"}
+    for key, info in _get_genres_data().items():
+        if not isinstance(info, dict):
+            continue
+        if info.get("category") not in keep_categories:
+            continue
+        for syn in info.get("synonyms", []):
+            n = normalize_genre(syn)
+            if n and len(n) >= 4:          # skip very short synonyms (noise)
+                pairs.append((n, key))
+    # Sort longest first so "afro house" matches before "house"
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+    return pairs
+
+
+@functools.lru_cache(maxsize=1)
+def _get_remix_filter_categories() -> FrozenSet[str]:
+    """Categories whose tags should be KEPT for remix scoring from LFM/MB.
+
+    Tags from other categories (pop, rock, urban, jazz) are about the
+    **original** track and are misleading for the remix genre.
+    """
+    return frozenset({"electronic", "caribbean", "world"})
+
+
+@functools.lru_cache(maxsize=1)
+def _get_remix_allowed_genres() -> FrozenSet[str]:
+    """Normalized genre synonyms that survive the remix filter for LFM/MB.
+
+    Built from genres.yml entries whose category is in
+    :func:`_get_remix_filter_categories`.  Also includes broad umbrella
+    terms (dance, electronic, club, etc.) that could legitimately describe
+    a remix.
+    """
+    allowed: Set[str] = set()
+    keep = _get_remix_filter_categories()
+    for _key, info in _get_genres_data().items():
+        if not isinstance(info, dict):
+            continue
+        if info.get("category") in keep:
+            for syn in info.get("synonyms", []):
+                n = normalize_genre(syn)
+                if n:
+                    allowed.add(n)
+    # Add broad umbrella terms not in genres.yml but valid for remixes
+    allowed |= {"dance", "club", "electronic", "electronica", "dance music",
+                 "edm", "dance electronic", "dj"}
+    return frozenset(allowed)
+
+
+def _genre_hints_from_version(version: str, title: str = "") -> List[str]:
+    """Extract genre hints from a version/remix string and title parenthetical.
+
+    Scans the version text (and title's parenthetical info) for known genre
+    synonyms.  Matches longest first to prefer "afro house" over "house".
+
+    Also handles "afro" as a standalone hint when it appears in a remix
+    context — in DJ music this almost always means Afro House.
+
+    Examples::
+
+        "DJ Davy Afro House Remix"  → ["afro house"]
+        "ModeFlick Afro Tech Mix"   → ["afro tech"]
+        "Silvio Luz Deep Afro Mix"  → ["deep house"]  (via "deep" + context)
+        "GOTTI Afro Boot" (in title) → ["afro house"]  (afro in remix name)
+
+    Returns list of normalized genre strings (ready for :func:`canonical`).
+    """
+    # Combine version + title parenthetical for scanning
+    text_parts = []
+    if version:
+        text_parts.append(version)
+    if not version and title:
+        # Extract parenthetical from title
+        m = re.search(r'\(([^)]+)\)', title)
+        if m:
+            text_parts.append(m.group(1))
+
+    if not text_parts:
+        return []
+    text = normalize_genre(" ".join(text_parts))
+    if not text:
+        return []
+
+    hints: List[str] = []
+    used: Set[str] = set()                      # avoid overlapping matches
+    for synonym, _key in _get_genre_synonyms_for_hint():
+        # Word-boundary check: synonym must appear as whole words
+        pattern = rf"\b{re.escape(synonym)}\b"
+        if re.search(pattern, text):
+            # Check no overlap with already-matched text
+            if not any(synonym in u or u in synonym for u in used):
+                hints.append(synonym)
+                used.add(synonym)
+
+    # Special handling: standalone "afro" in remix/edit/mix context
+    # → almost always means "Afro House" in DJ music
+    if not hints and re.search(r"\bafro\b", text):
+        hints.append("afro house")
+
+    return hints
 
 
 # ============================================================================
@@ -359,12 +481,20 @@ def _score_tag(
 
 # Keywords that indicate a TRUE remix (another artist reworked the track)
 _REMIX_KEYWORDS = frozenset([
-    "remix", "rework", "bootleg", "mashup", "dub mix", "vip mix", "vip edit",
+    "remix", "rework", "bootleg", "boot", "mashup", "dub mix", "vip mix",
+    "vip edit", "flip",
 ])
 # Edit types that are NOT remixes (same artist, different version)
 _NON_REMIX_EDITS = frozenset([
     "radio edit", "original edit", "extended edit", "club edit",
     "single edit", "album edit", "short edit",
+])
+# Mix types that are NOT remixes (same artist, different version)
+_NON_REMIX_MIXES = frozenset([
+    "original mix", "extended mix", "instrumental mix", "club mix",
+    "radio mix", "short mix", "album mix", "single mix",
+    "vocal mix", "main mix", "12 mix", "12 inch mix",
+    "live mix",
 ])
 
 
@@ -384,6 +514,11 @@ def _detect_remix(version: str, title: str, artist: str) -> bool:
         if "edit" in version_lower:
             if not any(ne in version_lower for ne in _NON_REMIX_EDITS):
                 return True
+        # Producer mixes: "X Mix" where X is not Original/Extended/Club/…
+        # e.g. "Afro Tech Mix", "Deep Afro Mix" → treat as remix
+        if "mix" in version_lower:
+            if not any(nm in version_lower for nm in _NON_REMIX_MIXES):
+                return True
 
     # Fallback: if version is empty, check title+artist for remix keywords
     if not version_lower:
@@ -391,6 +526,16 @@ def _detect_remix(version: str, title: str, artist: str) -> bool:
         artist_lower = (artist or "").lower()
         if any(kw in title_lower or kw in artist_lower for kw in _REMIX_KEYWORDS):
             return True
+        # Also check for producer mixes in title parenthetical
+        # e.g. "Love (GOTTI Afro Boot)" — "boot" already caught above;
+        # also catch "Song (Producer Mix)" patterns
+        paren_match = re.search(r'\(([^)]+)\)', title_lower)
+        if paren_match:
+            paren = paren_match.group(1)
+            if "mix" in paren and not any(nm in paren for nm in _NON_REMIX_MIXES):
+                return True
+            if "edit" in paren and not any(ne in paren for ne in _NON_REMIX_EDITS):
+                return True
 
     return False
 
@@ -441,12 +586,22 @@ def _score_musicbrainz(
     is_remix: bool,
     scores: Dict[str, float],
 ) -> Optional[SourceScore]:
-    """Process MusicBrainz genres."""
+    """Process MusicBrainz genres.
+
+    For remixes: filters tags to electronic/dance/world only.  MB always
+    returns the original recording's genres (hip-hop for a Kanye track even
+    if the remix is Afro House).  Non-electronic tags are misleading.
+    """
     if not mb_result:
         return None
     mb_w = WEIGHT_MB_REMIX if is_remix else WEIGHT_MB_BASE
     mb_local: Dict[str, float] = {}
+    allowed = _get_remix_allowed_genres() if is_remix else None
     for t in mb_result:
+        c = canonical(t)
+        if allowed is not None and c not in allowed:
+            log.debug("MB remix filter: dropping %r (not in allowed set)", t)
+            continue
         _score_tag(t, mb_w, scores, mb_local)
     return SourceScore("musicbrainz", mb_w, mb_local) if mb_local else None
 
@@ -457,7 +612,14 @@ def _score_lastfm(
     beatport_is_electronic: bool,
     scores: Dict[str, float],
 ) -> Optional[SourceScore]:
-    """Process Last.fm top tags with log-weighted popularity scoring."""
+    """Process Last.fm top tags with log-weighted popularity scoring.
+
+    For remixes: filters tags to electronic/dance/world only.  Last.fm always
+    returns tags for the original artist+title ("hip hop" for Kanye, "pop"
+    for Ed Sheeran) regardless of the remix — these are misleading.
+    The reduced weight (WEIGHT_LASTFM_REMIX) combined with the filter
+    means only dance/electronic LFM tags survive for remixes.
+    """
     if not lfm_result:
         return None
     if is_remix:
@@ -468,7 +630,12 @@ def _score_lastfm(
         lfm_w = WEIGHT_LASTFM_BASE
 
     lfm_local: Dict[str, float] = {}
+    allowed = _get_remix_allowed_genres() if is_remix else None
     for name, cnt in lfm_result:
+        c = canonical(name)
+        if allowed is not None and c not in allowed:
+            log.debug("LFM remix filter: dropping %r (count=%d)", name, cnt)
+            continue
         _score_tag(name, lfm_w, scores, lfm_local, count=cnt)
     return SourceScore("lastfm", lfm_w, lfm_local) if lfm_local else None
 
@@ -550,12 +717,27 @@ def resolve(
     duration_s: int | None = None,
     sources: Set[str] | None = None,
     mb_recording: "mb_client.RecordingMatch | None" = None,
+    tag_genre: str = "",
 ) -> GenreResolution | None:
     """Resolve genres using Beatport → Last.fm → MB → SoundCloud with scoring.
 
     Fetches genre data from multiple sources and aggregates scores.
     Early exit when Beatport returns confident EDM match (skips scoring
     other sources).
+
+    New in v2: version-hint scoring + remix LFM/MB filtering.
+
+    For **remixes**, two key improvements:
+
+    1. **Version hints** — if the version string contains a known genre
+       (e.g. "DJ Davy **Afro House** Remix"), that genre gets the highest
+       weight (``WEIGHT_VERSION_HINT = 40``).  The remixer literally
+       declared the genre in the track name.
+
+    2. **LFM/MB filtering** — for remixes, Last.fm and MusicBrainz always
+       return the **original** track's genres (hip-hop for Kanye, pop for
+       Ed Sheeran).  These are filtered to only electronic/dance/world tags
+       to avoid polluting the remix's genre.
 
     Args:
         artist:       Artist name.
@@ -567,6 +749,8 @@ def resolve(
         mb_recording: Pre-fetched MusicBrainz ``RecordingMatch`` to avoid
                       redundant API calls.  If provided, skips
                       ``search_recording`` call.
+        tag_genre:    Original file tag genre (ID3/FLAC).  Used as a weak
+                      fallback signal when no better data is available.
 
     Returns:
         :class:`GenreResolution` with main + up to 2 subs, or ``None`` if
@@ -646,6 +830,34 @@ def resolve(
     sc_score = _score_soundcloud(sc_result, is_remix, scores)
     if sc_score:
         parts.append(sc_score)
+
+    # -----------------------------------------------------------------
+    # Step 5: Version genre hints (strongest signal for remixes)
+    #
+    # The remixer literally named the track "X Afro House Remix" —
+    # this is more reliable than any online API.
+    # -----------------------------------------------------------------
+    version_hints = _genre_hints_from_version(version, title)
+    if version_hints:
+        vh_local: Dict[str, float] = {}
+        for hint in version_hints:
+            _score_tag(hint, WEIGHT_VERSION_HINT, scores, vh_local)
+        if vh_local:
+            parts.append(SourceScore("version_hint", WEIGHT_VERSION_HINT, vh_local))
+            log.info("Version hint for '%s': %s (weight=%.1f)",
+                     version, version_hints, WEIGHT_VERSION_HINT)
+
+    # -----------------------------------------------------------------
+    # Step 6: File tag genre fallback (weak signal)
+    #
+    # ID3/FLAC tag_genre_original: used only when we have no scores yet
+    # or as a tie-breaker.  Typical values: "Dance", "House", "Electronic".
+    # -----------------------------------------------------------------
+    if tag_genre and (not scores or max(scores.values(), default=0) < 5.0):
+        tg_local: Dict[str, float] = {}
+        _score_tag(tag_genre, WEIGHT_TAG_GENRE_HINT, scores, tg_local)
+        if tg_local:
+            parts.append(SourceScore("tag_genre", WEIGHT_TAG_GENRE_HINT, tg_local))
 
     if not scores:
         return None

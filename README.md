@@ -10,9 +10,9 @@
 
 A smart library workflow for DJs that:
 
-- ✅ **Scans UNSORTED folder** → validates Rekordbox/Traktor analysis → generates `data/unsorted.xlsx` staging area
+- ✅ **Scans UNSORTED folder** → validates Rekordbox/Traktor analysis → generates `data/unsorted.csv` staging area
 - ✅ **Multi-source metadata enrichment** (Beatport, MusicBrainz, Last.fm, SoundCloud) → canonical genre resolution
-- ✅ **Manual curation workflow** via Excel → edit metadata, select destination, mark `done = TRUE`
+- ✅ **Manual curation workflow** via Review UI → edit metadata, select destination, mark `done = TRUE`
 - ✅ **Cleans metadata** → removes spam tags, clears album field, embeds custom cover art
 - ✅ **Safe file operations** → moves approved tracks to organized structure with undo support
 - ✅ **DJ software sync** → automatic Rekordbox/Traktor database updates (paths, IDs, metadata)
@@ -22,14 +22,14 @@ A smart library workflow for DJs that:
 
 ## File Locations
 
-| What                    | Path                 | Notes                        |
-| ----------------------- | -------------------- | ---------------------------- |
-| **Staging spreadsheet** | `data/unsorted.xlsx` | Excel file in project folder |
-| **Unsorted music**      | `~/Music Unsorted/`  | Tracks pending processing    |
-| **Music library**       | `~/Music Library/`   | Organized, approved tracks   |
-| **Rejected tracks**     | `~/Music Rejected/`  | Tracks marked for rejection  |
-| **Archive**             | `~/Music Archive/`   | Archived tracks by artist    |
-| **Library database**    | `data/library.csv`   | Master track database        |
+| What                    | Path                | Notes                       |
+| ----------------------- | ------------------- | --------------------------- |
+| **Staging spreadsheet** | `data/unsorted.csv` | CSV file in project folder  |
+| **Unsorted music**      | `~/Music Unsorted/` | Tracks pending processing   |
+| **Music library**       | `~/Music Library/`  | Organized, approved tracks  |
+| **Rejected tracks**     | `~/Music Rejected/` | Tracks marked for rejection |
+| **Archive**             | `~/Music Archive/`  | Archived tracks by artist   |
+| **Library database**    | `data/library.csv`  | Master track database       |
 
 ---
 
@@ -107,13 +107,13 @@ python -m djlib.cli enrich-online
 - `--force-genres` — Refresh genre data even if already filled
 - `--skip-soundcloud` — Skip SoundCloud source
 
-### Manual Curation: Edit `unsorted.xlsx`
+### Manual Curation: Review UI
 
-1. Open `data/unsorted.xlsx` in Excel/Numbers
+1. Run `python -m djlib.cli review` to launch the Review UI
 2. Review and edit: `artist`, `title`, `genre`, `year`, `destination`
 3. Select destination: `library`, `reject`, `archive`, or `mixes`
 4. Set `done = TRUE` for approved tracks
-5. Save and close the file
+5. Changes are saved automatically
 
 **Genre dropdown:** Uses 30 canonical genres from `genres.yml`
 
@@ -207,7 +207,7 @@ dj-library-manager/
 │   ├── metadata/       # API clients (Beatport, MB, etc.)
 │   └── ml/             # ML dataset export
 ├── data/
-│   ├── unsorted.xlsx   # Staging spreadsheet
+│   ├── unsorted.csv    # Staging CSV
 │   ├── library.csv     # Master database
 │   └── training_dataset_full.csv
 ├── LOGS/               # Operation logs

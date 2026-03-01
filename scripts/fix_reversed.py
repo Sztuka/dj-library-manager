@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Fix reversed artist/title entries in unsorted.xlsx."""
+"""Fix reversed artist/title entries in unsorted.csv."""
 import sys
-sys.path.insert(0, "/Users/sztuka/Projects/dj-library-manager")
+sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent.parent))
 
-import pandas as pd
+from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
+from djlib.config import UNSORTED_CSV
 
-df = pd.read_excel('data/unsorted.xlsx')
+rows = load_unsorted_rows(UNSORTED_CSV)
 
 # Find reversed entries (where artist looks like a title with version keywords)
 VERSION_KEYWORDS = ['remix', 'edit', 'mix', 'bootleg', 'vip', 'dub', 'rework', 'version']
 
 fixed = 0
-for idx, row in df.iterrows():
-    artist = str(row.get('artist') or '').strip()
-    title = str(row.get('title') or '').strip()
+for row in rows:
+    artist = (row.get('artist') or '').strip()
+    title = (row.get('title') or '').strip()
     
     # Check if artist has version keywords but title doesn't  
     artist_has_version = any(kw in artist.lower() for kw in VERSION_KEYWORDS)
@@ -23,15 +24,15 @@ for idx, row in df.iterrows():
         # Swap!
         print(f'FIXING: {artist} - {title}')
         print(f'    -> {title} - {artist}')
-        df.at[idx, 'artist'] = title
-        df.at[idx, 'title'] = artist
-        df.at[idx, 'artist_suggest'] = title
-        df.at[idx, 'title_suggest'] = artist
+        row['artist'] = title
+        row['title'] = artist
+        row['artist_suggest'] = title
+        row['title_suggest'] = artist
         fixed += 1
 
 print(f'\nTotal fixed: {fixed}')
 if fixed > 0:
-    df.to_excel('data/unsorted.xlsx', index=False)
+    write_unsorted_rows(UNSORTED_CSV, rows, [])
     print('Saved!')
 else:
     print('No changes needed.')

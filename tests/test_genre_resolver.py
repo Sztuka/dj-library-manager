@@ -14,6 +14,8 @@ from djlib.metadata.genre_resolver import (
     SourceScore,
     _detect_remix,
     _downweight_factor,
+    _genre_hints_from_version,
+    _get_remix_allowed_genres,
     _is_beatport_electronic,
     _is_noise,
     _score_tag,
@@ -172,10 +174,123 @@ class TestDetectRemix:
     def test_fallback_no_match(self):
         assert _detect_remix("", "Simple Track", "Simple Artist") is False
 
+    # --- New cases: boot, flip, producer mixes ---
+
+    def test_boot_keyword(self):
+        assert _detect_remix("GOTTI Afro Boot", "Track", "Artist") is True
+
+    def test_boot_in_title_parenthetical(self):
+        assert _detect_remix("", "Love (GOTTI Afro Boot)", "INNA") is True
+
+    def test_flip_keyword(self):
+        assert _detect_remix("DJ Flip", "Track", "Artist") is True
+
+    def test_producer_mix_afro_tech(self):
+        """'Afro Tech Mix' is a producer mix → remix."""
+        assert _detect_remix("ModeFlick Afro Tech Mix", "Track", "Artist") is True
+
+    def test_producer_mix_deep_afro(self):
+        assert _detect_remix("Silvio Luz Deep Afro Mix", "Track", "Artist") is True
+
+    def test_original_mix_not_remix(self):
+        assert _detect_remix("Original Mix", "Track", "Artist") is False
+
+    def test_extended_mix_not_remix(self):
+        assert _detect_remix("Extended Mix", "Track", "Artist") is False
+
+    def test_club_mix_not_remix(self):
+        assert _detect_remix("Club Mix", "Track", "Artist") is False
+
+    def test_live_mix_not_remix(self):
+        assert _detect_remix("Live Mix", "Track", "Artist") is False
+
+    def test_instrumental_mix_not_remix(self):
+        assert _detect_remix("Instrumental Mix", "Track", "Artist") is False
+
+    def test_title_parenthetical_producer_mix(self):
+        """Producer mix in title parenthetical when version is empty."""
+        assert _detect_remix("", "Song (DJ Karr Mix)", "Artist") is True
+
+    def test_title_parenthetical_original_mix_not_remix(self):
+        assert _detect_remix("", "Song (Original Mix)", "Artist") is False
+
 
 # ============================================================================
-# _is_beatport_electronic()
+# _genre_hints_from_version()
 # ============================================================================
+
+class TestGenreHintsFromVersion:
+    def test_afro_house_remix(self):
+        hints = _genre_hints_from_version("DJ Davy Afro House Remix")
+        assert "afro house" in hints
+
+    def test_afro_tech_mix(self):
+        hints = _genre_hints_from_version("ModeFlick Afro Tech Mix")
+        assert any("afro" in h for h in hints)
+
+    def test_deep_house_in_version(self):
+        hints = _genre_hints_from_version("Silvio Luz Deep House Remix")
+        assert "deep house" in hints
+
+    def test_standalone_afro_becomes_afro_house(self):
+        """Standalone 'afro' in remix context → afro house."""
+        hints = _genre_hints_from_version("GOTTI Afro Boot")
+        assert "afro house" in hints
+
+    def test_empty_version_returns_empty(self):
+        assert _genre_hints_from_version("") == []
+
+    def test_no_genre_in_version(self):
+        assert _genre_hints_from_version("Solardo Remix") == []
+
+    def test_title_parenthetical_fallback(self):
+        """When version is empty, scan title parenthetical."""
+        hints = _genre_hints_from_version("", "Love (GOTTI Afro House Edit)")
+        assert "afro house" in hints
+
+    def test_title_not_scanned_when_version_present(self):
+        """When version is present, title parenthetical is NOT scanned."""
+        hints = _genre_hints_from_version("Plain Remix", "Song (Afro House Edit)")
+        assert "afro house" not in hints
+
+    def test_longer_match_preferred(self):
+        """'afro house' should match before 'house'."""
+        hints = _genre_hints_from_version("DJ Test Afro House Remix")
+        assert hints[0] == "afro house"
+        # "house" should NOT appear separately
+        assert "house" not in hints
+
+    def test_extended_mix_no_hints(self):
+        """Standard version strings don't produce false genre hints."""
+        assert _genre_hints_from_version("Extended Mix") == []
+
+
+# ============================================================================
+# _get_remix_allowed_genres()
+# ============================================================================
+
+class TestGetRemixAllowedGenres:
+    def test_electronic_genres_included(self):
+        allowed = _get_remix_allowed_genres()
+        assert "house" in allowed
+        assert "afro house" in allowed
+        assert "tech house" in allowed
+        assert "deep house" in allowed
+        assert "techno" in allowed
+
+    def test_non_electronic_excluded(self):
+        allowed = _get_remix_allowed_genres()
+        assert "hip hop" not in allowed
+        assert "pop" not in allowed
+        assert "rock" not in allowed
+        assert "r b" not in allowed  # normalized "R&B"
+
+    def test_umbrella_terms_included(self):
+        allowed = _get_remix_allowed_genres()
+        assert "dance" in allowed
+        assert "electronic" in allowed
+        assert "club" in allowed
+        assert "edm" in allowed
 
 class TestIsBeatportElectronic:
     def test_direct_match(self):
@@ -403,3 +518,84 @@ class TestGoldenCases:
         result = resolve("Artist", "Track", version="Remix")
         assert result is not None
         assert "tech house" in result.main or "remix" in result.main
+
+
+# ============================================================================
+# resolve() — tag_genre fallback
+# ============================================================================
+
+class TestResolveTagGenreFallback:
+    """Tests for the tag_genre weak fallback signal in resolve()."""
+
+    @patch(_SC_PREFIX, return_value=None)
+    @patch(_MB_PREFIX, return_value=None)
+    @patch(_LFM_PREFIX, return_value=None)
+    @patch(_BP_PREFIX, return_value=None)
+    def test_tag_genre_used_when_no_other_data(self, bp, lfm, mb, sc):
+        """When all sources return nothing, tag_genre becomes the only signal."""
+        result = resolve("Artist", "Title", tag_genre="House")
+        assert result is not None
+        assert result.main == "house"
+        sources = {s.source for s in result.breakdown}
+        assert "tag_genre" in sources
+
+    @patch(_SC_PREFIX, return_value=None)
+    @patch(_MB_PREFIX, return_value=None)
+    @patch(_LFM_PREFIX, return_value=None)
+    @patch(_BP_PREFIX, return_value={"genre": "Afro House"})
+    def test_tag_genre_ignored_when_strong_signal(self, bp, lfm, mb, sc):
+        """When Beatport returns strong data, tag_genre is not used."""
+        result = resolve("Artist", "Title", tag_genre="Pop")
+        assert result is not None
+        assert result.main == "afro house"
+        # tag_genre should not appear in breakdown
+        sources = {s.source for s in result.breakdown}
+        assert "tag_genre" not in sources
+
+    @patch(_SC_PREFIX, return_value=None)
+    @patch(_MB_PREFIX, return_value=None)
+    @patch(_LFM_PREFIX, return_value=None)
+    @patch(_BP_PREFIX, return_value=None)
+    def test_empty_tag_genre_not_used(self, bp, lfm, mb, sc):
+        """Empty tag_genre string → no fallback triggered."""
+        result = resolve("Artist", "Title", tag_genre="")
+        assert result is None
+
+
+# ============================================================================
+# resolve() — version hint scoring
+# ============================================================================
+
+class TestResolveVersionHint:
+    """Tests for version genre hint scoring in resolve()."""
+
+    @patch(_SC_PREFIX, return_value=None)
+    @patch(_MB_PREFIX, return_value=["hip hop", "rap"])
+    @patch(_LFM_PREFIX, return_value=[("hip hop", 200), ("rap", 100)])
+    @patch(_BP_PREFIX, return_value=None)
+    def test_version_hint_overrides_lfm_mb(self, bp, lfm, mb, sc):
+        """Version hint 'Afro House' should beat LFM/MB hip-hop for remixes."""
+        result = resolve("Kanye West", "Stronger", version="DJ Davy Afro House Remix")
+        assert result is not None
+        assert result.main == "afro house"
+        sources = {s.source for s in result.breakdown}
+        assert "version_hint" in sources
+
+
+# ============================================================================
+# resolve() — remix LFM/MB filtering
+# ============================================================================
+
+class TestResolveRemixFiltering:
+    """Tests for remix-mode LFM/MB tag filtering."""
+
+    @patch(_SC_PREFIX, return_value=None)
+    @patch(_MB_PREFIX, return_value=["hip hop", "rap", "house"])
+    @patch(_LFM_PREFIX, return_value=[("hip hop", 200), ("pop", 100), ("house", 50)])
+    @patch(_BP_PREFIX, return_value=None)
+    def test_remix_filters_non_electronic_from_lfm_mb(self, bp, lfm, mb, sc):
+        """For remixes, hip-hop/pop from LFM/MB should be filtered out."""
+        result = resolve("Artist", "Track", version="DJ Test Remix")
+        assert result is not None
+        # "house" should survive; hip-hop/pop should be filtered
+        assert result.main == "house"
