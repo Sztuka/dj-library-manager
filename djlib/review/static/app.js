@@ -267,13 +267,18 @@
     }
   }
 
+  let _loadError = false;
+
   async function loadTracks(source) {
     currentSource = source;
+    _loadError = false;
     try {
       const resp = await fetch("/api/tracks?source=" + source);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
       allTracks = await resp.json();
     } catch (e) {
       allTracks = [];
+      _loadError = true;
       console.error("Failed to load tracks:", e);
     }
     currentIndex = -1;
@@ -429,9 +434,25 @@
 
     renderTable();
     trackCount.textContent = filteredTracks.length + " / " + allTracks.length;
-    emptyState.style.display = filteredTracks.length === 0 ? "" : "none";
+    var showEmpty = filteredTracks.length === 0;
+    emptyState.style.display = showEmpty ? "" : "none";
     document.getElementById("tracks-table").style.display =
-      filteredTracks.length === 0 ? "none" : "";
+      showEmpty ? "none" : "";
+    // Update empty state message based on error vs no data
+    if (showEmpty) {
+      var emptyP = emptyState.querySelector("p");
+      var emptyHint = emptyState.querySelector(".dim");
+      if (_loadError) {
+        emptyP.textContent = "\u26a0\ufe0f Connection error — server not responding";
+        emptyHint.innerHTML = "Start the server: <code>djlib review</code> or <code>python -m djlib.review.server</code>";
+      } else if (allTracks.length === 0) {
+        emptyP.textContent = "No tracks found.";
+        emptyHint.innerHTML = 'Run <code>djlib scan</code> then <code>djlib enrich-online</code> to populate unsorted.csv';
+      } else {
+        emptyP.textContent = "No tracks match current filters.";
+        emptyHint.textContent = "Try clearing search or filters.";
+      }
+    }
     updateStats();
   }
 
