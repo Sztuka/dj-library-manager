@@ -6,19 +6,19 @@ MIXES_ROOT: ~/Music Library/MIXES # DJ mixes (flat structure, no metadata)
 LOGS_DIR: ./LOGS # Application logs (inside project repo)
 UNSORTED_CSV: ./data/unsorted.csv # Staging CSV file (inside repo)
 
-# Application API keys (public, can be committed)
-acoustid_api_key: REDACTED_ACOUSTID_KEY
+# API keys — set real values in config.local.yml (gitignored)
+acoustid_api_key: ""
 
 # MusicBrainz User-Agent (required by MB Web Service Terms)
 musicbrainz:
   app_name: DJLibraryManager
   app_version: 0.1
   contact: https://github.com/Sztuka/dj-library-manager
-  live_data_feed_token: REDACTED_MB_TOKEN
+  live_data_feed_token: ""
 
-  lastfm_api_key: REDACTED_LASTFM_KEY
-  soundcloud_client_id: REDACTED_SOUNDCLOUD_ID
-  youtube_api_key: REDACTED_YOUTUBE_KEY
+  lastfm_api_key: ""
+  soundcloud_client_id: ""
+  youtube_api_key: ""
 
 preferences:
   auto_format_new_labels: false
