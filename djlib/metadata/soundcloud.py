@@ -147,9 +147,11 @@ def _candidate_queries(artist: str, title: str, version: str, max_queries: int =
             else:
                 queries.append(f"{remixer} {clean_artist}".strip())
     else:
-        # For originals: artist + title
+        # For originals: artist + title, or just title if no artist
         if clean_artist and clean_title:
             queries.append(f"{clean_artist} {clean_title}".strip())
+        elif clean_title:
+            queries.append(clean_title)
     
     # de-dup preserve order
     seen = set()

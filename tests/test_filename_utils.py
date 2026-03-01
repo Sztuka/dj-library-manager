@@ -77,3 +77,19 @@ def test_merge_title_normalizes_hyphen_suffix():
     version = "Merchant vs Vidojean & Oliver Loenn City Boys Edit"
     result = merge_title_and_version(base, version)
     assert result == "Pompeii (Merchant vs Vidojean & Oliver Loenn City Boys Edit)"
+
+
+# ── w_ / w/ → feat. normalisation ──────────────────────────────────────────
+
+
+def test_parse_w_underscore_as_feat():
+    """'w_' in filename (sanitised 'w/') should become 'feat.' in title."""
+    _, title, _ = parse_from_filename(Path("september maru w_ Dave Nunes.mp3"))
+    assert "feat." in title.lower()
+    assert "Dave Nunes" in title
+
+
+def test_parse_w_underscore_no_false_positive():
+    """'w_' should NOT trigger when not followed by a capital letter."""
+    _, title, _ = parse_from_filename(Path("new_world_order.mp3"))
+    assert "feat" not in title.lower()

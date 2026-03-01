@@ -232,3 +232,22 @@ class TestKeepTokenFiltering:
         assert "afro house" in result
         assert "tech house" in result
         assert "deep house" in result
+
+
+class TestCandidateQueriesNoArtist:
+    """Verify _candidate_queries works when artist is empty (title-only search)."""
+
+    def test_original_title_only(self):
+        qs = _candidate_queries("", "september maru", "")
+        assert qs == ["september maru"]
+
+    def test_remix_title_only(self):
+        qs = _candidate_queries("", "Got Your Money", "Vik Toreus Remix")
+        assert len(qs) >= 1
+        # First query should contain title + version
+        assert "got your money" in qs[0].lower()
+        assert "vik toreus" in qs[0].lower()
+
+    def test_empty_artist_and_title_returns_empty(self):
+        qs = _candidate_queries("", "", "")
+        assert qs == []

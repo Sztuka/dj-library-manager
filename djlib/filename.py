@@ -212,6 +212,14 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     # - usuń śmieciowe wstawki w nawiasach zawierające URL/domene (np. (www.mp3vip.org))
     # - skondensuj spacje
     cleaned = name.replace("_", " ")
+    # Normalise featuring abbreviations BEFORE any further processing.
+    # "w/" and its filesystem-sanitised form "w " (from "w_") → "feat."
+    # Must run before space normalisation to catch "w  " from "w_".
+    cleaned = re.sub(r'\bw/\s+', 'feat. ', cleaned, flags=re.IGNORECASE)
+    # "w " only when followed by a capitalised name (avoid false positives on
+    # words like "saw", "new", etc.)  Pattern: word-boundary "w" followed by
+    # 2+ spaces (artefact of _ replacement) then capital letter.
+    cleaned = re.sub(r'\bw\s{2,}(?=[A-Z])', 'feat. ', cleaned)
     # usuń ( ... ) jeśli wygląda jak adres/url lub domena
     cleaned = re.sub(r"\((?:https?://|www\.|[^)]*\.(?:com|net|org|ru|pl|de|uk|fr|it|es|cz|sk|nl|be|info|biz|xyz|site|club|music|fm|to|ua|co|io|me)\b)[^)]*\)", "", cleaned, flags=re.IGNORECASE)
     # usuń prefiksy numerów ścieżek na początku (01-, 01., [01], (01) itp.)
