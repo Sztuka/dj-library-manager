@@ -1381,13 +1381,17 @@
         // Update in-memory track data
         track.artist = data.artist;
         track.title = data.title;
+        if (data.version_info !== undefined) {
+          track.version_info = data.version_info;
+        }
 
         // Re-render table to reflect swap
         renderTable();
         var idx = filteredTracks.indexOf(track);
         if (idx >= 0) selectRow(idx);
 
-        showToast("\u21c4 Swapped: " + data.artist + " \u2014 " + data.title, "");
+        var ver = data.version_info ? " (" + data.version_info + ")" : "";
+        showToast("\u21c4 " + data.artist + " \u2014 " + data.title + ver, "");
       })
       .catch(function () {
         showToast("Swap request failed", "");

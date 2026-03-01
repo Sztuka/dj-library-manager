@@ -598,13 +598,18 @@ def api_enrich_track():
 
 @app.route("/api/swap-artist-title", methods=["POST"])
 def api_swap_artist_title():
-    """Swap artist and title fields for a track.
+    """Swap artist and title fields for a track, recalculating version_info.
+
+    Instead of a naive field swap, this re-parses the filename to correctly
+    separate artist, title, and version.  When the filename has reversed
+    order (e.g. ``Title (Remix - Extended) - Artist``), the parser auto-detects
+    this and returns all three fields correctly.
 
     Request body (JSON):
         { "track_id": "..." }
 
     Returns:
-        { "ok": true, "artist": "<new artist>", "title": "<new title>" }
+        { "ok": true, "artist": "...", "title": "...", "version_info": "..." }
     """
     data = request.get_json(silent=True)
     if not data:
@@ -619,20 +624,60 @@ def api_swap_artist_title():
         found = False
         new_artist = ""
         new_title = ""
+        new_version = ""
         for row in rows:
             if row.get("track_id") == tid:
-                old_artist = (row.get("artist") or "").strip()
-                old_title = (row.get("title") or "").strip()
-                row["artist"] = old_title
-                row["title"] = old_artist
+                file_path = (row.get("file_path") or "").strip()
+
+                # Strategy: re-parse from filename to get correct artist/title/version.
+                # The parser has swap detection built-in, so if the filename has
+                # reversed order it will produce the correct result.
+                # We only do a naive swap as fallback when there's no file_path.
+                if file_path:
+                    p = Path(file_path).expanduser()
+                    fn_a, fn_t, fn_v = parse_from_filename(p)
+
+                    old_artist = (row.get("artist") or "").strip()
+                    old_title = (row.get("title") or "").strip()
+
+                    # If parser result matches current values, do a simple swap
+                    # (user explicitly wants to override the parser)
+                    if (fn_a.lower() == old_artist.lower()
+                            and fn_t.lower() == old_title.lower()):
+                        new_artist = old_title
+                        new_title = old_artist
+                        # Re-extract version from the new title if it contains
+                        # version-like content in parentheses
+                        from djlib.filename import split_title_and_version
+                        base_t, ver = split_title_and_version(new_title)
+                        if ver:
+                            new_title = base_t
+                            new_version = ver
+                        else:
+                            new_version = (row.get("version_info") or "").strip()
+                    else:
+                        # Parser result differs from current values — use parser
+                        # (this handles the case where initial parse was broken)
+                        new_artist = fn_a or old_title
+                        new_title = fn_t or old_artist
+                        new_version = fn_v
+                else:
+                    # No file_path — naive swap
+                    old_artist = (row.get("artist") or "").strip()
+                    old_title = (row.get("title") or "").strip()
+                    new_artist = old_title
+                    new_title = old_artist
+                    new_version = (row.get("version_info") or "").strip()
+
+                row["artist"] = new_artist
+                row["title"] = new_title
+                row["version_info"] = new_version
                 # Also swap suggest fields if they exist
                 old_as = (row.get("artist_suggest") or "").strip()
                 old_ts = (row.get("title_suggest") or "").strip()
                 if old_as or old_ts:
                     row["artist_suggest"] = old_ts
                     row["title_suggest"] = old_as
-                new_artist = old_title
-                new_title = old_artist
                 found = True
                 break
 
@@ -641,7 +686,12 @@ def api_swap_artist_title():
 
         write_unsorted_rows(UNSORTED_CSV, rows, [])
 
-    return jsonify({"ok": True, "artist": new_artist, "title": new_title})
+    return jsonify({
+        "ok": True,
+        "artist": new_artist,
+        "title": new_title,
+        "version_info": new_version,
+    })
 
 
 # ── Server entry point ───────────────────────────────────────────────────────

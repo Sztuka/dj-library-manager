@@ -584,18 +584,20 @@ def test_swap_track_not_found(client):
 
 
 def test_swap_success(client, tmp_path):
-    """Swaps artist and title in CSV and returns new values."""
+    """Swaps artist and title via filename re-parse and returns new values."""
     from djlib.review import server as srv
 
     csv_path = _make_unsorted_csv(tmp_path, [{
         "track_id": "swap-test-1",
-        "file_path": "/tmp/test/file.wav",
+        "file_path": str(tmp_path / "Unwritten (Talon Remix) - Natasha Bedingfield.wav"),
         "artist": "Unwritten (Talon Remix)",
         "title": "Natasha Bedingfield",
         "version_info": "",
         "artist_suggest": "Unwritten (Talon Remix)",
         "title_suggest": "Natasha Bedingfield",
     }])
+    # Create the file so Path.expanduser works (not strictly needed but clean)
+    (tmp_path / "Unwritten (Talon Remix) - Natasha Bedingfield.wav").touch()
 
     with patch.object(srv, "UNSORTED_CSV", csv_path):
         resp = client.post("/api/swap-artist-title", json={"track_id": "swap-test-1"})
@@ -603,18 +605,77 @@ def test_swap_success(client, tmp_path):
     assert resp.status_code == 200
     data = json.loads(resp.data)
     assert data["ok"] is True
+    # The parser detects reversed order (first part has "Remix") and auto-swaps
     assert data["artist"] == "Natasha Bedingfield"
-    assert data["title"] == "Unwritten (Talon Remix)"
+    assert data["title"] == "Unwritten"
+    assert data["version_info"] == "Talon Remix"
 
     # Verify CSV was updated
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
     assert rows[0]["artist"] == "Natasha Bedingfield"
-    assert rows[0]["title"] == "Unwritten (Talon Remix)"
+    assert rows[0]["title"] == "Unwritten"
+    assert rows[0]["version_info"] == "Talon Remix"
     # Suggest fields also swapped
     assert rows[0]["artist_suggest"] == "Natasha Bedingfield"
     assert rows[0]["title_suggest"] == "Unwritten (Talon Remix)"
+
+
+def test_swap_reparse_dash_in_parens(client, tmp_path):
+    """Swap correctly handles filenames with dashes inside parentheses.
+
+    Filename: 'Unwritten (Talon Afrohouse Remix - Extended) - Natasha Bedingfield.wav'
+    Initial parse was broken (dash inside parens split into 3 segments).
+    Swap should re-parse and fix artist, title, AND version_info.
+    """
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "swap-dash-1",
+        "file_path": str(tmp_path / "Unwritten (Talon Afrohouse Remix - Extended) - Natasha Bedingfield.wav"),
+        "artist": "Unwritten (Talon Afrohouse Remix",
+        "title": "Extended)",
+        "version_info": "Natasha Bedingfield",
+        "artist_suggest": "Unwritten (Talon Afrohouse Remix",
+        "title_suggest": "Extended)",
+    }])
+    (tmp_path / "Unwritten (Talon Afrohouse Remix - Extended) - Natasha Bedingfield.wav").touch()
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path):
+        resp = client.post("/api/swap-artist-title", json={"track_id": "swap-dash-1"})
+
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["ok"] is True
+    # Parser now correctly handles dash inside parens + auto-detects reversed order
+    assert data["artist"] == "Natasha Bedingfield"
+    assert data["title"] == "Unwritten"
+    assert data["version_info"] == "Talon Afrohouse Remix - Extended"
+
+
+def test_swap_no_filepath_naive_swap(client, tmp_path):
+    """When no file_path, fall back to naive artist/title swap."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "swap-nofile-1",
+        "file_path": "",
+        "artist": "Title Here",
+        "title": "Artist Here",
+        "version_info": "Original Mix",
+        "artist_suggest": "",
+        "title_suggest": "",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path):
+        resp = client.post("/api/swap-artist-title", json={"track_id": "swap-nofile-1"})
+
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["artist"] == "Artist Here"
+    assert data["title"] == "Title Here"
+    assert data["version_info"] == "Original Mix"
 
 
 # ── Swap Detection ───────────────────────────────────────────────────────────
