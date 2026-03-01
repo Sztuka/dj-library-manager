@@ -129,11 +129,9 @@ Expected output:
 For best results, configure Rekordbox:
 
 1. **Preferences → Advanced → Browse**
-
    - Enable: "Write metadata to files" (Every time)
 
 2. **Preferences → Analysis**
-
    - Enable: "Advanced Analysis"
 
 3. **Preferences → View**

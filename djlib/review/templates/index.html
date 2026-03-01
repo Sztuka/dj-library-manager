@@ -1,131 +1,138 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DJ Library — Review</title>
-  <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-
-  <!-- ── Toolbar ─────────────────────────────────────────────── -->
-  <header id="toolbar">
-    <div class="toolbar-left">
-      <h1>🎧 Review</h1>
-      <select id="source-select">
-        <option value="unsorted" selected>Unsorted</option>
-        <option value="library">Library</option>
-        <option value="processed">Processed</option>
-      </select>
-    </div>
-    <div class="toolbar-center">
-      <input type="text" id="search-input" placeholder="Search artist, title, genre…" autocomplete="off" />
-      <select id="filter-status">
-        <option value="">All</option>
-        <option value="review">Review</option>
-        <option value="accept">Accepted</option>
-        <option value="reject">Rejected</option>
-        <option value="undecided">Undecided</option>
-      </select>
-      <select id="filter-done">
-        <option value="">Done: All</option>
-        <option value="FALSE">Not done</option>
-        <option value="TRUE">Done</option>
-      </select>
-      <!-- Library-specific filters (hidden when not on library) -->
-      <select id="filter-bpm" style="display:none;">
-        <option value="">BPM: All</option>
-        <option value="0-100">0–100</option>
-        <option value="100-120">100–120</option>
-        <option value="120-130">120–130</option>
-        <option value="130-140">130–140</option>
-        <option value="140-160">140–160</option>
-        <option value="160+">160+</option>
-      </select>
-      <select id="filter-key" style="display:none;">
-        <option value="">Key: All</option>
-      </select>
-      <select id="filter-rating" style="display:none;">
-        <option value="">Rating: All</option>
-        <option value="5">★★★★★</option>
-        <option value="4">★★★★☆+</option>
-        <option value="3">★★★☆☆+</option>
-        <option value="1">★☆☆☆☆+</option>
-        <option value="unrated">Unrated</option>
-      </select>
-    </div>
-    <div class="toolbar-right">
-      <span id="stats-bar"></span>
-      <span id="track-count">0 tracks</span>
-      <label class="auto-play-toggle" title="Auto-play when navigating rows">
-        <input type="checkbox" id="auto-play-checkbox" /> Auto-play
-      </label>
-    </div>
-  </header>
-
-  <!-- ── Track table ─────────────────────────────────────────── -->
-  <main id="table-container">
-    <table id="tracks-table">
-      <thead id="table-head"></thead>
-      <tbody id="table-body"></tbody>
-    </table>
-    <div id="empty-state" style="display:none;">
-      <p>No tracks found.</p>
-      <p class="dim">Run <code>djlib scan</code> then <code>djlib enrich-online</code> to populate unsorted.csv</p>
-    </div>
-  </main>
-
-  <!-- ── Player bar ──────────────────────────────────────────── -->
-  <footer id="player-bar">
-    <div class="player-info">
-      <span id="now-playing-indicator"></span>
-      <span id="now-artist">—</span>
-      <span id="now-title">—</span>
-    </div>
-    <div class="player-controls">
-      <div id="player-progress-container">
-        <canvas id="waveform-canvas"></canvas>
-        <div id="player-progress"></div>
-        <div id="player-progress-hover"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DJ Library — Review</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <!-- ── Toolbar ─────────────────────────────────────────────── -->
+    <header id="toolbar">
+      <div class="toolbar-left">
+        <h1>🎧 Review</h1>
+        <select id="source-select">
+          <option value="unsorted" selected>Unsorted</option>
+          <option value="library">Library</option>
+          <option value="processed">Processed</option>
+        </select>
       </div>
-      <span id="player-time">0:00 / 0:00</span>
+      <div class="toolbar-center">
+        <input
+          type="text"
+          id="search-input"
+          placeholder="Search artist, title, genre…"
+          autocomplete="off"
+        />
+        <select id="filter-status">
+          <option value="">All</option>
+          <option value="review">Review</option>
+          <option value="accept">Accepted</option>
+          <option value="reject">Rejected</option>
+          <option value="undecided">Undecided</option>
+        </select>
+        <select id="filter-done">
+          <option value="">Done: All</option>
+          <option value="FALSE">Not done</option>
+          <option value="TRUE">Done</option>
+        </select>
+        <!-- Library-specific filters (hidden when not on library) -->
+        <select id="filter-bpm" style="display: none">
+          <option value="">BPM: All</option>
+          <option value="0-100">0–100</option>
+          <option value="100-120">100–120</option>
+          <option value="120-130">120–130</option>
+          <option value="130-140">130–140</option>
+          <option value="140-160">140–160</option>
+          <option value="160+">160+</option>
+        </select>
+        <select id="filter-key" style="display: none">
+          <option value="">Key: All</option>
+        </select>
+        <select id="filter-rating" style="display: none">
+          <option value="">Rating: All</option>
+          <option value="5">★★★★★</option>
+          <option value="4">★★★★☆+</option>
+          <option value="3">★★★☆☆+</option>
+          <option value="1">★☆☆☆☆+</option>
+          <option value="unrated">Unrated</option>
+        </select>
+      </div>
+      <div class="toolbar-right">
+        <span id="stats-bar"></span>
+        <span id="track-count">0 tracks</span>
+        <label class="auto-play-toggle" title="Auto-play when navigating rows">
+          <input type="checkbox" id="auto-play-checkbox" /> Auto-play
+        </label>
+      </div>
+    </header>
+
+    <!-- ── Track table ─────────────────────────────────────────── -->
+    <main id="table-container">
+      <table id="tracks-table">
+        <thead id="table-head"></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+      <div id="empty-state" style="display: none">
+        <p>No tracks found.</p>
+        <p class="dim">
+          Run <code>djlib scan</code> then <code>djlib enrich-online</code> to
+          populate unsorted.csv
+        </p>
+      </div>
+    </main>
+
+    <!-- ── Player bar ──────────────────────────────────────────── -->
+    <footer id="player-bar">
+      <div class="player-info">
+        <span id="now-playing-indicator"></span>
+        <span id="now-artist">—</span>
+        <span id="now-title">—</span>
+      </div>
+      <div class="player-controls">
+        <div id="player-progress-container">
+          <canvas id="waveform-canvas"></canvas>
+          <div id="player-progress"></div>
+          <div id="player-progress-hover"></div>
+        </div>
+        <span id="player-time">0:00 / 0:00</span>
+      </div>
+      <div class="player-detail" id="genre-sources"></div>
+    </footer>
+
+    <!-- ── Keyboard shortcuts legend ───────────────────────────── -->
+    <div id="shortcuts-bar">
+      <kbd>Space</kbd> Play / Pause
+      <span class="sep">·</span>
+      <kbd>↑</kbd><kbd>↓</kbd> Navigate
+      <span class="sep">·</span>
+      <kbd>Enter</kbd> Play selected
+      <span class="sep">·</span>
+      <kbd>Esc</kbd> Stop
+      <span class="sep">·</span>
+      <kbd>A</kbd> Accept
+      <span class="sep">·</span>
+      <kbd>R</kbd> Reject
+      <span class="sep">·</span>
+      <kbd>V</kbd> Review
+      <span class="sep">·</span>
+      <kbd>G</kbd> Genre suggest
+      <span class="sep">·</span>
+      <kbd>N</kbd> Next undecided
+      <span class="sep">·</span>
+      <kbd>D</kbd> Done
+      <span class="sep">·</span>
+      <kbd>Shift+↑↓</kbd> Batch select
+      <span class="sep">·</span>
+      <kbd>⌘Z</kbd> Undo
+      <span class="sep">·</span>
+      <kbd>Dbl-click</kbd> Edit cell
     </div>
-    <div class="player-detail" id="genre-sources"></div>
-  </footer>
 
-  <!-- ── Keyboard shortcuts legend ───────────────────────────── -->
-  <div id="shortcuts-bar">
-    <kbd>Space</kbd> Play / Pause
-    <span class="sep">·</span>
-    <kbd>↑</kbd><kbd>↓</kbd> Navigate
-    <span class="sep">·</span>
-    <kbd>Enter</kbd> Play selected
-    <span class="sep">·</span>
-    <kbd>Esc</kbd> Stop
-    <span class="sep">·</span>
-    <kbd>A</kbd> Accept
-    <span class="sep">·</span>
-    <kbd>R</kbd> Reject
-    <span class="sep">·</span>
-    <kbd>V</kbd> Review
-    <span class="sep">·</span>
-    <kbd>G</kbd> Genre suggest
-    <span class="sep">·</span>
-    <kbd>N</kbd> Next undecided
-    <span class="sep">·</span>
-    <kbd>D</kbd> Done
-    <span class="sep">·</span>
-    <kbd>Shift+↑↓</kbd> Batch select
-    <span class="sep">·</span>
-    <kbd>⌘Z</kbd> Undo
-    <span class="sep">·</span>
-    <kbd>Dbl-click</kbd> Edit cell
-  </div>
+    <!-- ── Toast notification ─────────────────────────────────── -->
+    <div id="toast" class="toast hidden"></div>
 
-  <!-- ── Toast notification ─────────────────────────────────── -->
-  <div id="toast" class="toast hidden"></div>
-
-  <audio id="audio-player" preload="none"></audio>
-  <script src="/static/app.js"></script>
-</body>
+    <audio id="audio-player" preload="none"></audio>
+    <script src="/static/app.js"></script>
+  </body>
 </html>

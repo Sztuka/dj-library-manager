@@ -194,12 +194,12 @@ resolve(artist, title, version, *, sources=ALL_SOURCES)
 
 **Sources and weights:**
 
-| Source      | Weight | Data                       | Control              |
-| ----------- | ------ | -------------------------- | -------------------- |
-| Beatport    | 10     | EDM genres (authoritative) | `sources={"beatport"}` |
-| Last.fm     | 6      | Tags from user community   | `sources={"lastfm"}`   |
-| MusicBrainz | 3      | Structured genre data      | `sources={"mb"}`       |
-| SoundCloud  | 2-8    | Genre tags (remix boost)   | `sources={"soundcloud"}`|
+| Source      | Weight | Data                       | Control                  |
+| ----------- | ------ | -------------------------- | ------------------------ |
+| Beatport    | 10     | EDM genres (authoritative) | `sources={"beatport"}`   |
+| Last.fm     | 6      | Tags from user community   | `sources={"lastfm"}`     |
+| MusicBrainz | 3      | Structured genre data      | `sources={"mb"}`         |
+| SoundCloud  | 2-8    | Genre tags (remix boost)   | `sources={"soundcloud"}` |
 
 `ALL_SOURCES = frozenset({"beatport", "lastfm", "mb", "soundcloud"})`
 
@@ -221,7 +221,8 @@ raw tag → canonical() → _is_noise()? → _downweight_factor() → _specifici
 **Lazy loading:** `genres.yml` parsed via `@lru_cache` — no module-level I/O.
 
 **Test coverage:** 54 tests in `tests/test_genre_resolver.py`:
-- Pure function units: canonical, _is_noise, _downweight, _specificity_boost, _detect_remix
+
+- Pure function units: canonical, \_is_noise, \_downweight, \_specificity_boost, \_detect_remix
 - Mocked integration: resolve() with mocked API fetchers
 - Golden-file regression: known tracks with expected genre
 
@@ -344,6 +345,7 @@ CREATE TABLE audio_features (
 **Roadmap:** See [ML_GENRE_CLASSIFICATION_ROADMAP.md](ML_GENRE_CLASSIFICATION_ROADMAP.md)
 
 Pipeline flow:
+
 ```text
 audio files → Essentia (~80 features) → SQLite cache
                                               ↓
@@ -355,6 +357,7 @@ library.csv (genre labels) ──────────→ training dataset CS
 ```
 
 Key modules:
+
 - `djlib/audio/essentia_backend.py` — feature extraction
 - `djlib/audio/cache.py` — SQLite analysis cache
 - `djlib/ml/export_dataset.py` — joins features + labels

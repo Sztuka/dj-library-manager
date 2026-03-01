@@ -22,14 +22,14 @@ A smart library workflow for DJs that:
 
 ## File Locations
 
-| What                    | Path                 | Notes                        |
-| ----------------------- | -------------------- | ---------------------------- |
-| **Staging spreadsheet** | `data/unsorted.csv`  | CSV file in project folder |
-| **Unsorted music**      | `~/Music Unsorted/`  | Tracks pending processing    |
-| **Music library**       | `~/Music Library/`   | Organized, approved tracks   |
-| **Rejected tracks**     | `~/Music Rejected/`  | Tracks marked for rejection  |
-| **Archive**             | `~/Music Archive/`   | Archived tracks by artist    |
-| **Library database**    | `data/library.csv`   | Master track database        |
+| What                    | Path                | Notes                       |
+| ----------------------- | ------------------- | --------------------------- |
+| **Staging spreadsheet** | `data/unsorted.csv` | CSV file in project folder  |
+| **Unsorted music**      | `~/Music Unsorted/` | Tracks pending processing   |
+| **Music library**       | `~/Music Library/`  | Organized, approved tracks  |
+| **Rejected tracks**     | `~/Music Rejected/` | Tracks marked for rejection |
+| **Archive**             | `~/Music Archive/`  | Archived tracks by artist   |
+| **Library database**    | `data/library.csv`  | Master track database       |
 
 ---
 
