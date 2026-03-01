@@ -10,6 +10,8 @@ arrows to navigate, A/R/V for accept/reject/review.
 from __future__ import annotations
 
 import csv
+import json
+import logging
 import mimetypes
 import os
 import re
@@ -17,12 +19,13 @@ import subprocess
 import threading
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+import requests as http_requests
 import yaml
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-from djlib.config import UNSORTED_CSV
+from djlib.config import UNSORTED_CSV, get_openai_api_key
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
 
 # ── Flask app ────────────────────────────────────────────────────────────────
@@ -258,6 +261,149 @@ def api_reveal():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ── AI Genre Suggest ─────────────────────────────────────────────────────────
+
+_ai_cache: Dict[str, Dict[str, Any]] = {}  # track_id -> {genre, confidence, reasoning}
+_log = logging.getLogger(__name__)
+
+
+@app.route("/api/ai-status")
+def api_ai_status():
+    """Check if OpenAI API key is configured."""
+    key = get_openai_api_key()
+    return jsonify({"available": bool(key)})
+
+
+@app.route("/api/suggest-genre", methods=["POST"])
+def api_suggest_genre():
+    """Ask OpenAI to classify a track's genre based on available metadata.
+
+    Request body (JSON):
+        { "track_id": "...", "context": { artist, title, version, bpm, ... } }
+
+    Returns:
+        { "genre": "Afro House", "confidence": 0.9, "reasoning": "..." }
+    """
+    api_key = get_openai_api_key()
+    if not api_key:
+        return jsonify({"error": "OpenAI API key not configured. Add openai_api_key to config.local.yml"}), 501
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    tid = data.get("track_id", "")
+    ctx = data.get("context", {})
+
+    if not ctx.get("artist") and not ctx.get("title"):
+        return jsonify({"error": "Need at least artist or title"}), 400
+
+    # Check cache
+    if tid and tid in _ai_cache:
+        return jsonify(_ai_cache[tid])
+
+    # Build prompt
+    genre_labels = _load_genres()
+    prompt = _build_genre_prompt(ctx, genre_labels)
+
+    try:
+        result = _call_openai(api_key, prompt)
+        if tid:
+            _ai_cache[tid] = result
+        return jsonify(result)
+    except Exception as e:
+        _log.warning("OpenAI API error: %s", e)
+        return jsonify({"error": f"AI request failed: {e}"}), 502
+
+
+def _build_genre_prompt(ctx: Dict[str, str], genre_labels: List[str]) -> str:
+    """Build the system + user prompt for genre classification."""
+    genre_list = ", ".join(genre_labels)
+
+    # Collect all available context
+    parts = []
+    if ctx.get("artist"):
+        parts.append(f"Artist: {ctx['artist']}")
+    if ctx.get("title"):
+        parts.append(f"Title: {ctx['title']}")
+    if ctx.get("version"):
+        parts.append(f"Version/Remix: {ctx['version']}")
+    if ctx.get("bpm"):
+        parts.append(f"BPM: {ctx['bpm']}")
+    if ctx.get("key"):
+        parts.append(f"Key: {ctx['key']}")
+    if ctx.get("duration"):
+        parts.append(f"Duration: {ctx['duration']}")
+    if ctx.get("folder"):
+        parts.append(f"Source folder: {ctx['folder']}")
+    if ctx.get("genres_musicbrainz"):
+        parts.append(f"MusicBrainz genres: {ctx['genres_musicbrainz']}")
+    if ctx.get("genres_lastfm"):
+        parts.append(f"Last.fm genres: {ctx['genres_lastfm']}")
+    if ctx.get("genres_soundcloud"):
+        parts.append(f"SoundCloud tags: {ctx['genres_soundcloud']}")
+    if ctx.get("genres_beatport"):
+        parts.append(f"Beatport genre: {ctx['genres_beatport']}")
+    if ctx.get("genre_suggest"):
+        parts.append(f"Current suggestion (may be wrong): {ctx['genre_suggest']}")
+
+    track_info = "\n".join(parts)
+
+    return (
+        f"You are a DJ music genre classifier. Classify this track into exactly ONE genre "
+        f"from the following list:\n{genre_list}\n\n"
+        f"Track information:\n{track_info}\n\n"
+        f"Consider BPM range, artist/remixer scene, source material, and any available genre tags. "
+        f"If the existing tags are artist names or nonsense, ignore them.\n\n"
+        f"Respond ONLY with valid JSON (no markdown, no code fences):\n"
+        f'{{"genre": "<exact genre from list>", "confidence": <0.0-1.0>, "reasoning": "<1-2 sentences>"}}'
+    )
+
+
+def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
+    """Call OpenAI Chat Completions API and parse JSON response."""
+    resp = http_requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_tokens": 200,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+    content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+    # Parse JSON from response (handle potential markdown fences)
+    content = content.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```\w*\n?", "", content)
+        content = re.sub(r"\n?```$", "", content)
+        content = content.strip()
+
+    result = json.loads(content)
+
+    # Validate genre is from our list
+    genre_labels = _load_genres()
+    if result.get("genre") not in genre_labels:
+        # Try case-insensitive match
+        lower_map = {g.lower(): g for g in genre_labels}
+        matched = lower_map.get((result.get("genre") or "").lower())
+        if matched:
+            result["genre"] = matched
+        else:
+            result["warning"] = f"AI suggested '{result.get('genre')}' which is not in genres.yml"
+
+    return result
 
 
 # ── Server entry point ───────────────────────────────────────────────────────
