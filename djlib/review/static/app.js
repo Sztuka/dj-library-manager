@@ -134,7 +134,7 @@
       { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
       { key: "key", label: "Key", width: "40px", cls: "col-key" },
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
-      { key: "move_date", label: "Moved", width: "90px" },
+      { key: "date_added", label: "Added", width: "90px" },
       { key: "destination", label: "Dest", width: "68px", type: "dest-badge" },
       { key: "play_count", label: "Plays", width: "44px", cls: "col-bpm" },
       {

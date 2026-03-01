@@ -26,7 +26,7 @@ def client():
 def test_index_returns_html(client):
     resp = client.get("/")
     assert resp.status_code == 200
-    assert b"<!DOCTYPE html>" in resp.data
+    assert b"<!doctype html>" in resp.data.lower()
     assert b"Review" in resp.data
 
 
@@ -128,32 +128,18 @@ def test_update_track_not_found(client):
 # ── Processed tracks API ─────────────────────────────────────────────────────
 
 def test_tracks_processed_returns_list(client):
-    """Processed source should return a list (possibly empty if no move logs)."""
+    """Processed source should return a list (possibly empty)."""
     resp = client.get("/api/tracks?source=processed")
     assert resp.status_code == 200
     data = json.loads(resp.data)
     assert isinstance(data, list)
 
 
-def test_tracks_processed_from_move_logs(client, tmp_path):
-    """Processed endpoint reads LOGS/moves-*.csv and enriches from library.csv."""
+def test_tracks_processed_from_library_csv(client, tmp_path):
+    """Processed endpoint reads library.csv filtered by destination folders."""
     from djlib.review import server as srv
 
-    # Create a fake move log
-    logs_dir = tmp_path / "LOGS"
-    logs_dir.mkdir()
-    move_csv = logs_dir / "moves-20260215-120000.csv"
-    move_csv.write_text(
-        "src,dest,track_id\n"
-        "/Music Unsorted/DJ Test - Track One.mp3,"
-        "/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
-        "tid-aaa-111\n"
-        "/Music Unsorted/Unknown.mp3,"
-        "/Music Archive/Unknown/Unknown.mp3,"
-        "tid-bbb-222\n"
-    )
-
-    # Create a fake library.csv
+    # Create a fake library.csv with tracks in different folders
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     lib_csv = data_dir / "library.csv"
@@ -161,9 +147,18 @@ def test_tracks_processed_from_move_logs(client, tmp_path):
         "external_source,external_track_id,track_id,old_full_path,artist,title,"
         "bpm,key,rating,color,duration_seconds,date_added,last_played,"
         "play_count,snapshot_date,rekordbox_id,traktor_id,cue_count\n"
+        # Track in Music Library (should appear)
         "rekordbox,rb1,tid-aaa-111,"
-        "/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
+        "/Users/test/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
         "DJ Test,Track One,128,5A,4,,200,2025-12-15,,5,,rb1,,0\n"
+        # Track in Music Archive (should appear)
+        "traktor,,tid-bbb-222,"
+        "/Users/test/Music Archive/Unknown/Unknown.mp3,"
+        "Unknown Artist,Unknown Track,120,3B,0,,180,2025-11-01,,0,,,,0\n"
+        # Track in ~/Music (NOT processed — DJ software import, should be excluded)
+        "rekordbox+traktor,rb2,tid-ccc-333,"
+        "/Users/test/Music/Some DJ Track.mp3,"
+        "Some DJ,Track,130,7A,3,,240,2025-10-01,,10,,rb2,,2\n"
     )
 
     old_repo = srv._REPO
@@ -173,51 +168,38 @@ def test_tracks_processed_from_move_logs(client, tmp_path):
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert isinstance(data, list)
-        assert len(data) == 2
+        assert len(data) == 2  # Only Music Library + Music Archive
 
-        # First should be enriched (matched by track_id)
-        enriched = [t for t in data if t["track_id"] == "tid-aaa-111"][0]
-        assert enriched["artist"] == "DJ Test"
-        assert enriched["title"] == "Track One"
-        assert enriched["bpm"] == "128"
-        assert enriched["rating"] == "4"
-        assert enriched["play_count"] == "5"
-        assert enriched["destination"] == "library"
-        assert enriched["in_dj_software"] == "yes"
-        assert enriched["move_date"] == "2026-02-15"
+        # Library track
+        lib_track = [t for t in data if t["track_id"] == "tid-aaa-111"][0]
+        assert lib_track["artist"] == "DJ Test"
+        assert lib_track["title"] == "Track One"
+        assert lib_track["bpm"] == "128"
+        assert lib_track["key"] == "5A"
+        assert lib_track["rating"] == "4"
+        assert lib_track["play_count"] == "5"
+        assert lib_track["destination"] == "library"
+        assert lib_track["in_dj_software"] == "yes"
+        assert lib_track["date_added"] == "2025-12-15"
 
-        # Second should be parsed from filename (no library match)
-        parsed = [t for t in data if t["track_id"] == "tid-bbb-222"][0]
-        assert parsed["destination"] == "archive"
-        assert parsed["in_dj_software"] == "no"
-        # No " - " separator in filename → title gets the whole name
-        assert parsed["title"] == "Unknown"
+        # Archive track
+        arch_track = [t for t in data if t["track_id"] == "tid-bbb-222"][0]
+        assert arch_track["destination"] == "archive"
+        assert arch_track["in_dj_software"] == "yes"  # has external_source=traktor
     finally:
         srv._REPO = old_repo
 
 
-def test_tracks_processed_deduplicates(client, tmp_path):
-    """When same track_id appears in multiple move logs, last one wins."""
+def test_tracks_processed_no_duplicates(client, tmp_path):
+    """Library.csv has unique track_ids, so processed should have no dupes."""
     from djlib.review import server as srv
-
-    logs_dir = tmp_path / "LOGS"
-    logs_dir.mkdir()
-
-    # Earlier log
-    (logs_dir / "moves-20260101-100000.csv").write_text(
-        "src,dest,track_id\n"
-        "/old/src.mp3,/Music Library/Old/path.mp3,tid-dup-001\n"
-    )
-    # Later log (should win)
-    (logs_dir / "moves-20260201-100000.csv").write_text(
-        "src,dest,track_id\n"
-        "/new/src.mp3,/Music Library/New/path.mp3,tid-dup-001\n"
-    )
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     (data_dir / "library.csv").write_text(
-        "track_id,old_full_path,artist,title,bpm,key,rating,play_count\n"
+        "external_source,track_id,old_full_path,artist,title,bpm,key,rating,play_count\n"
+        "rekordbox,tid-001,/Users/test/Music Library/A/track.mp3,Artist A,Track A,128,5A,3,2\n"
+        "traktor,tid-002,/Users/test/Music Library/B/track.mp3,Artist B,Track B,130,7B,0,0\n"
     )
 
     old_repo = srv._REPO
@@ -225,22 +207,48 @@ def test_tracks_processed_deduplicates(client, tmp_path):
         srv._REPO = tmp_path
         resp = client.get("/api/tracks?source=processed")
         data = json.loads(resp.data)
-        assert len(data) == 1
-        assert "/Music Library/New/path.mp3" in data[0]["file_path"]
-        assert data[0]["move_date"] == "2026-02-01"
+        assert len(data) == 2
+        tids = [t["track_id"] for t in data]
+        assert len(tids) == len(set(tids))  # no duplicates
     finally:
         srv._REPO = old_repo
 
 
-def test_tracks_processed_empty_logs_dir(client, tmp_path):
-    """Empty LOGS directory returns empty list."""
+def test_tracks_processed_rejected_and_mixes(client, tmp_path):
+    """Tracks in Music Rejected and Music Mixes are also processed."""
     from djlib.review import server as srv
 
-    logs_dir = tmp_path / "LOGS"
-    logs_dir.mkdir()
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    (data_dir / "library.csv").write_text("track_id,artist,title\n")
+    (data_dir / "library.csv").write_text(
+        "external_source,track_id,old_full_path,artist,title,bpm,key,rating,play_count\n"
+        "rekordbox,tid-rej,/Users/test/Music Rejected/bad.mp3,Bad,Track,120,1A,0,0\n"
+        "traktor,tid-mix,/Users/test/Music Library/MIXES/set.mp3,DJ,Mix Set,125,,0,0\n"
+    )
+
+    old_repo = srv._REPO
+    try:
+        srv._REPO = tmp_path
+        resp = client.get("/api/tracks?source=processed")
+        data = json.loads(resp.data)
+        assert len(data) == 2
+        dests = {t["track_id"]: t["destination"] for t in data}
+        assert dests["tid-rej"] == "rejected"
+        # Music Library/MIXES → "library" since "Music Library" matches first
+        assert dests["tid-mix"] == "library"
+    finally:
+        srv._REPO = old_repo
+
+
+def test_tracks_processed_empty_library(client, tmp_path):
+    """Empty library.csv returns empty list."""
+    from djlib.review import server as srv
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "library.csv").write_text(
+        "external_source,track_id,old_full_path,artist,title\n"
+    )
 
     old_repo = srv._REPO
     try:
@@ -251,3 +259,4 @@ def test_tracks_processed_empty_logs_dir(client, tmp_path):
         assert data == []
     finally:
         srv._REPO = old_repo
+

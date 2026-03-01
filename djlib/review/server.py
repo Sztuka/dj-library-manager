@@ -58,123 +58,63 @@ def _load_library_csv() -> List[Dict[str, str]]:
 
 
 def _load_processed_tracks() -> List[Dict[str, str]]:
-    """Load processed tracks from LOGS/moves-*.csv, enriched with library.csv.
+    """Load processed tracks from library.csv filtered by destination folders.
 
-    Each move log has columns: src, dest, track_id.  We deduplicate by
-    track_id (last move wins), classify destination from the path, then
-    cross-reference with library.csv by track_id and by path to pull
-    metadata (artist, title, bpm, key, rating, play_count, etc.).
+    Tracks are considered "processed" if their old_full_path is in one of the
+    workflow output folders: Music Library, Music Rejected, Music Archive, or
+    Music Mixes.  This is the authoritative source — library.csv is regenerated
+    by sync-dj-libraries from the actual Rekordbox/Traktor databases, so it
+    reflects reality (no duplicates, correct metadata).
+
+    Move logs (LOGS/moves-*.csv) are historical artifacts with known issues
+    (duplicates, stale entries) and are NOT used here.
     """
-    logs_dir = _REPO / "LOGS"
-    if not logs_dir.exists():
-        return []
+    _DEST_PATTERNS = [
+        ("library", "Music Library"),
+        ("rejected", "Music Rejected"),
+        ("archive", "Music Archive"),
+        ("mixes", "Music Mixes"),
+    ]
 
-    # 1. Gather moves (sorted chronologically → last write wins)
-    move_data: Dict[str, Dict[str, str]] = {}  # track_id → info
-    _date_re = re.compile(r"moves-(\d{8})-(\d{6})")
-    for f in sorted(logs_dir.glob("moves-*.csv")):
-        m = _date_re.search(f.stem)
-        date_str = m.group(1) if m else ""
-        time_str = m.group(2) if m else ""
-        with open(f, newline="", encoding="utf-8") as fh:
-            reader = csv.reader(fh)
-            next(reader, None)  # skip header
-            for row in reader:
-                if row and len(row) >= 3:
-                    tid = row[-1].strip()
-                    if tid:
-                        move_data[tid] = {
-                            "src": row[0].strip(),
-                            "dest": row[1].strip(),
-                            "move_date": date_str,
-                            "move_time": time_str,
-                        }
-
-    if not move_data:
-        return []
-
-    # 2. Build library lookup (by track_id and by normalised path)
     lib_rows = _load_library_csv()
-    lib_by_tid: Dict[str, Dict[str, str]] = {}
-    lib_by_path: Dict[str, Dict[str, str]] = {}
-    for row in lib_rows:
-        tid = row.get("track_id", "").strip()
-        path = row.get("old_full_path", "").strip()
-        if tid:
-            lib_by_tid[tid] = row
-        if path:
-            lib_by_path[os.path.normpath(path)] = row
+    if not lib_rows:
+        return []
 
-    # 3. Build processed list with enrichment
     result: List[Dict[str, str]] = []
-    for tid, info in move_data.items():
-        dest = info["dest"]
+    for row in lib_rows:
+        path = row.get("old_full_path", "")
+        if not path:
+            continue
 
-        # Classify destination
-        if "Music Library" in dest:
-            dest_type = "library"
-        elif "Music Archive" in dest:
-            dest_type = "archive"
-        elif "Music Rejected" in dest:
-            dest_type = "rejected"
-        elif "Music Mixes" in dest:
-            dest_type = "mixes"
-        else:
-            dest_type = "other"
+        # Classify destination from path
+        dest_type = ""
+        for dtype, pattern in _DEST_PATTERNS:
+            if pattern in path:
+                dest_type = dtype
+                break
 
-        # Cross-reference: try track_id first, then path
-        lib_row = lib_by_tid.get(tid)
-        if not lib_row:
-            norm_dest = os.path.normpath(dest)
-            lib_row = lib_by_path.get(norm_dest)
+        if not dest_type:
+            continue  # Not a processed track (e.g. ~/Music/ from DJ imports)
 
-        # Format move_date as YYYY-MM-DD
-        d = info["move_date"]
-        move_date_fmt = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d
-
+        ext_src = row.get("external_source", "").strip()
         rec: Dict[str, str] = {
-            "track_id": tid,
-            "move_date": move_date_fmt,
+            "track_id": row.get("track_id", ""),
+            "file_path": path,  # for audio playback
+            "artist": row.get("artist", ""),
+            "title": row.get("title", ""),
+            "bpm": row.get("bpm", ""),
+            "key": row.get("key", ""),
+            "rating": row.get("rating", ""),
+            "play_count": row.get("play_count", ""),
+            "external_source": ext_src,
+            "date_added": row.get("date_added", ""),
             "destination": dest_type,
-            "original_path": info["src"],
-            "file_path": dest,  # for audio playback
+            "in_dj_software": "yes" if ext_src else "no",
         }
-
-        if lib_row:
-            # Enrich from library
-            rec["artist"] = lib_row.get("artist", "")
-            rec["title"] = lib_row.get("title", "")
-            rec["bpm"] = lib_row.get("bpm", "")
-            rec["key"] = lib_row.get("key", "")
-            rec["rating"] = lib_row.get("rating", "")
-            rec["play_count"] = lib_row.get("play_count", "")
-            rec["external_source"] = lib_row.get("external_source", "")
-            rec["date_added"] = lib_row.get("date_added", "")
-            rec["in_dj_software"] = "yes"
-        else:
-            # Parse artist / title from filename: "Artist - Title [Key BPM].ext"
-            fname = os.path.splitext(os.path.basename(dest))[0]
-            # Remove trailing [Key BPM] bracket
-            fname_clean = re.sub(r"\s*\[.*\]\s*$", "", fname)
-            if " - " in fname_clean:
-                parts = fname_clean.split(" - ", 1)
-                rec["artist"] = parts[0].strip()
-                rec["title"] = parts[1].strip()
-            else:
-                rec["artist"] = ""
-                rec["title"] = fname_clean.strip()
-            rec["bpm"] = ""
-            rec["key"] = ""
-            rec["rating"] = ""
-            rec["play_count"] = ""
-            rec["external_source"] = ""
-            rec["date_added"] = ""
-            rec["in_dj_software"] = "no"
-
         result.append(rec)
 
-    # Sort by move_date descending (newest first)
-    result.sort(key=lambda r: r.get("move_date", ""), reverse=True)
+    # Sort by date_added descending (newest first), then artist
+    result.sort(key=lambda r: (r.get("date_added", "") or "", r.get("artist", "")), reverse=True)
     return result
 
 
