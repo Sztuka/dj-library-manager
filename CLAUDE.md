@@ -92,7 +92,7 @@ config.local.yml    # Local overrides (gitignored)
 - **track_id:** UUID5 hash (stable, derived from file content). Primary key across all CSVs
 - **library.csv:** master database, ~30 fields. Overwritten entirely by `sync-dj-libraries`
 - **unsorted.csv:** staging area. Rows removed by `apply` command after processing
-- **LOGS/moves-*.csv:** append-only history (src, dest, track_id). Source of truth for processed tracks
+- **LOGS/moves-\*.csv:** append-only history (src, dest, track_id). Source of truth for processed tracks
 - **genres.yml:** canonical genre definitions with synonyms, categories, boost values
 
 ## Review UI Architecture
