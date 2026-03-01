@@ -372,11 +372,46 @@ def _build_genre_prompt(ctx: Dict[str, str], genre_labels: List[str]) -> str:
 
     track_info = "\n".join(parts)
 
+    # Detect remix/edit for targeted instructions
+    version_str = ctx.get("version", "")
+    is_remix = bool(re.search(
+        r'\b(?:remix|edit|bootleg|rework|refix|mashup|flip|rework)\b',
+        version_str, re.IGNORECASE,
+    ))
+
+    remix_instruction = ""
+    if is_remix:
+        remix_instruction = (
+            "\n\nCRITICAL — REMIX/EDIT CLASSIFICATION RULE:\n"
+            "This track is a REMIX or EDIT. You MUST classify it by the REMIX STYLE, "
+            "NOT by the original track's genre. The remixer transforms the track into a new genre.\n"
+            "Example: a Hip-Hop track remixed at 124 BPM with a four-on-the-floor kick = Tech House, "
+            "NOT Hip-Hop. A Pop ballad remixed at 130 BPM with driving bassline = House, NOT Pop.\n"
+            "The version/remix field and BPM are the strongest signals for remixes. "
+            "The original artist's genre is almost always WRONG for the remix."
+        )
+
+    bpm_guide = (
+        "\n\nBPM genre ranges (approximate, use as strong signal):\n"
+        "70-100: Hip-Hop, R&B, Reggaeton, Dancehall\n"
+        "100-115: Broken Beat, UK Garage, Afrobeats\n"
+        "115-122: Deep House, Soulful House\n"
+        "120-128: House, Tech House, Afro House, Jackin House\n"
+        "126-132: Melodic House & Techno, Progressive House\n"
+        "130-140: Techno, Hard Techno, Trance, Hard Dance\n"
+        "140-150: Psytrance\n"
+        "150-180: Jungle, Drum & Bass\n"
+        "If BPM is available, it should STRONGLY influence your genre choice."
+    )
+
     return (
-        f"You are a DJ music genre classifier. Classify this track into exactly ONE genre "
-        f"from the following list:\n{genre_list}\n\n"
-        f"Track information:\n{track_info}\n\n"
-        f"Consider BPM range, artist/remixer scene, source material, and any available genre tags. "
+        f"You are a DJ music genre classifier for a DJ's track library. "
+        f"Classify this track into exactly ONE genre from the following list:\n{genre_list}\n\n"
+        f"Track information:\n{track_info}"
+        f"{remix_instruction}"
+        f"{bpm_guide}\n\n"
+        f"Consider BPM range (strongest signal), remixer scene/style, "
+        f"source folder name (often hints at genre), and any available genre tags. "
         f"If the existing tags are artist names or nonsense, ignore them.\n\n"
         f"Respond ONLY with valid JSON (no markdown, no code fences):\n"
         f'{{"genre": "<exact genre from list>", "confidence": <0.0-1.0>, "reasoning": "<1-2 sentences>"}}'
