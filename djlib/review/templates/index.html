@@ -125,6 +125,8 @@
       <span class="sep">·</span>
       <kbd>G</kbd> Genre suggest
       <span class="sep">·</span>
+      <kbd>E</kbd> Re-enrich
+      <span class="sep">·</span>
       <kbd>N</kbd> Next undecided
       <span class="sep">·</span>
       <kbd>D</kbd> Done
@@ -137,8 +139,9 @@
     </div>
 
     <!-- ── Context menu ───────────────────────────────────────── -->
-    <div id="context-menu" class="context-menu hidden">
-      <button data-action="search-google">🔍 Search Google</button>
+    <div id="context-menu" class="context-menu hidden">      <button data-action="enrich-track" id="ctx-enrich">🔄 Re-enrich (APIs)</button>
+      <button data-action="swap-artist-title" id="ctx-swap">🔀 Swap artist ↔ title</button>
+      <div class="context-sep"></div>      <button data-action="search-google">🔍 Search Google</button>
       <button data-action="search-beatport">🔍 Search Beatport</button>
       <button data-action="search-soundcloud">🔍 Search SoundCloud</button>
       <div class="context-sep"></div>
@@ -158,7 +161,16 @@
       <button class="ai-banner-accept" id="ai-banner-accept" title="Accept AI suggestion">✓ Accept</button>
       <button class="ai-banner-dismiss" id="ai-banner-dismiss" title="Dismiss">✕</button>
     </div>
-
+    <!-- ── Enrich result banner ─────────────────────────────────────── -->
+    <div id="enrich-banner" class="enrich-banner hidden">
+      <span class="enrich-banner-icon">🔄</span>
+      <span class="enrich-banner-genre" id="enrich-banner-genre"></span>
+      <span class="enrich-banner-confidence" id="enrich-banner-confidence"></span>
+      <span class="enrich-banner-sources" id="enrich-banner-sources"></span>
+      <button class="enrich-banner-accept" id="enrich-banner-accept" title="Accept genre">✓ Accept</button>
+      <button class="enrich-banner-swap" id="enrich-banner-swap" title="Swap artist ↔ title" style="display:none">🔀 Swap</button>
+      <button class="enrich-banner-dismiss" id="enrich-banner-dismiss" title="Dismiss">✕</button>
+    </div>
     <!-- ── Toast notification ─────────────────────────────────── -->
     <div id="toast" class="toast hidden"></div>
 

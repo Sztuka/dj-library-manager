@@ -395,3 +395,277 @@ def test_suggest_genre_openai_error(client):
         data = json.loads(resp.data)
         assert "failed" in data["error"]
 
+
+# ── Enrich Track API ─────────────────────────────────────────────────────────
+
+def _make_unsorted_csv(tmp_dir: Path, rows: List[Dict[str, str]]) -> Path:
+    """Create a test unsorted.csv with given rows."""
+    csv_path = tmp_dir / "unsorted.csv"
+    if not rows:
+        csv_path.write_text("")
+        return csv_path
+    fieldnames = list(rows[0].keys())
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return csv_path
+
+
+def test_enrich_track_no_body(client):
+    """Returns 400 when no JSON body."""
+    resp = client.post("/api/enrich-track")
+    assert resp.status_code in (400, 415)
+
+
+def test_enrich_track_missing_track_id(client):
+    """Returns 400 when track_id missing."""
+    resp = client.post("/api/enrich-track", json={})
+    assert resp.status_code == 400
+
+
+def test_enrich_track_not_found(client):
+    """Returns 404 when track not in unsorted.csv."""
+    resp = client.post("/api/enrich-track", json={"track_id": "nonexistent-123"})
+    assert resp.status_code == 404
+
+
+def test_enrich_track_success(client, tmp_path):
+    """Successful enrichment returns genre data from resolver."""
+    from djlib.review import server as srv
+    from djlib.metadata.genre_resolver import GenreResolution, SourceScore
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "enrich-test-1",
+        "file_path": "/tmp/test/Artist - Title.wav",
+        "artist": "Natasha Bedingfield",
+        "title": "Unwritten",
+        "version_info": "Talon Afrohouse Remix",
+        "duration_suggest": "5:30",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "genre_suggest": "",
+    }])
+
+    mock_result = GenreResolution(
+        main="Afro House",
+        subs=["Deep House"],
+        confidence=0.85,
+        breakdown=[
+            SourceScore(source="beatport", weight=30.0, tags={"Afro House": 40.0}),
+            SourceScore(source="lastfm", weight=15.0, tags={"afro house": 15.0, "house": 10.0}),
+        ],
+    )
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch.object(srv, "_resolve_genres", return_value=mock_result):
+        resp = client.post("/api/enrich-track", json={"track_id": "enrich-test-1"})
+
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["genre"] == "Afro House"
+        assert data["genre_full"] == "Afro House, Deep House"
+        assert data["confidence"] == 0.85
+        assert "beatport" in data["sources"]
+
+
+def test_enrich_track_no_results(client, tmp_path):
+    """Returns null genre when resolver finds nothing."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "enrich-empty-1",
+        "file_path": "/tmp/test/Unknown - Track.wav",
+        "artist": "Unknown",
+        "title": "Track",
+        "version_info": "",
+        "duration_suggest": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "genre_suggest": "",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch.object(srv, "_resolve_genres", return_value=None):
+        resp = client.post("/api/enrich-track", json={"track_id": "enrich-empty-1"})
+
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["genre"] is None
+    assert data["confidence"] == 0
+
+
+def test_enrich_track_empty_artist_title(client, tmp_path):
+    """Returns 400 when both artist and title are empty."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "enrich-empty-2",
+        "file_path": "/tmp/test/file.wav",
+        "artist": "",
+        "title": "",
+        "version_info": "",
+        "duration_suggest": "",
+        "tag_genre_original": "",
+        "artist_suggest": "Old Suggest",
+        "title_suggest": "Old Suggest",
+        "genre_suggest": "",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path):
+        resp = client.post("/api/enrich-track", json={"track_id": "enrich-empty-2"})
+
+    assert resp.status_code == 400
+    data = json.loads(resp.data)
+    assert "No artist or title" in data["error"]
+
+
+def test_enrich_uses_user_edited_fields(client, tmp_path):
+    """Enrichment passes user-edited artist/title, not artist_suggest."""
+    from djlib.review import server as srv
+    from djlib.metadata.genre_resolver import GenreResolution, SourceScore
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "enrich-edit-1",
+        "file_path": "/tmp/test/Wrong - Order.wav",
+        "artist": "Natasha Bedingfield",   # User edited this
+        "title": "Unwritten",              # User edited this
+        "version_info": "Talon Remix",
+        "duration_suggest": "5:00",
+        "tag_genre_original": "",
+        "artist_suggest": "Unwritten",     # STALE from bad parse
+        "title_suggest": "Natasha Bedingfield",  # STALE from bad parse
+        "genre_suggest": "",
+    }])
+
+    mock_result = GenreResolution(
+        main="Afro House", subs=[], confidence=0.9,
+        breakdown=[SourceScore(source="beatport", weight=30.0, tags={"Afro House": 40.0})],
+    )
+    captured_args = {}
+
+    def fake_resolve(artist, title, version="", **kwargs):
+        captured_args["artist"] = artist
+        captured_args["title"] = title
+        captured_args["version"] = version
+        return mock_result
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch.object(srv, "_resolve_genres", side_effect=fake_resolve):
+        resp = client.post("/api/enrich-track", json={"track_id": "enrich-edit-1"})
+
+    assert resp.status_code == 200
+    # Verify it used the user-edited values, NOT the stale suggest values
+    assert captured_args["artist"] == "Natasha Bedingfield"
+    assert captured_args["title"] == "Unwritten"
+    assert captured_args["version"] == "Talon Remix"
+
+
+# ── Swap Artist/Title API ────────────────────────────────────────────────────
+
+def test_swap_no_body(client):
+    """Returns 400 when no JSON body."""
+    resp = client.post("/api/swap-artist-title")
+    assert resp.status_code in (400, 415)
+
+
+def test_swap_missing_track_id(client):
+    """Returns 400 when track_id missing."""
+    resp = client.post("/api/swap-artist-title", json={})
+    assert resp.status_code == 400
+
+
+def test_swap_track_not_found(client):
+    """Returns 404 when track not found."""
+    resp = client.post("/api/swap-artist-title", json={"track_id": "nonexistent"})
+    assert resp.status_code == 404
+
+
+def test_swap_success(client, tmp_path):
+    """Swaps artist and title in CSV and returns new values."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "swap-test-1",
+        "file_path": "/tmp/test/file.wav",
+        "artist": "Unwritten (Talon Remix)",
+        "title": "Natasha Bedingfield",
+        "version_info": "",
+        "artist_suggest": "Unwritten (Talon Remix)",
+        "title_suggest": "Natasha Bedingfield",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path):
+        resp = client.post("/api/swap-artist-title", json={"track_id": "swap-test-1"})
+
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["ok"] is True
+    assert data["artist"] == "Natasha Bedingfield"
+    assert data["title"] == "Unwritten (Talon Remix)"
+
+    # Verify CSV was updated
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert rows[0]["artist"] == "Natasha Bedingfield"
+    assert rows[0]["title"] == "Unwritten (Talon Remix)"
+    # Suggest fields also swapped
+    assert rows[0]["artist_suggest"] == "Natasha Bedingfield"
+    assert rows[0]["title_suggest"] == "Unwritten (Talon Remix)"
+
+
+# ── Swap Detection ───────────────────────────────────────────────────────────
+
+def test_detect_swap_positive():
+    """Detects swapped artist/title when filename parsing differs from current fields."""
+    from djlib.review.server import _detect_artist_title_swap
+
+    # Filename: "Natasha Bedingfield - Unwritten.wav"
+    # But current fields have them swapped
+    row = {
+        "file_path": "/tmp/Music/Natasha Bedingfield - Unwritten.wav",
+        "artist": "Unwritten",             # This looks like a title
+        "title": "Natasha Bedingfield",     # This looks like an artist
+    }
+    result = _detect_artist_title_swap(row)
+    assert result is not None
+    assert result["swapped"] is True
+    assert result["suggested_artist"] == "Natasha Bedingfield"
+    assert result["suggested_title"] == "Unwritten"
+
+
+def test_detect_swap_negative():
+    """No swap suggestion when current fields match filename."""
+    from djlib.review.server import _detect_artist_title_swap
+
+    row = {
+        "file_path": "/tmp/Music/Natasha Bedingfield - Unwritten.wav",
+        "artist": "Natasha Bedingfield",
+        "title": "Unwritten",
+    }
+    result = _detect_artist_title_swap(row)
+    assert result is None
+
+
+def test_detect_swap_no_file_path():
+    """Returns None when no file path."""
+    from djlib.review.server import _detect_artist_title_swap
+
+    result = _detect_artist_title_swap({"artist": "A", "title": "B"})
+    assert result is None
+
+
+def test_detect_swap_empty_artist_title():
+    """Returns None when artist or title is empty."""
+    from djlib.review.server import _detect_artist_title_swap
+
+    result = _detect_artist_title_swap({
+        "file_path": "/tmp/test.wav",
+        "artist": "",
+        "title": "Something",
+    })
+    assert result is None
+
