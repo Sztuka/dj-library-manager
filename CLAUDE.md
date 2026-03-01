@@ -71,6 +71,7 @@ config.local.yml    # Local overrides (gitignored)
 
 ## Git Workflow
 
+- **NEVER commit directly to `main`** — always create a feature/fix branch first, work there, then merge to main
 - **Branch strategy:** feature branches from `main` (e.g. `feature/review-ui`, `fix/genre-resolver-remix-scoring`)
 - **Commit format:** Conventional Commits — `feat(scope): description`, `fix(scope): description`, `refactor:`, `chore:`
 - **Commit body:** detailed, explain WHY not just WHAT. Use bullet points for multi-change commits

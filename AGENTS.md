@@ -102,6 +102,12 @@ When implementing non-trivial features, discuss the design through six perspecti
 - Test data should be realistic — use actual CSV field names and formats
 - Run `pytest -q` before every commit. Zero failures required
 
+## Git Safety
+
+- **NEVER commit directly to `main`** — always create a feature/fix branch first (`git checkout -b feature/<name>`), work there, then merge to main after review
+- This is a hard rule. No exceptions, even for "small" changes
+- Branch naming: `feature/<name>`, `fix/<name>`, `refactor/<name>`
+
 ## File Naming
 
 - Python modules: `snake_case.py`
