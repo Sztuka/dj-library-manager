@@ -88,11 +88,20 @@
   const aiBannerAccept = document.getElementById("ai-banner-accept");
   const aiBannerDismiss = document.getElementById("ai-banner-dismiss");
   const ctxAiSuggest = document.getElementById("ctx-ai-suggest");
+  const enrichBanner = document.getElementById("enrich-banner");
+  const enrichBannerGenre = document.getElementById("enrich-banner-genre");
+  const enrichBannerConf = document.getElementById("enrich-banner-confidence");
+  const enrichBannerSources = document.getElementById("enrich-banner-sources");
+  const enrichBannerAccept = document.getElementById("enrich-banner-accept");
+  const enrichBannerDismiss = document.getElementById("enrich-banner-dismiss");
+  const enrichBannerSwap = document.getElementById("enrich-banner-swap");
 
   // AI availability (checked once on load)
   let aiAvailable = false;
   let aiPending = false;  // prevents double-clicks
   let aiBannerTrack = null;  // track the banner is showing for
+  let enrichPending = false;
+  let enrichBannerTrack = null;
 
   // -- Column definitions per source --------------------------
   const COLUMNS = {
@@ -1021,18 +1030,22 @@
 
     const path = audioPath(track);
     const hasPath = !!path;
+    const isUnsorted = currentSource === "unsorted";
 
-    // Enable/disable path-dependent actions
+    // Enable/disable actions based on context
     contextMenu.querySelectorAll("button").forEach(function (btn) {
       const action = btn.dataset.action;
       if (action === "show-finder" || action === "copy-filename") {
         btn.disabled = !hasPath;
       }
+      if (action === "enrich-track" || action === "swap-artist-title") {
+        btn.disabled = !isUnsorted;
+      }
     });
 
     // Position menu
-    const menuW = 220;
-    const menuH = 230;
+    const menuW = 240;
+    const menuH = 330;
     let x = e.clientX;
     let y = e.clientY;
     if (x + menuW > window.innerWidth) x = window.innerWidth - menuW - 8;
@@ -1130,6 +1143,12 @@
       case "ai-suggest-genre":
         requestAiGenreSuggest(contextTrack);
         break;
+      case "enrich-track":
+        requestEnrichTrack(contextTrack);
+        break;
+      case "swap-artist-title":
+        requestSwapArtistTitle(contextTrack);
+        break;
     }
     hideContextMenu();
   });
@@ -1221,6 +1240,158 @@
     aiBanner.classList.add("hidden");
     aiBanner.classList.remove("ai-loading");
     aiBannerTrack = null;
+  }
+
+  // -- Re-enrich (context menu) ---------------------------------
+
+  function requestEnrichTrack(track) {
+    if (!track || enrichPending) return;
+    if (currentSource !== "unsorted") {
+      showToast("Enrich only works on Unsorted tab", "");
+      return;
+    }
+
+    enrichPending = true;
+    enrichBannerTrack = track;
+
+    // Show loading state
+    enrichBanner.classList.remove("hidden");
+    enrichBanner.classList.add("enrich-loading");
+    enrichBannerGenre.textContent = "Enriching…";
+    enrichBannerConf.textContent = "";
+    enrichBannerSources.textContent = "";
+    enrichBannerAccept.style.display = "none";
+    enrichBannerSwap.style.display = "none";
+    enrichBannerDismiss.style.display = "inline-block";
+
+    fetch("/api/enrich-track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId(track) }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        enrichPending = false;
+        enrichBanner.classList.remove("enrich-loading");
+
+        if (data.error) {
+          showToast("Enrich error: " + data.error, "");
+          hideEnrichBanner();
+          return;
+        }
+
+        if (!data.genre) {
+          enrichBannerGenre.textContent = "No results found";
+          enrichBannerConf.textContent = "";
+          enrichBannerSources.textContent = "Try editing artist/title and re-enriching";
+        } else {
+          enrichBannerGenre.textContent = data.genre_full || data.genre;
+          var conf = data.confidence ? Math.round(data.confidence * 100) + "%" : "";
+          enrichBannerConf.textContent = conf;
+          // Show source details
+          var srcParts = [];
+          if (data.source_details) {
+            for (var src in data.source_details) {
+              srcParts.push(src + ": " + data.source_details[src]);
+            }
+          }
+          enrichBannerSources.textContent = srcParts.join(" | ");
+          enrichBannerSources.title = srcParts.join("\n");
+          enrichBannerAccept.style.display = "inline-block";
+          enrichBannerAccept.dataset.genre = data.genre_full || data.genre;
+        }
+
+        // Show swap suggestion if detected
+        if (data.swap_suggestion && data.swap_suggestion.swapped) {
+          enrichBannerSwap.style.display = "inline-block";
+          enrichBannerSwap.title = data.swap_suggestion.reason || "Artist and title may be swapped";
+        }
+      })
+      .catch(function (err) {
+        enrichPending = false;
+        enrichBanner.classList.remove("enrich-loading");
+        showToast("Enrich request failed", "");
+        hideEnrichBanner();
+      });
+  }
+
+  function hideEnrichBanner() {
+    enrichBanner.classList.add("hidden");
+    enrichBanner.classList.remove("enrich-loading");
+    enrichBannerTrack = null;
+  }
+
+  // Accept enrich result
+  enrichBannerAccept.addEventListener("click", function () {
+    var genre = enrichBannerAccept.dataset.genre;
+    if (!genre || !enrichBannerTrack) return;
+
+    enrichBannerTrack.genre = genre;
+    saveTrackField(enrichBannerTrack, "genre", genre);
+    showToast("Genre: " + genre, "");
+
+    // Update dropdown in table if visible
+    if (currentSource === "unsorted") {
+      var idx = filteredTracks.indexOf(enrichBannerTrack);
+      if (idx >= 0) {
+        var cols = COLUMNS.unsorted;
+        var genreColIdx = cols.findIndex(function (c) { return c.key === "genre"; });
+        if (genreColIdx >= 0 && tableBody.children[idx]) {
+          var cell = tableBody.children[idx].children[genreColIdx];
+          var sel = cell.querySelector("select");
+          if (sel) sel.value = genre;
+        }
+      }
+    }
+
+    hideEnrichBanner();
+  });
+
+  // Dismiss enrich banner
+  enrichBannerDismiss.addEventListener("click", function () {
+    hideEnrichBanner();
+  });
+
+  // Swap button in enrich banner
+  enrichBannerSwap.addEventListener("click", function () {
+    if (!enrichBannerTrack) return;
+    requestSwapArtistTitle(enrichBannerTrack);
+    hideEnrichBanner();
+  });
+
+  function requestSwapArtistTitle(track) {
+    if (!track) return;
+    if (currentSource !== "unsorted") {
+      showToast("Swap only works on Unsorted tab", "");
+      return;
+    }
+
+    fetch("/api/swap-artist-title", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId(track) }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          showToast("Swap error: " + data.error, "");
+          return;
+        }
+
+        // Update in-memory track data
+        track.artist = data.artist;
+        track.title = data.title;
+
+        // Re-render table to reflect swap
+        renderTable();
+        var idx = filteredTracks.indexOf(track);
+        if (idx >= 0) selectRow(idx);
+
+        showToast("\u21c4 Swapped: " + data.artist + " \u2014 " + data.title, "");
+      })
+      .catch(function () {
+        showToast("Swap request failed", "");
+      });
   }
 
   // Accept AI suggestion
@@ -1723,6 +1894,15 @@
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
           applyGenreSuggestion();
+        }
+        break;
+
+      case "KeyE":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+            requestEnrichTrack(filteredTracks[currentIndex]);
+          }
         }
         break;
 

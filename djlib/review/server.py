@@ -26,6 +26,7 @@ import yaml
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from djlib.config import UNSORTED_CSV, get_openai_api_key
+from djlib.filename import parse_from_filename
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
 
 # ── Flask app ────────────────────────────────────────────────────────────────
@@ -424,6 +425,223 @@ def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
             result["warning"] = f"AI suggested '{result.get('genre')}' which is not in genres.yml"
 
     return result
+
+
+# ── Re-enrich (context menu) ─────────────────────────────────────────────────
+
+_enrich_lock = threading.Lock()
+
+
+def _resolve_genres(artist: str, title: str, **kwargs):
+    """Lazy wrapper for genre_resolver.resolve (avoids heavy import at startup)."""
+    from djlib.metadata.genre_resolver import resolve
+    return resolve(artist, title, **kwargs)
+
+
+def _detect_artist_title_swap(row: Dict[str, str]) -> Optional[Dict[str, str]]:
+    """Detect if artist and title might be swapped based on filename parsing.
+
+    Returns a dict with swap suggestion if detected, None otherwise.
+    """
+    file_path = row.get("file_path", "")
+    if not file_path:
+        return None
+
+    p = Path(file_path).expanduser()
+    if not p.suffix:
+        return None
+
+    fn_artist, fn_title, _fn_version = parse_from_filename(p)
+    if not fn_artist or not fn_title:
+        return None
+
+    current_artist = (row.get("artist") or "").strip().lower()
+    current_title = (row.get("title") or "").strip().lower()
+    fn_artist_low = fn_artist.strip().lower()
+    fn_title_low = fn_title.strip().lower()
+
+    if not current_artist or not current_title:
+        return None
+
+    # Check if current values are swapped vs filename parsing
+    # i.e., current_artist matches fn_title AND current_title matches fn_artist
+    artist_matches_fn_title = (
+        current_artist == fn_title_low
+        or fn_title_low.startswith(current_artist)
+        or current_artist.startswith(fn_title_low)
+    )
+    title_matches_fn_artist = (
+        current_title == fn_artist_low
+        or fn_artist_low.startswith(current_title)
+        or current_title.startswith(fn_artist_low)
+    )
+
+    if artist_matches_fn_title and title_matches_fn_artist:
+        return {
+            "swapped": True,
+            "suggested_artist": row.get("title", "").strip(),
+            "suggested_title": row.get("artist", "").strip(),
+            "reason": f"Filename suggests: {fn_artist} — {fn_title}",
+        }
+
+    return None
+
+
+@app.route("/api/enrich-track", methods=["POST"])
+def api_enrich_track():
+    """Re-enrich a single track using user-edited artist/title values.
+
+    Uses genre resolver (Beatport, Last.fm, SoundCloud, MusicBrainz) to find
+    genre based on the CURRENT artist/title in the CSV (which may have been
+    edited by the user in the UI).
+
+    Request body (JSON):
+        { "track_id": "..." }
+
+    Returns:
+        { "genre": "Afro House", "genre_full": "Afro House, Deep House",
+          "confidence": 0.85, "sources": ["beatport", "lastfm"],
+          "year": "2024", "album": "...",
+          "swap_suggestion": { "swapped": true, ... } | null }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    tid = data.get("track_id", "")
+    if not tid:
+        return jsonify({"error": "Missing track_id"}), 400
+
+    # Load current row from CSV (with user edits)
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(UNSORTED_CSV)
+
+    row = None
+    for r in rows:
+        if r.get("track_id") == tid:
+            row = r
+            break
+
+    if not row:
+        return jsonify({"error": f"Track not found: {tid}"}), 404
+
+    # Use user-edited values (NOT artist_suggest which may be stale)
+    artist = (row.get("artist") or "").strip()
+    title = (row.get("title") or "").strip()
+    version = (row.get("version_info") or "").strip()
+
+    if not artist and not title:
+        return jsonify({"error": "No artist or title to search for"}), 400
+
+    # Check for swap suggestion
+    swap_suggestion = _detect_artist_title_swap(row)
+
+    # Parse duration from CSV
+    dur_s: Optional[int] = None
+    dur_str = (row.get("duration_suggest") or "").strip()
+    if dur_str:
+        try:
+            parts = dur_str.split(":")
+            if len(parts) == 2:
+                dur_s = int(parts[0]) * 60 + int(parts[1])
+        except Exception:
+            pass
+
+    # Run genre resolver in a thread-safe way
+    if not _enrich_lock.acquire(timeout=0):
+        return jsonify({"error": "Another enrichment is in progress, try again"}), 429
+
+    try:
+        tag_genre = (row.get("tag_genre_original") or "").strip()
+        _log.info("Re-enriching: %s - %s (%s)", artist, title, version)
+
+        genre_res = _resolve_genres(
+            artist, title,
+            version=version,
+            duration_s=dur_s,
+            tag_genre=tag_genre,
+        )
+    except Exception as e:
+        _log.warning("Enrich failed: %s", e)
+        return jsonify({"error": f"Enrichment failed: {e}"}), 502
+    finally:
+        _enrich_lock.release()
+
+    if not genre_res or genre_res.confidence < 0.01:
+        return jsonify({
+            "genre": None,
+            "genre_full": None,
+            "confidence": 0,
+            "sources": [],
+            "swap_suggestion": swap_suggestion,
+        })
+
+    genres = [genre_res.main] + genre_res.subs[:2]
+    genre_full = ", ".join(genres)
+    sources = list({s.source for s in genre_res.breakdown})
+
+    # Collect per-source raw tags for display
+    source_details: Dict[str, str] = {}
+    for s in genre_res.breakdown:
+        top_tags = sorted(s.tags.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        source_details[s.source] = ", ".join(t[0] for t in top_tags)
+
+    return jsonify({
+        "genre": genre_res.main,
+        "genre_full": genre_full,
+        "confidence": round(genre_res.confidence, 3),
+        "sources": sources,
+        "source_details": source_details,
+        "swap_suggestion": swap_suggestion,
+    })
+
+
+@app.route("/api/swap-artist-title", methods=["POST"])
+def api_swap_artist_title():
+    """Swap artist and title fields for a track.
+
+    Request body (JSON):
+        { "track_id": "..." }
+
+    Returns:
+        { "ok": true, "artist": "<new artist>", "title": "<new title>" }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    tid = data.get("track_id", "")
+    if not tid:
+        return jsonify({"error": "Missing track_id"}), 400
+
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(UNSORTED_CSV)
+        found = False
+        new_artist = ""
+        new_title = ""
+        for row in rows:
+            if row.get("track_id") == tid:
+                old_artist = (row.get("artist") or "").strip()
+                old_title = (row.get("title") or "").strip()
+                row["artist"] = old_title
+                row["title"] = old_artist
+                # Also swap suggest fields if they exist
+                old_as = (row.get("artist_suggest") or "").strip()
+                old_ts = (row.get("title_suggest") or "").strip()
+                if old_as or old_ts:
+                    row["artist_suggest"] = old_ts
+                    row["title_suggest"] = old_as
+                new_artist = old_title
+                new_title = old_artist
+                found = True
+                break
+
+        if not found:
+            return jsonify({"error": f"Track not found: {tid}"}), 404
+
+        write_unsorted_rows(UNSORTED_CSV, rows, [])
+
+    return jsonify({"ok": True, "artist": new_artist, "title": new_title})
 
 
 # ── Server entry point ───────────────────────────────────────────────────────
