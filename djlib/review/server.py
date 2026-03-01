@@ -49,6 +49,26 @@ _REPO = Path(__file__).resolve().parents[2]
 _CSV_LOCK = threading.Lock()
 
 
+def _static_version() -> str:
+    """Return max mtime of static files as cache-buster query string."""
+    static = _HERE / "static"
+    try:
+        ts = max(f.stat().st_mtime for f in static.iterdir() if f.is_file())
+        return str(int(ts))
+    except (ValueError, OSError):
+        return "0"
+
+
+@app.after_request
+def _no_cache_static(response: Response) -> Response:
+    """Prevent browser caching of JS/CSS during development."""
+    if request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _load_library_csv() -> List[Dict[str, str]]:
@@ -141,7 +161,7 @@ def _load_genres() -> List[str]:
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", v=_static_version())
 
 
 @app.route("/api/tracks")
@@ -427,3 +447,7 @@ def run_server(
         threading.Timer(1.0, webbrowser.open, args=[url]).start()
 
     app.run(host=host, port=port, debug=False, use_reloader=False)
+
+
+if __name__ == "__main__":
+    run_server()
