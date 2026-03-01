@@ -98,8 +98,8 @@
 
   // AI availability (checked once on load)
   let aiAvailable = false;
-  let aiPending = false;  // prevents double-clicks
-  let aiBannerTrack = null;  // track the banner is showing for
+  let aiPending = false; // prevents double-clicks
+  let aiBannerTrack = null; // track the banner is showing for
   let enrichPending = false;
   let enrichBannerTrack = null;
 
@@ -445,18 +445,22 @@
     trackCount.textContent = filteredTracks.length + " / " + allTracks.length;
     var showEmpty = filteredTracks.length === 0;
     emptyState.style.display = showEmpty ? "" : "none";
-    document.getElementById("tracks-table").style.display =
-      showEmpty ? "none" : "";
+    document.getElementById("tracks-table").style.display = showEmpty
+      ? "none"
+      : "";
     // Update empty state message based on error vs no data
     if (showEmpty) {
       var emptyP = emptyState.querySelector("p");
       var emptyHint = emptyState.querySelector(".dim");
       if (_loadError) {
-        emptyP.textContent = "\u26a0\ufe0f Connection error — server not responding";
-        emptyHint.innerHTML = "Start the server: <code>djlib review</code> or <code>python -m djlib.review.server</code>";
+        emptyP.textContent =
+          "\u26a0\ufe0f Connection error — server not responding";
+        emptyHint.innerHTML =
+          "Start the server: <code>djlib review</code> or <code>python -m djlib.review.server</code>";
       } else if (allTracks.length === 0) {
         emptyP.textContent = "No tracks found.";
-        emptyHint.innerHTML = 'Run <code>djlib scan</code> then <code>djlib enrich-online</code> to populate unsorted.csv';
+        emptyHint.innerHTML =
+          "Run <code>djlib scan</code> then <code>djlib enrich-online</code> to populate unsorted.csv";
       } else {
         emptyP.textContent = "No tracks match current filters.";
         emptyHint.textContent = "Try clearing search or filters.";
@@ -1083,11 +1087,13 @@
     const action = btn.dataset.action;
     const artist = (contextTrack.artist || "").trim();
     const title = (contextTrack.title || "").trim();
+    const version = (contextTrack.version_info || "").trim();
     const path = audioPath(contextTrack);
-    const query =
+    const baseQuery =
       artist && title
         ? artist + " - " + title
         : artist || title || getBasename(path);
+    const query = version ? baseQuery + " " + version : baseQuery;
 
     switch (action) {
       case "search-google":
@@ -1158,7 +1164,10 @@
   function requestAiGenreSuggest(track) {
     if (!track || aiPending) return;
     if (!aiAvailable) {
-      showToast("AI not configured (add openai_api_key to config.local.yml)", "");
+      showToast(
+        "AI not configured (add openai_api_key to config.local.yml)",
+        "",
+      );
       return;
     }
 
@@ -1206,7 +1215,9 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        return r.json();
+      })
       .then(function (data) {
         aiPending = false;
         aiBanner.classList.remove("ai-loading");
@@ -1218,7 +1229,9 @@
         }
 
         aiBannerGenre.textContent = data.genre || "Unknown";
-        var conf = data.confidence ? Math.round(data.confidence * 100) + "%" : "";
+        var conf = data.confidence
+          ? Math.round(data.confidence * 100) + "%"
+          : "";
         aiBannerConfidence.textContent = conf;
         aiBannerReasoning.textContent = data.reasoning || "";
         aiBannerReasoning.title = data.reasoning || "";
@@ -1269,7 +1282,9 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ track_id: trackId(track) }),
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        return r.json();
+      })
       .then(function (data) {
         enrichPending = false;
         enrichBanner.classList.remove("enrich-loading");
@@ -1283,10 +1298,13 @@
         if (!data.genre) {
           enrichBannerGenre.textContent = "No results found";
           enrichBannerConf.textContent = "";
-          enrichBannerSources.textContent = "Try editing artist/title and re-enriching";
+          enrichBannerSources.textContent =
+            "Try editing artist/title and re-enriching";
         } else {
           enrichBannerGenre.textContent = data.genre_full || data.genre;
-          var conf = data.confidence ? Math.round(data.confidence * 100) + "%" : "";
+          var conf = data.confidence
+            ? Math.round(data.confidence * 100) + "%"
+            : "";
           enrichBannerConf.textContent = conf;
           // Show source details
           var srcParts = [];
@@ -1305,7 +1323,8 @@
         // Show swap suggestion if detected
         if (data.swap_suggestion && data.swap_suggestion.swapped) {
           enrichBannerSwap.style.display = "inline-block";
-          enrichBannerSwap.title = data.swap_suggestion.reason || "Artist and title may be swapped";
+          enrichBannerSwap.title =
+            data.swap_suggestion.reason || "Artist and title may be swapped";
         }
       })
       .catch(function (err) {
@@ -1351,7 +1370,11 @@
     // Save meta_source
     if (enrichLastData && enrichLastData.meta_source) {
       enrichBannerTrack.meta_source = enrichLastData.meta_source;
-      saveTrackField(enrichBannerTrack, "meta_source", enrichLastData.meta_source);
+      saveTrackField(
+        enrichBannerTrack,
+        "meta_source",
+        enrichLastData.meta_source,
+      );
     }
 
     // Update dropdown in table if visible
@@ -1359,7 +1382,9 @@
       var idx = filteredTracks.indexOf(enrichBannerTrack);
       if (idx >= 0) {
         var cols = COLUMNS.unsorted;
-        var genreColIdx = cols.findIndex(function (c) { return c.key === "genre"; });
+        var genreColIdx = cols.findIndex(function (c) {
+          return c.key === "genre";
+        });
         if (genreColIdx >= 0 && tableBody.children[idx]) {
           var cell = tableBody.children[idx].children[genreColIdx];
           var sel = cell.querySelector("select");
@@ -1399,7 +1424,9 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ track_id: trackId(track) }),
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        return r.json();
+      })
       .then(function (data) {
         if (data.error) {
           showToast("Swap error: " + data.error, "");
@@ -1441,7 +1468,9 @@
       var idx = filteredTracks.indexOf(aiBannerTrack);
       if (idx >= 0) {
         var cols = COLUMNS.unsorted;
-        var genreColIdx = cols.findIndex(function (c) { return c.key === "genre"; });
+        var genreColIdx = cols.findIndex(function (c) {
+          return c.key === "genre";
+        });
         if (genreColIdx >= 0 && tableBody.children[idx]) {
           var cell = tableBody.children[idx].children[genreColIdx];
           var sel = cell.querySelector("select");
@@ -2036,14 +2065,18 @@
   // -- Init ---------------------------------------------------
   // Check AI availability (non-blocking)
   fetch("/api/ai-status")
-    .then(function (r) { return r.json(); })
+    .then(function (r) {
+      return r.json();
+    })
     .then(function (d) {
       aiAvailable = !!d.available;
       if (ctxAiSuggest && !aiAvailable) {
         ctxAiSuggest.style.display = "none";
       }
     })
-    .catch(function () { aiAvailable = false; });
+    .catch(function () {
+      aiAvailable = false;
+    });
 
   Promise.all([loadGenres(), loadLibraryIndex()]).then(function () {
     loadTracks("unsorted");
