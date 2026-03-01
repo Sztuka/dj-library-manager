@@ -17,6 +17,56 @@ def test_parse_artist_title_version_pattern():
     assert version == "Original Mix"
 
 
+# ── Paren-dash shielding: dashes inside parens are NOT field separators ──────
+
+
+def test_parse_dash_inside_parens_correct_order():
+    """Correct order: Artist - Title (Remix - Extended)."""
+    a, t, v = parse_from_filename(
+        Path("Natasha Bedingfield - Unwritten (Talon Afrohouse Remix - Extended).wav")
+    )
+    assert a == "Natasha Bedingfield"
+    assert t == "Unwritten"
+    assert v == "Talon Afrohouse Remix - Extended"
+
+
+def test_parse_dash_inside_parens_reversed_order():
+    """Reversed order: Title (Remix - Extended) - Artist.
+
+    The parser should auto-detect the swap (first part has version keywords)
+    and return the correct artist/title/version.
+    """
+    a, t, v = parse_from_filename(
+        Path("Unwritten (Talon Afrohouse Remix - Extended) - Natasha Bedingfield.wav")
+    )
+    assert a == "Natasha Bedingfield"
+    assert t == "Unwritten"
+    assert v == "Talon Afrohouse Remix - Extended"
+
+
+def test_parse_multiple_dashes_inside_parens():
+    """Multiple dashes inside parens should all be preserved."""
+    a, t, v = parse_from_filename(
+        Path("Artist - Track (Remix - Extended - Club Version).mp3")
+    )
+    assert a == "Artist"
+    assert t == "Track"
+    assert v == "Remix - Extended - Club Version"
+
+
+def test_parse_reversed_simple_remix():
+    """Title (Remix) - Artist swap detection (no dash inside parens)."""
+    a, t, v = parse_from_filename(
+        Path("Alors on danse (ALLERTZ REMIX) - Stromae.wav")
+    )
+    assert a == "Stromae"
+    assert t == "Alors on danse"
+    assert v == "ALLERTZ REMIX"
+
+
+# ── Existing merge tests ────────────────────────────────────────────────────
+
+
 def test_merge_title_wraps_version_in_parentheses():
     result = merge_title_and_version("Pompeii", "Merchant vs Vidojean & Oliver Loenn City Boys Edit")
     assert result == "Pompeii (Merchant vs Vidojean & Oliver Loenn City Boys Edit)"

@@ -169,6 +169,34 @@ def extension_for(path: Path) -> str:
     return path.suffix or ".mp3"
 
 
+_PAREN_DASH_PLACEHOLDER = "\x00"
+
+
+def _shield_paren_dashes(text: str) -> str:
+    """Replace dashes inside balanced parentheses/brackets with a placeholder.
+
+    This prevents ``" - "`` inside ``(Remix - Extended)`` from being treated
+    as an artist/title separator during regex-based filename parsing.
+    """
+    result: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == "-" and depth > 0:
+            result.append(_PAREN_DASH_PLACEHOLDER)
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
+def _unshield_dashes(text: str) -> str:
+    """Restore placeholder back to dashes."""
+    return text.replace(_PAREN_DASH_PLACEHOLDER, "-")
+
+
 def parse_from_filename(path: Path) -> tuple[str, str, str]:
     """Próbuje wyciągnąć (artist, title, version_info) z nazwy pliku.
     Rozszerzone warianty:
@@ -196,7 +224,12 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     # strip trailing commas/semicolons — junk from bad filenames (e.g. "…Remix),")
     cleaned = re.sub(r"[,;]+$", "", cleaned).strip()
 
-    dash_pattern = r"\s+-\s+" if " - " in cleaned else r"\s*-\s*"
+    # 1b) Protect dashes inside balanced parens from being treated as separators.
+    # e.g. "Unwritten (Talon Afrohouse Remix - Extended) - Natasha Bedingfield"
+    # Without this, the " - " inside the parens splits into 3 segments → garbage.
+    shielded = _shield_paren_dashes(cleaned)
+
+    dash_pattern = r"\s+-\s+" if " - " in shielded else r"\s*-\s*"
 
     # Version keywords - content must contain one of these to be considered version info
     VERSION_KEYWORDS = [
@@ -214,9 +247,9 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         return any(kw in c for kw in VERSION_KEYWORDS)
 
     # 2) próba dopasowania z wieloma nawiasami: Artist - Title (V1) (V2) ... lub [V1] [V2] ...
-    m_multi = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*([\(\[\{{].+[\)\]\}}])\s*$", cleaned)
+    m_multi = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*([\(\[\{{].+[\)\]\}}])\s*$", shielded)
     if m_multi:
-        a, t, tail = m_multi.groups()
+        a, t, tail = (_unshield_dashes(g) for g in m_multi.groups())
         # wyciągnij wszystkie grupy nawiasów (okrągłe, kwadratowe, klamrowe)
         parts = re.findall(r"[\(\[\{]([^\)\]\}]+)[\)\]\}]", tail)
         # ONLY include parts that look like version info
@@ -232,9 +265,9 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         return a.strip(), full_title.strip(), version_combined.strip()
 
     # 2b) próba dopasowania: Artist - Title - Version (bez nawiasów, 3 segmenty)
-    m_three = re.match(rf"^\s*(.+?){dash_pattern}(.+?){dash_pattern}(.+?)\s*$", cleaned)
+    m_three = re.match(rf"^\s*(.+?){dash_pattern}(.+?){dash_pattern}(.+?)\s*$", shielded)
     if m_three:
-        a, middle, last = (g.strip() for g in m_three.groups())
+        a, middle, last = (_unshield_dashes(g.strip()) for g in m_three.groups())
 
         # Heuristic: if middle looks like track number (e.g., "04", "1", "12"),
         # treat last as title, ignore middle
@@ -244,9 +277,9 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
         return a, middle, last
 
     # 3) próba dopasowania: Artist - Title
-    m2 = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*$", cleaned)
+    m2 = re.match(rf"^\s*(.+?){dash_pattern}(.+?)\s*$", shielded)
     if m2:
-        a, t = (m2.group(1).strip(), m2.group(2).strip())
+        a, t = (_unshield_dashes(m2.group(1).strip()), _unshield_dashes(m2.group(2).strip()))
         
         # 3a) DETECT REVERSED ORDER: if first part has version keywords, swap!
         # e.g., "Alors on danse (ALLERTZ REMIX) - Stromae" → swap to "Stromae - Alors on danse (ALLERTZ REMIX)"
