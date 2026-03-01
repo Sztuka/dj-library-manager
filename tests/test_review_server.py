@@ -260,3 +260,30 @@ def test_tracks_processed_empty_library(client, tmp_path):
     finally:
         srv._REPO = old_repo
 
+
+# ── Reveal in Finder API ─────────────────────────────────────────────────────
+
+def test_reveal_no_path(client):
+    """Missing path returns 400."""
+    resp = client.post("/api/reveal", json={})
+    assert resp.status_code == 400
+
+
+def test_reveal_file_not_found(client):
+    """Non-existent file returns 404."""
+    resp = client.post("/api/reveal", json={"path": "/tmp/nonexistent_djlib_test.mp3"})
+    assert resp.status_code == 404
+
+
+def test_reveal_success(client, tmp_path):
+    """Valid file path triggers Finder reveal."""
+    test_file = tmp_path / "test.mp3"
+    test_file.write_bytes(b"\x00")
+
+    with patch("djlib.review.server.subprocess.Popen") as mock_popen:
+        resp = client.post("/api/reveal", json={"path": str(test_file)})
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["ok"] is True
+        mock_popen.assert_called_once()
+

@@ -97,7 +97,10 @@
         </div>
         <span id="player-time">0:00 / 0:00</span>
       </div>
-      <div class="player-detail" id="genre-sources"></div>
+      <div class="player-detail">
+        <span id="now-filename" class="now-filename" title="Original filename"></span>
+        <span id="genre-sources"></span>
+      </div>
     </footer>
 
     <!-- ── Keyboard shortcuts legend ───────────────────────────── -->
@@ -127,6 +130,17 @@
       <kbd>⌘Z</kbd> Undo
       <span class="sep">·</span>
       <kbd>Dbl-click</kbd> Edit cell
+    </div>
+
+    <!-- ── Context menu ───────────────────────────────────────── -->
+    <div id="context-menu" class="context-menu hidden">
+      <button data-action="search-google">🔍 Search Google</button>
+      <button data-action="search-beatport">🔍 Search Beatport</button>
+      <button data-action="search-soundcloud">🔍 Search SoundCloud</button>
+      <div class="context-sep"></div>
+      <button data-action="show-finder">📁 Show in Finder</button>
+      <button data-action="copy-filename">📋 Copy filename</button>
+      <button data-action="copy-artist-title">📋 Copy artist — title</button>
     </div>
 
     <!-- ── Toast notification ─────────────────────────────────── -->

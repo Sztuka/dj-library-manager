@@ -790,3 +790,93 @@ kbd {
     display: none;
   }
 }
+
+/* ── Context menu ──────────────────────────────────────────── */
+
+.context-menu {
+  position: fixed;
+  z-index: 100;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 0;
+  min-width: 200px;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(124, 108, 255, 0.1);
+  backdrop-filter: blur(12px);
+}
+
+.context-menu.hidden {
+  display: none;
+}
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.context-menu button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.context-menu button:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.context-menu button:disabled:hover {
+  background: none;
+  color: var(--text-dim);
+}
+
+.context-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 8px;
+}
+
+/* ── Filename in player footer ─────────────────────────────── */
+
+.now-filename {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.04);
+  margin-right: 8px;
+}
+
+.now-filename:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.now-filename:empty {
+  display: none;
+}
+
+.player-detail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}

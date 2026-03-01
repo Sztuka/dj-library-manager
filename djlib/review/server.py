@@ -13,6 +13,7 @@ import csv
 import mimetypes
 import os
 import re
+import subprocess
 import threading
 import webbrowser
 from pathlib import Path
@@ -233,6 +234,30 @@ def api_update_track():
 def api_genres():
     """Return list of valid genre labels from genres.yml."""
     return jsonify(_load_genres())
+
+
+@app.route("/api/reveal", methods=["POST"])
+def api_reveal():
+    """Reveal a file in Finder (macOS) or file manager."""
+    data = request.get_json(silent=True)
+    if not data or not data.get("path"):
+        return jsonify({"error": "No path provided"}), 400
+
+    p = Path(data["path"]).expanduser().resolve()
+    if not p.exists():
+        return jsonify({"error": f"File not found: {data['path']}"}), 404
+
+    try:
+        import sys
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(p)])
+        elif sys.platform == "linux":
+            subprocess.Popen(["xdg-open", str(p.parent)])
+        else:
+            subprocess.Popen(["explorer", "/select,", str(p)])
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Server entry point ───────────────────────────────────────────────────────

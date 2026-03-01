@@ -79,6 +79,8 @@
   const playerTime = document.getElementById("player-time");
   const genreSources = document.getElementById("genre-sources");
   const toast = document.getElementById("toast");
+  const contextMenu = document.getElementById("context-menu");
+  const nowFilename = document.getElementById("now-filename");
 
   // -- Column definitions per source --------------------------
   const COLUMNS = {
@@ -695,6 +697,15 @@
           };
         })(i),
       );
+      tr.addEventListener(
+        "contextmenu",
+        (function (i, track) {
+          return function (e) {
+            selectRow(i);
+            showContextMenu(e, track);
+          };
+        })(i, track),
+      );
 
       frag.appendChild(tr);
     }
@@ -812,6 +823,7 @@
       nowArtist.textContent = track.artist || "Unknown Artist";
       const ver = track.version_info ? " (" + track.version_info + ")" : "";
       nowTitle.textContent = (track.title || "Unknown Title") + ver;
+      updateFilenameDisplay(track);
       updateGenreSources(track);
     }
   }
@@ -839,6 +851,9 @@
     nowArtist.textContent = track.artist || "Unknown Artist";
     const ver = track.version_info ? " (" + track.version_info + ")" : "";
     nowTitle.textContent = (track.title || "Unknown Title") + ver;
+
+    // Filename in footer
+    updateFilenameDisplay(track);
 
     // Genre sources
     updateGenreSources(track);
@@ -938,6 +953,132 @@
     d.textContent = s;
     return d.innerHTML;
   }
+
+  // -- Filename display in player footer ----------------------
+  function getBasename(path) {
+    if (!path) return "";
+    // Handle both forward and backslash separators
+    const parts = path.replace(/\\/g, "/").split("/");
+    return parts[parts.length - 1] || "";
+  }
+
+  function updateFilenameDisplay(track) {
+    const path = audioPath(track);
+    const basename = getBasename(path);
+    nowFilename.textContent = basename;
+    nowFilename.title = path || "No file path";
+  }
+
+  // Click on filename → copy to clipboard
+  nowFilename.addEventListener("click", function () {
+    const text = nowFilename.textContent;
+    if (text) {
+      navigator.clipboard.writeText(text).then(function () {
+        showToast("Copied: " + text, "");
+      });
+    }
+  });
+
+  // -- Context menu -------------------------------------------
+  let contextTrack = null;
+
+  function showContextMenu(e, track) {
+    e.preventDefault();
+    contextTrack = track;
+
+    const path = audioPath(track);
+    const hasPath = !!path;
+
+    // Enable/disable path-dependent actions
+    contextMenu.querySelectorAll("button").forEach(function (btn) {
+      const action = btn.dataset.action;
+      if (action === "show-finder" || action === "copy-filename") {
+        btn.disabled = !hasPath;
+      }
+    });
+
+    // Position menu
+    const menuW = 220;
+    const menuH = 230;
+    let x = e.clientX;
+    let y = e.clientY;
+    if (x + menuW > window.innerWidth) x = window.innerWidth - menuW - 8;
+    if (y + menuH > window.innerHeight) y = window.innerHeight - menuH - 8;
+    contextMenu.style.left = x + "px";
+    contextMenu.style.top = y + "px";
+    contextMenu.classList.remove("hidden");
+  }
+
+  function hideContextMenu() {
+    contextMenu.classList.add("hidden");
+    contextTrack = null;
+  }
+
+  // Close on click outside or Escape
+  document.addEventListener("click", function (e) {
+    if (!contextMenu.contains(e.target)) hideContextMenu();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.code === "Escape" && !contextMenu.classList.contains("hidden")) {
+      hideContextMenu();
+      e.stopPropagation();
+    }
+  }, true);
+
+  // Handle context menu actions
+  contextMenu.addEventListener("click", function (e) {
+    const btn = e.target.closest("button");
+    if (!btn || btn.disabled || !contextTrack) return;
+
+    const action = btn.dataset.action;
+    const artist = (contextTrack.artist || "").trim();
+    const title = (contextTrack.title || "").trim();
+    const path = audioPath(contextTrack);
+    const query = (artist && title) ? artist + " - " + title : artist || title || getBasename(path);
+
+    switch (action) {
+      case "search-google":
+        window.open("https://www.google.com/search?q=" + encodeURIComponent(query), "_blank");
+        break;
+      case "search-beatport":
+        window.open("https://www.beatport.com/search?q=" + encodeURIComponent(query), "_blank");
+        break;
+      case "search-soundcloud":
+        window.open("https://soundcloud.com/search/sounds?q=" + encodeURIComponent(query), "_blank");
+        break;
+      case "show-finder":
+        if (path) {
+          fetch("/api/reveal", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: path }),
+          })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (data.error) showToast("Finder: " + data.error, "");
+            })
+            .catch(function () {
+              showToast("Failed to reveal in Finder", "");
+            });
+        }
+        break;
+      case "copy-filename":
+        if (path) {
+          navigator.clipboard.writeText(getBasename(path)).then(function () {
+            showToast("Copied filename", "");
+          });
+        }
+        break;
+      case "copy-artist-title":
+        if (query) {
+          navigator.clipboard.writeText(query).then(function () {
+            showToast("Copied: " + query, "");
+          });
+        }
+        break;
+    }
+    hideContextMenu();
+  });
 
   // -- Audio playback -----------------------------------------
   let playingIndex = -1;
