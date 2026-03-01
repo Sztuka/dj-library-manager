@@ -396,6 +396,34 @@ def test_suggest_genre_openai_error(client):
         assert "failed" in data["error"]
 
 
+def test_build_genre_prompt_remix_instruction():
+    """Prompt includes remix-specific instructions when version contains remix keywords."""
+    from djlib.review.server import _build_genre_prompt
+
+    # Remix track: should include remix classification rule
+    ctx_remix = {
+        "artist": "Ol' Dirty Bastard",
+        "title": "Got Your Money",
+        "version": "Vik Toreus Remix",
+        "bpm": "124",
+    }
+    prompt_remix = _build_genre_prompt(ctx_remix, ["Tech House", "Hip-Hop", "House"])
+    assert "REMIX/EDIT CLASSIFICATION RULE" in prompt_remix
+    assert "BPM genre ranges" in prompt_remix
+    assert "Version/Remix: Vik Toreus Remix" in prompt_remix
+    assert "BPM: 124" in prompt_remix
+
+    # Original track: should NOT include remix rule
+    ctx_original = {
+        "artist": "Daft Punk",
+        "title": "Around The World",
+        "bpm": "121",
+    }
+    prompt_original = _build_genre_prompt(ctx_original, ["House", "French House"])
+    assert "REMIX/EDIT CLASSIFICATION RULE" not in prompt_original
+    assert "BPM genre ranges" in prompt_original
+
+
 # ── Enrich Track API ─────────────────────────────────────────────────────────
 
 def _make_unsorted_csv(tmp_dir: Path, rows: List[Dict[str, str]]) -> Path:
