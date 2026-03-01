@@ -433,22 +433,20 @@ def set_acoustid_api_key(key: str) -> None:
     d["acoustid_api_key"] = str(key)
     _write_yaml(dest, d)
 
-# Domyślny klucz aplikacji AcoustID (Application API key) – używany do lookup,
-# NIE jest to User API key. Można nadpisać w config.local.yml lub przez env.
-DEFAULT_ACOUSTID_APP_KEY = "REDACTED_ACOUSTID_KEY"
+# AcoustID Application API key — set in config.local.yml or env DJLIB_ACOUSTID_API_KEY.
+DEFAULT_ACOUSTID_APP_KEY = ""
 
 def get_acoustid_api_key() -> str:
-    """Zwraca klucz aplikacji AcoustID z configu, a jeśli go brak – wartość domyślną.
-    Uwaga: do lookup wymagany jest Application API key (client), nie User API key.
-    """
-    # Najpierw spróbuj z plików konfiguracyjnych
+    """Return AcoustID Application API key from config or env."""
+    env = os.getenv("DJLIB_ACOUSTID_API_KEY") or os.getenv("ACOUSTID_API_KEY")
+    if env:
+        return env.strip()
     existing = _first_existing(_CANDIDATES)
     if existing:
         d = _read_yaml(existing)
         val = str(d.get("acoustid_api_key", "") or "").strip()
         if val:
             return val
-    # W przeciwnym razie – domyślny klucz aplikacji
     return DEFAULT_ACOUSTID_APP_KEY
 
 # MusicBrainz settings
