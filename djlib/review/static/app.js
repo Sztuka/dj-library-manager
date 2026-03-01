@@ -1299,6 +1299,7 @@
           enrichBannerSources.title = srcParts.join("\n");
           enrichBannerAccept.style.display = "inline-block";
           enrichBannerAccept.dataset.genre = data.genre_full || data.genre;
+          enrichLastData = data;
         }
 
         // Show swap suggestion if detected
@@ -1319,16 +1320,39 @@
     enrichBanner.classList.add("hidden");
     enrichBanner.classList.remove("enrich-loading");
     enrichBannerTrack = null;
+    enrichLastData = null;
   }
 
   // Accept enrich result
+  // Store last enrich response data for Accept to use
+  var enrichLastData = null;
+
   enrichBannerAccept.addEventListener("click", function () {
     var genre = enrichBannerAccept.dataset.genre;
     if (!genre || !enrichBannerTrack) return;
 
+    // Save genre to track and CSV
     enrichBannerTrack.genre = genre;
     saveTrackField(enrichBannerTrack, "genre", genre);
-    showToast("Genre: " + genre, "");
+
+    // Save genre_suggest (same as genre for re-enrich)
+    enrichBannerTrack.genre_suggest = genre;
+    saveTrackField(enrichBannerTrack, "genre_suggest", genre);
+
+    // Save per-source genre tags (SC, BP, Last.fm, MB) to CSV
+    if (enrichLastData && enrichLastData.source_genres) {
+      var sg = enrichLastData.source_genres;
+      for (var col in sg) {
+        enrichBannerTrack[col] = sg[col];
+        saveTrackField(enrichBannerTrack, col, sg[col]);
+      }
+    }
+
+    // Save meta_source
+    if (enrichLastData && enrichLastData.meta_source) {
+      enrichBannerTrack.meta_source = enrichLastData.meta_source;
+      saveTrackField(enrichBannerTrack, "meta_source", enrichLastData.meta_source);
+    }
 
     // Update dropdown in table if visible
     if (currentSource === "unsorted") {
@@ -1344,6 +1368,10 @@
       }
     }
 
+    // Refresh genre sources panel (SC, BP, etc. at bottom)
+    updateGenreSources(enrichBannerTrack);
+
+    showToast("Genre: " + genre, "");
     hideEnrichBanner();
   });
 

@@ -586,12 +586,30 @@ def api_enrich_track():
         top_tags = sorted(s.tags.items(), key=lambda kv: kv[1], reverse=True)[:5]
         source_details[s.source] = ", ".join(t[0] for t in top_tags)
 
+    # Map source names to CSV column names for saving
+    _SOURCE_TO_CSV = {
+        "beatport": "genres_beatport",
+        "lastfm": "genres_lastfm",
+        "mb": "genres_musicbrainz",
+        "soundcloud": "genres_soundcloud",
+    }
+    source_genres: Dict[str, str] = {}
+    for s in genre_res.breakdown:
+        csv_col = _SOURCE_TO_CSV.get(s.source)
+        if csv_col:
+            top_tags = sorted(s.tags.items(), key=lambda kv: kv[1], reverse=True)[:8]
+            source_genres[csv_col] = ", ".join(t[0] for t in top_tags)
+
+    meta_source = "|".join(sorted(sources))
+
     return jsonify({
         "genre": genre_res.main,
         "genre_full": genre_full,
         "confidence": round(genre_res.confidence, 3),
         "sources": sources,
         "source_details": source_details,
+        "source_genres": source_genres,
+        "meta_source": meta_source,
         "swap_suggestion": swap_suggestion,
     })
 

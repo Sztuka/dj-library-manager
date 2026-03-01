@@ -468,6 +468,12 @@ def test_enrich_track_success(client, tmp_path):
         assert data["genre_full"] == "Afro House, Deep House"
         assert data["confidence"] == 0.85
         assert "beatport" in data["sources"]
+        # source_genres maps resolver sources to CSV column names
+        assert "genres_beatport" in data["source_genres"]
+        assert "Afro House" in data["source_genres"]["genres_beatport"]
+        assert "genres_lastfm" in data["source_genres"]
+        # meta_source is pipe-separated sorted source list
+        assert data["meta_source"] == "beatport|lastfm"
 
 
 def test_enrich_track_no_results(client, tmp_path):
