@@ -81,6 +81,18 @@
   const toast = document.getElementById("toast");
   const contextMenu = document.getElementById("context-menu");
   const nowFilename = document.getElementById("now-filename");
+  const aiBanner = document.getElementById("ai-banner");
+  const aiBannerGenre = document.getElementById("ai-banner-genre");
+  const aiBannerConfidence = document.getElementById("ai-banner-confidence");
+  const aiBannerReasoning = document.getElementById("ai-banner-reasoning");
+  const aiBannerAccept = document.getElementById("ai-banner-accept");
+  const aiBannerDismiss = document.getElementById("ai-banner-dismiss");
+  const ctxAiSuggest = document.getElementById("ctx-ai-suggest");
+
+  // AI availability (checked once on load)
+  let aiAvailable = false;
+  let aiPending = false;  // prevents double-clicks
+  let aiBannerTrack = null;  // track the banner is showing for
 
   // -- Column definitions per source --------------------------
   const COLUMNS = {
@@ -1018,12 +1030,16 @@
   document.addEventListener("click", function (e) {
     if (!contextMenu.contains(e.target)) hideContextMenu();
   });
-  document.addEventListener("keydown", function (e) {
-    if (e.code === "Escape" && !contextMenu.classList.contains("hidden")) {
-      hideContextMenu();
-      e.stopPropagation();
-    }
-  }, true);
+  document.addEventListener(
+    "keydown",
+    function (e) {
+      if (e.code === "Escape" && !contextMenu.classList.contains("hidden")) {
+        hideContextMenu();
+        e.stopPropagation();
+      }
+    },
+    true,
+  );
 
   // Handle context menu actions
   contextMenu.addEventListener("click", function (e) {
@@ -1034,17 +1050,29 @@
     const artist = (contextTrack.artist || "").trim();
     const title = (contextTrack.title || "").trim();
     const path = audioPath(contextTrack);
-    const query = (artist && title) ? artist + " - " + title : artist || title || getBasename(path);
+    const query =
+      artist && title
+        ? artist + " - " + title
+        : artist || title || getBasename(path);
 
     switch (action) {
       case "search-google":
-        window.open("https://www.google.com/search?q=" + encodeURIComponent(query), "_blank");
+        window.open(
+          "https://www.google.com/search?q=" + encodeURIComponent(query),
+          "_blank",
+        );
         break;
       case "search-beatport":
-        window.open("https://www.beatport.com/search?q=" + encodeURIComponent(query), "_blank");
+        window.open(
+          "https://www.beatport.com/search?q=" + encodeURIComponent(query),
+          "_blank",
+        );
         break;
       case "search-soundcloud":
-        window.open("https://soundcloud.com/search/sounds?q=" + encodeURIComponent(query), "_blank");
+        window.open(
+          "https://soundcloud.com/search/sounds?q=" + encodeURIComponent(query),
+          "_blank",
+        );
         break;
       case "show-finder":
         if (path) {
@@ -1053,7 +1081,9 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ path: path }),
           })
-            .then(function (r) { return r.json(); })
+            .then(function (r) {
+              return r.json();
+            })
             .then(function (data) {
               if (data.error) showToast("Finder: " + data.error, "");
             })
@@ -1076,8 +1106,132 @@
           });
         }
         break;
+      case "ai-suggest-genre":
+        requestAiGenreSuggest(contextTrack);
+        break;
     }
     hideContextMenu();
+  });
+
+  // -- AI Genre Suggest ---------------------------------------
+
+  function requestAiGenreSuggest(track) {
+    if (!track || aiPending) return;
+    if (!aiAvailable) {
+      showToast("AI not configured (add openai_api_key to config.local.yml)", "");
+      return;
+    }
+
+    aiPending = true;
+    aiBannerTrack = track;
+
+    // Show loading state
+    aiBanner.classList.remove("hidden");
+    aiBanner.classList.add("ai-loading");
+    aiBannerGenre.textContent = "Analyzing…";
+    aiBannerConfidence.textContent = "";
+    aiBannerReasoning.textContent = "";
+    aiBannerAccept.style.display = "none";
+    aiBannerDismiss.style.display = "inline-block";
+
+    // Extract folder name from path
+    var path = audioPath(track);
+    var folder = "";
+    if (path) {
+      var parts = path.replace(/\\/g, "/").split("/");
+      // Get parent folder name (e.g., "Afro House" from ".../Afro House/file.wav")
+      if (parts.length >= 2) folder = parts[parts.length - 2];
+    }
+
+    var body = {
+      track_id: trackId(track),
+      context: {
+        artist: track.artist || "",
+        title: track.title || "",
+        version: track.version_info || "",
+        bpm: track.bpm || "",
+        key: track.key_camelot || track.key || "",
+        duration: track.duration_suggest || "",
+        folder: folder,
+        genres_musicbrainz: track.genres_musicbrainz || "",
+        genres_lastfm: track.genres_lastfm || "",
+        genres_soundcloud: track.genres_soundcloud || "",
+        genres_beatport: track.genres_beatport || "",
+        genre_suggest: track.genre_suggest || "",
+      },
+    };
+
+    fetch("/api/suggest-genre", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        aiPending = false;
+        aiBanner.classList.remove("ai-loading");
+
+        if (data.error) {
+          showToast("AI error: " + data.error, "");
+          hideAiBanner();
+          return;
+        }
+
+        aiBannerGenre.textContent = data.genre || "Unknown";
+        var conf = data.confidence ? Math.round(data.confidence * 100) + "%" : "";
+        aiBannerConfidence.textContent = conf;
+        aiBannerReasoning.textContent = data.reasoning || "";
+        aiBannerReasoning.title = data.reasoning || "";
+        if (data.warning) {
+          aiBannerReasoning.textContent += " ⚠ " + data.warning;
+        }
+        aiBannerAccept.style.display = "inline-block";
+        aiBannerAccept.dataset.genre = data.genre || "";
+      })
+      .catch(function (err) {
+        aiPending = false;
+        aiBanner.classList.remove("ai-loading");
+        showToast("AI request failed", "");
+        hideAiBanner();
+      });
+  }
+
+  function hideAiBanner() {
+    aiBanner.classList.add("hidden");
+    aiBanner.classList.remove("ai-loading");
+    aiBannerTrack = null;
+  }
+
+  // Accept AI suggestion
+  aiBannerAccept.addEventListener("click", function () {
+    var genre = aiBannerAccept.dataset.genre;
+    if (!genre || !aiBannerTrack) return;
+
+    // Apply genre to track
+    aiBannerTrack.genre = genre;
+    saveTrackField(aiBannerTrack, "genre", genre);
+    showToast("Genre: " + genre, "");
+
+    // Update dropdown in table if visible
+    if (currentSource === "unsorted") {
+      var idx = filteredTracks.indexOf(aiBannerTrack);
+      if (idx >= 0) {
+        var cols = COLUMNS.unsorted;
+        var genreColIdx = cols.findIndex(function (c) { return c.key === "genre"; });
+        if (genreColIdx >= 0 && tableBody.children[idx]) {
+          var cell = tableBody.children[idx].children[genreColIdx];
+          var sel = cell.querySelector("select");
+          if (sel) sel.value = genre;
+        }
+      }
+    }
+
+    hideAiBanner();
+  });
+
+  // Dismiss AI suggestion
+  aiBannerDismiss.addEventListener("click", function () {
+    hideAiBanner();
   });
 
   // -- Audio playback -----------------------------------------
@@ -1647,6 +1801,17 @@
   });
 
   // -- Init ---------------------------------------------------
+  // Check AI availability (non-blocking)
+  fetch("/api/ai-status")
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      aiAvailable = !!d.available;
+      if (ctxAiSuggest && !aiAvailable) {
+        ctxAiSuggest.style.display = "none";
+      }
+    })
+    .catch(function () { aiAvailable = false; });
+
   Promise.all([loadGenres(), loadLibraryIndex()]).then(function () {
     loadTracks("unsorted");
   });

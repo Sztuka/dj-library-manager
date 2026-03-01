@@ -528,3 +528,26 @@ def get_soundcloud_client_id() -> str:
     return ""
 
 # Discogs support removed
+
+# OpenAI (for AI genre suggestions in Review UI)
+def get_openai_api_key() -> str:
+    """Return OpenAI API key from env or config files."""
+    env = os.getenv("DJLIB_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if env:
+        return env.strip()
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("openai_api_key", "") or "").strip()
+        if val:
+            return val
+    repo_cfg = _REPO / "config.yml"
+    if repo_cfg.exists():
+        try:
+            d = _read_yaml(repo_cfg)
+            val = str(d.get("openai_api_key", "") or "").strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    return ""

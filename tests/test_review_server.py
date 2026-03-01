@@ -287,3 +287,111 @@ def test_reveal_success(client, tmp_path):
         assert data["ok"] is True
         mock_popen.assert_called_once()
 
+
+# ── AI Genre Suggest API ─────────────────────────────────────────────────────
+
+def test_ai_status_returns_availability(client):
+    """AI status endpoint returns availability flag."""
+    with patch("djlib.review.server.get_openai_api_key", return_value=""):
+        resp = client.get("/api/ai-status")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["available"] is False
+
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.get("/api/ai-status")
+        data = json.loads(resp.data)
+        assert data["available"] is True
+
+
+def test_suggest_genre_no_api_key(client):
+    """Returns 501 when OpenAI API key is not configured."""
+    with patch("djlib.review.server.get_openai_api_key", return_value=""):
+        resp = client.post("/api/suggest-genre", json={
+            "track_id": "test-123",
+            "context": {"artist": "Test", "title": "Track"},
+        })
+        assert resp.status_code == 501
+        data = json.loads(resp.data)
+        assert "not configured" in data["error"]
+
+
+def test_suggest_genre_missing_context(client):
+    """Returns 400 when no artist or title provided."""
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/suggest-genre", json={
+            "track_id": "test-123",
+            "context": {},
+        })
+        assert resp.status_code == 400
+
+
+def test_suggest_genre_success(client):
+    """Successful AI genre suggestion with mocked OpenAI response."""
+    mock_openai_response = {
+        "choices": [{
+            "message": {
+                "content": '{"genre": "Tech House", "confidence": 0.92, "reasoning": "124 BPM, tribal elements"}'
+            }
+        }]
+    }
+
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_openai_response
+
+        resp = client.post("/api/suggest-genre", json={
+            "track_id": "test-456",
+            "context": {
+                "artist": "Test Artist",
+                "title": "Test Track",
+                "bpm": "124",
+            },
+        })
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["genre"] == "Tech House"
+        assert data["confidence"] == 0.92
+        assert "reasoning" in data
+
+
+def test_suggest_genre_uses_cache(client):
+    """Second request for same track_id returns cached result."""
+    import djlib.review.server as srv
+    # Pre-populate cache
+    srv._ai_cache["cached-track"] = {
+        "genre": "Afro House",
+        "confidence": 0.88,
+        "reasoning": "cached result",
+    }
+
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/suggest-genre", json={
+            "track_id": "cached-track",
+            "context": {"artist": "X", "title": "Y"},
+        })
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["genre"] == "Afro House"
+        assert data["reasoning"] == "cached result"
+
+    # Cleanup
+    del srv._ai_cache["cached-track"]
+
+
+def test_suggest_genre_openai_error(client):
+    """Returns 502 when OpenAI API call fails."""
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.side_effect = Exception("Connection timeout")
+
+        resp = client.post("/api/suggest-genre", json={
+            "track_id": "test-err",
+            "context": {"artist": "A", "title": "B"},
+        })
+        assert resp.status_code == 502
+        data = json.loads(resp.data)
+        assert "failed" in data["error"]
+
