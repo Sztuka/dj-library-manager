@@ -118,6 +118,7 @@ python -m djlib.cli enrich-online
 **Genre dropdown:** Uses 30 canonical genres from `genres.yml`
 
 **AI features (right-click context menu):**
+
 - **Suggest genre (AI)** — one-shot genre classification
 - **Identify track (AI)** — identify artist/title from filename and metadata
 - **AI Chat** — conversational AI for correcting mashups, challenging genre, refining metadata

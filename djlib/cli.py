@@ -711,6 +711,35 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             print(f"Genre resolution failed for {a} - {t}: {e}")
             pass
 
+        # Safety net: extract artist from Beatport for remixes where
+        # suggest_metadata didn't provide an artist (e.g. AcoustID intercepted,
+        # transient error, or low confidence discarded the result).
+        # Uses in-process cache — no extra API call when genre_resolver already
+        # queried Beatport above.
+        if (
+            not (r.get("artist_suggest") or "").strip()
+            and v
+            and not getattr(args, "skip_beatport", False)
+        ):
+            try:
+                from djlib.metadata.beatport import search_track as bp_search
+                bp_result = bp_search(a, t, dur_s, version=v)
+                if bp_result and bp_result.get("artist"):
+                    r["artist_suggest"] = bp_result["artist"]
+                    any_change = True
+                    print(f"      🎤 Artist from Beatport: {bp_result['artist']}")
+                    # Also fill year/album if still empty
+                    if not (r.get("year_suggest") or "").strip():
+                        rd = bp_result.get("release_date", "")
+                        if rd and rd.strip():
+                            r["year_suggest"] = rd.split("-")[0]
+                    if not (r.get("album_suggest") or "").strip():
+                        alb = bp_result.get("release_name", "") or bp_result.get("album", "")
+                        if alb and alb.strip():
+                            r["album_suggest"] = alb
+            except Exception:
+                pass
+
         # Popularność z Last.fm (playcount/listeners) — pomoc dla singalong/party dance/decades
         try:
             a = (r.get("artist_suggest") or r.get("artist") or "").strip()

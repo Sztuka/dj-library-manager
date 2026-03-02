@@ -379,18 +379,18 @@ Flask-based single-page application for curating unsorted tracks.
 
 ### API Endpoints
 
-| Method | Endpoint               | Purpose                                           |
-|--------|------------------------|---------------------------------------------------|
-| GET    | `/api/tracks`          | List tracks (`?source=unsorted\|library\|processed`) |
-| POST   | `/api/tracks/update`   | Update track fields in CSV                        |
-| GET    | `/api/genres`          | List canonical genres from `genres.yml`            |
-| GET    | `/api/library-index`   | Track IDs present in `library.csv`                |
-| GET    | `/api/ai-status`       | Check if OpenAI API key is configured             |
-| POST   | `/api/suggest-genre`   | AI genre suggestion for a track (one-shot)        |
-| POST   | `/api/identify-track`  | AI track identification from filename/metadata    |
-| POST   | `/api/ai-chat`         | Conversational AI chat for metadata refinement    |
-| POST   | `/api/enrich-track`    | Re-enrich track from online sources               |
-| POST   | `/api/swap-artist-title` | Swap artist/title and re-parse from filename    |
+| Method | Endpoint                 | Purpose                                              |
+| ------ | ------------------------ | ---------------------------------------------------- |
+| GET    | `/api/tracks`            | List tracks (`?source=unsorted\|library\|processed`) |
+| POST   | `/api/tracks/update`     | Update track fields in CSV                           |
+| GET    | `/api/genres`            | List canonical genres from `genres.yml`              |
+| GET    | `/api/library-index`     | Track IDs present in `library.csv`                   |
+| GET    | `/api/ai-status`         | Check if OpenAI API key is configured                |
+| POST   | `/api/suggest-genre`     | AI genre suggestion for a track (one-shot)           |
+| POST   | `/api/identify-track`    | AI track identification from filename/metadata       |
+| POST   | `/api/ai-chat`           | Conversational AI chat for metadata refinement       |
+| POST   | `/api/enrich-track`      | Re-enrich track from online sources                  |
+| POST   | `/api/swap-artist-title` | Swap artist/title and re-parse from filename         |
 
 ### AI Chat (`/api/ai-chat`)
 
