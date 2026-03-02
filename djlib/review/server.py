@@ -771,6 +771,36 @@ def _call_openai_chat(
 
     data = resp.json()
 
+    # Extract reply text.  The top-level ``output_text`` convenience field is
+    # sometimes empty for web-search responses, so we also dig into the nested
+    # ``output → message → content → output_text`` structure as a fallback.
+    reply_text = (data.get("output_text") or "").strip()
+    if not reply_text:
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for content_block in item.get("content", []):
+                    if content_block.get("type") == "output_text":
+                        reply_text = (content_block.get("text") or "").strip()
+                        if reply_text:
+                            break
+            if reply_text:
+                break
+
+    # Strip markdown link citations that the model injects for web-search
+    # sources, e.g. "([music.apple.com](https://...))".  We already surface
+    # these as separate clickable source chips in the frontend.
+    reply_text = re.sub(
+        r'\s*\(\[([^\]]*)\]\([^)]*\)\)\s*',
+        ' ',
+        reply_text,
+    ).strip()
+    # Also handle bare markdown links: [text](url)
+    reply_text = re.sub(
+        r'\[([^\]]*)\]\([^)]*\)',
+        r'\1',
+        reply_text,
+    )
+
     # Detect if web search was used and extract citations
     web_search_used = False
     annotations: List[Dict[str, str]] = []
@@ -787,7 +817,7 @@ def _call_openai_chat(
                         })
 
     return {
-        "text": data.get("output_text", ""),
+        "text": reply_text,
         "web_search_used": web_search_used,
         "annotations": annotations,
     }

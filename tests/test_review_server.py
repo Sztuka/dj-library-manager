@@ -1579,6 +1579,107 @@ def test_call_openai_chat_responses_api_format():
         assert payload["input"][0]["role"] == "user"
 
 
+def test_call_openai_chat_empty_output_text_fallback():
+    """When top-level output_text is empty, text is extracted from nested output."""
+    from djlib.review.server import _call_openai_chat
+
+    # Real API behavior: output_text at top level is empty for web search responses
+    mock_response = {
+        "output_text": "",
+        "output": [
+            {"type": "web_search_call", "id": "ws_abc", "status": "completed"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "The track \"Jamal\" by YASH was released on March 1, 2024. ([music.apple.com](https://music.apple.com/us/song/123))", "annotations": [
+                    {"type": "url_citation", "url": "https://music.apple.com/us/song/123", "title": "Jamal - Song by YASH"},
+                ]}
+            ]}
+        ],
+    }
+
+    with patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_response
+
+        result = _call_openai_chat("sk-test", [
+            {"role": "system", "content": "You are a DJ assistant."},
+            {"role": "user", "content": "what year?"},
+        ])
+
+        # Text should be extracted from nested output, not empty output_text
+        assert result["text"] != ""
+        assert "2024" in result["text"]
+        assert "YASH" in result["text"]
+        # Markdown citation should be stripped
+        assert "([music.apple.com]" not in result["text"]
+        assert "https://music.apple.com" not in result["text"]
+        assert result["web_search_used"] is True
+        assert len(result["annotations"]) == 1
+
+
+def test_call_openai_chat_strips_markdown_citations():
+    """Markdown citation patterns are stripped from AI reply text."""
+    from djlib.review.server import _call_openai_chat
+
+    text_with_citations = (
+        'This track was released in 2017. ([beatport.com](https://www.beatport.com/track/123)) '
+        'The artist is [Bicep](https://en.wikipedia.org/wiki/Bicep_(band)) from Belfast.'
+    )
+    mock_response = {
+        "output_text": text_with_citations,
+        "output": [
+            {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": text_with_citations, "annotations": []}
+            ]}
+        ],
+    }
+
+    with patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_response
+
+        result = _call_openai_chat("sk-test", [
+            {"role": "system", "content": "test"},
+            {"role": "user", "content": "test"},
+        ])
+
+        # Parenthesized citations stripped entirely
+        assert "([beatport.com]" not in result["text"]
+        assert "beatport.com/track" not in result["text"]
+        # Bare markdown links: text kept, URL stripped
+        assert "Bicep" in result["text"]
+        assert "wikipedia.org" not in result["text"]
+        # Core content preserved
+        assert "2017" in result["text"]
+        assert "Belfast" in result["text"]
+
+
+def test_call_openai_chat_no_output_graceful():
+    """Handles edge case where output list has no message items."""
+    from djlib.review.server import _call_openai_chat
+
+    mock_response = {
+        "output_text": "",
+        "output": [],
+    }
+
+    with patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_response
+
+        result = _call_openai_chat("sk-test", [
+            {"role": "system", "content": "test"},
+            {"role": "user", "content": "test"},
+        ])
+
+        assert result["text"] == ""
+        assert result["web_search_used"] is False
+        assert result["annotations"] == []
+
+
 def test_chat_session_ttl_cleanup():
     """Expired sessions are cleaned up and LRU cap is enforced."""
     import time
