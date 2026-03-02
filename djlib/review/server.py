@@ -457,6 +457,68 @@ def _call_openai_json(api_key: str, prompt: str, max_tokens: int = 200) -> Dict[
     return json.loads(content)
 
 
+def _call_openai_responses_json(
+    api_key: str, prompt: str, max_tokens: int = 400
+) -> Dict[str, Any]:
+    """Call OpenAI Responses API with web search and parse JSON from reply.
+
+    Like ``_call_openai_json`` but uses the Responses API with
+    ``web_search_preview`` so the model can look up information online.
+    Expects the model to return valid JSON (possibly wrapped in markdown
+    fences).  Returns the parsed dict.
+    """
+    payload: Dict[str, Any] = {
+        "model": get_ai_chat_model(),
+        "input": [{"role": "user", "content": prompt}],
+        "tools": [{"type": "web_search_preview"}],
+        "temperature": 0.3,
+        "max_output_tokens": max_tokens,
+        "instructions": (
+            "You MUST respond ONLY with valid JSON. No explanation, no markdown "
+            "fences, no text before or after the JSON object. If you use web "
+            "search, still respond with JSON only."
+        ),
+    }
+
+    resp = http_requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=45,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+
+    # Extract text — same fallback as _call_openai_chat
+    content = (data.get("output_text") or "").strip()
+    if not content:
+        for item in data.get("output", []):
+            if item.get("type") == "message":
+                for block in item.get("content", []):
+                    if block.get("type") == "output_text":
+                        content = (block.get("text") or "").strip()
+                        if content:
+                            break
+            if content:
+                break
+
+    # Strip markdown citations
+    content = re.sub(r'\s*\(\[([^\]]*)\]\([^)]*\)\)\s*', ' ', content).strip()
+    content = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', content)
+
+    # Strip markdown fences
+    if content.startswith("```"):
+        content = re.sub(r"^```\w*\n?", "", content)
+        content = re.sub(r"\n?```$", "", content)
+        content = content.strip()
+
+    return json.loads(content)
+
+
 def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
     """Call OpenAI for genre suggestion (with genre validation)."""
     result = _call_openai_json(api_key, prompt)
@@ -652,7 +714,7 @@ def api_identify_track():
     prompt = _build_identify_prompt(row)
 
     try:
-        result = _call_openai_json(api_key, prompt, max_tokens=300)
+        result = _call_openai_responses_json(api_key, prompt, max_tokens=400)
         if tid:
             _identify_cache[tid] = result
         return jsonify(result)
@@ -715,16 +777,18 @@ def _build_chat_system_prompt(row: Dict[str, str]) -> str:
         "5. Use Title Case for names and titles\n"
         "6. \"x\" between track names means mashup/combined\n\n"
         f"Valid genres (pick EXACTLY from this list): {genre_list}\n\n"
-        "When you suggest metadata changes, ALWAYS end your message with a JSON block "
-        "on its own line. Include ONLY the fields you want to change:\n"
+        "ALWAYS end your message with a suggestion JSON block when your reply "
+        "contains ANY factual metadata (year, artist name, title, genre, version). "
+        "Even for simple questions like 'year?' — give a short answer AND the block.\n"
+        "Include ONLY the fields you want to change:\n"
         '```suggestion\n'
         '{"artist": "...", "title": "...", "version_info": "...", "year": "...", "genre": "..."}\n'
         '```\n'
         "Omit fields you are not changing. Use \"version_info\" (not \"version\") for version/remix info. "
         "For genre, use EXACT name from the list above.\n"
-        "If the user just asks a question without requesting changes, respond normally "
-        "without a suggestion block.\n"
-        "Keep responses concise (2-4 sentences + suggestion block if applicable)."
+        "Only skip the suggestion block for purely conversational replies that don't "
+        "reference specific metadata values.\n"
+        "Keep responses concise (1-2 sentences + suggestion block)."
     )
 
 

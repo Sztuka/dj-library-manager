@@ -826,18 +826,15 @@ def test_identify_track_success(client, tmp_path):
     }])
 
     mock_openai_response = {
-        "choices": [{
-            "message": {
-                "content": json.dumps({
-                    "artist": "Tera Kòrá",
-                    "title": "September Maru",
-                    "version": "feat. Dave Nunes",
-                    "year": "2023",
-                    "confidence": 0.75,
-                    "reasoning": "Filename suggests 'september maru' with 'w_ Dave Nunes' indicating featuring artist.",
-                })
-            }
-        }]
+        "output_text": json.dumps({
+            "artist": "Tera Kòrá",
+            "title": "September Maru",
+            "version": "feat. Dave Nunes",
+            "year": "2023",
+            "confidence": 0.75,
+            "reasoning": "Filename suggests 'september maru' with 'w_ Dave Nunes' indicating featuring artist.",
+        }),
+        "output": [],
     }
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
@@ -1678,6 +1675,94 @@ def test_call_openai_chat_no_output_graceful():
         assert result["text"] == ""
         assert result["web_search_used"] is False
         assert result["annotations"] == []
+
+
+def test_call_openai_responses_json_with_web_search():
+    """_call_openai_responses_json uses Responses API with web search and parses JSON."""
+    from djlib.review.server import _call_openai_responses_json
+
+    result_json = {
+        "artist": "Billie Eilish, Khalid",
+        "title": "Lovely",
+        "version": "BAI Extended",
+        "year": "2018",
+        "confidence": 0.95,
+        "reasoning": "Original released April 2018, BAI remix found on SoundCloud.",
+    }
+
+    mock_response = {
+        "output_text": json.dumps(result_json),
+        "output": [
+            {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": json.dumps(result_json), "annotations": []}
+            ]}
+        ],
+    }
+
+    with patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_response
+
+        result = _call_openai_responses_json("sk-test", "Identify this track")
+
+        assert result["artist"] == "Billie Eilish, Khalid"
+        assert result["year"] == "2018"
+        assert result["confidence"] == 0.95
+
+        # Verify Responses API was called with web_search_preview
+        call_args = mock_post.call_args
+        assert "/v1/responses" in call_args[0][0]
+        payload = call_args[1]["json"]
+        assert {"type": "web_search_preview"} in payload["tools"]
+
+
+def test_call_openai_responses_json_with_markdown_fences():
+    """Handles JSON wrapped in markdown fences from Responses API."""
+    from djlib.review.server import _call_openai_responses_json
+
+    fenced_json = '```json\n{"artist": "Test", "year": "2020"}\n```'
+
+    mock_response = {
+        "output_text": fenced_json,
+        "output": [],
+    }
+
+    with patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_response
+
+        result = _call_openai_responses_json("sk-test", "test prompt")
+        assert result["artist"] == "Test"
+        assert result["year"] == "2020"
+
+
+def test_call_openai_responses_json_nested_fallback():
+    """Falls back to nested output when output_text is empty."""
+    from djlib.review.server import _call_openai_responses_json
+
+    result_json = '{"artist": "Nested", "title": "Fallback", "year": "2019"}'
+
+    mock_response = {
+        "output_text": "",
+        "output": [
+            {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": result_json, "annotations": []}
+            ]}
+        ],
+    }
+
+    with patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_response
+
+        result = _call_openai_responses_json("sk-test", "test prompt")
+        assert result["artist"] == "Nested"
+        assert result["year"] == "2019"
 
 
 def test_chat_session_ttl_cleanup():

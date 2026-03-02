@@ -139,9 +139,7 @@
   const urlScrapeBannerGenre = document.getElementById(
     "url-scrape-banner-genre",
   );
-  const urlScrapeBannerYear = document.getElementById(
-    "url-scrape-banner-year",
-  );
+  const urlScrapeBannerYear = document.getElementById("url-scrape-banner-year");
   const urlScrapeBannerSource = document.getElementById(
     "url-scrape-banner-source",
   );
@@ -1940,7 +1938,13 @@
           return;
         }
 
-        appendChatBubble("ai", data.reply, data.suggestion, data.web_search, data.sources);
+        appendChatBubble(
+          "ai",
+          data.reply,
+          data.suggestion,
+          data.web_search,
+          data.sources,
+        );
       })
       .catch(function () {
         chatPending = false;
