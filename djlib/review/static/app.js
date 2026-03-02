@@ -1634,7 +1634,7 @@
     // If messages area is empty, show a hint
     if (aiChatMessages.children.length === 0) {
       var hint = document.createElement("div");
-      hint.className = "chat-msg chat-msg-ai";
+      hint.className = "chat-msg chat-msg-hint";
       hint.textContent =
         "Ask me anything about this track — correct artist/title, challenge genre, identify mashups...";
       aiChatMessages.appendChild(hint);
