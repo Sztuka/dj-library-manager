@@ -6,6 +6,12 @@ MIXES_ROOT: ~/Music Library/MIXES # DJ mixes (flat structure, no metadata)
 LOGS_DIR: ./LOGS # Application logs (inside project repo)
 UNSORTED_CSV: ./data/unsorted.csv # Staging CSV file (inside repo)
 
+# AI models — override in config.local.yml (gitignored)
+# Chat model: used for AI Chat with web search (needs Responses API support)
+ai_chat_model: gpt-4.1-mini
+# Quick model: used for one-shot tasks (identify track, suggest genre)
+ai_quick_model: gpt-4o-mini
+
 # API keys — set real values in config.local.yml (gitignored)
 acoustid_api_key: ""
 

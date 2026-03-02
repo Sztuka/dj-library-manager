@@ -397,7 +397,7 @@ Flask-based single-page application for curating unsorted tracks.
 Conversational endpoint for iterative metadata correction with **web search**.
 
 - **API backend:** OpenAI Responses API (`/v1/responses`) with `web_search_preview` tool
-- **Model:** `gpt-4o-mini` — cost-effective, supports web search and tool use
+- **Model:** Configurable via `ai_chat_model` in config (default `gpt-4.1-mini`). Set in `config.local.yml` or env `DJLIB_AI_CHAT_MODEL`
 - **Web search:** Enabled by default. The model decides when to search based on context:
   - Track cannot be confidently identified from metadata alone
   - User explicitly asks to search or look up a track
@@ -419,7 +419,7 @@ Conversational endpoint for iterative metadata correction with **web search**.
   - Minimize/restore (─ button in header)
   - Keyboard shortcut: `Ctrl/Cmd+K` to toggle panel
 
-**Note:** The `/api/identify-track` and `/api/suggest-genre` endpoints still use the Chat Completions API (`/v1/chat/completions`) without web search, as they are one-shot calls where the model's training data is sufficient.
+**Note:** The `/api/identify-track` and `/api/suggest-genre` endpoints use the Chat Completions API (`/v1/chat/completions`) without web search, with model configurable via `ai_quick_model` (default `gpt-4o-mini`). Set in `config.local.yml` or env `DJLIB_AI_QUICK_MODEL`.
 
 ### AI Naming Conventions (in system prompt)
 
