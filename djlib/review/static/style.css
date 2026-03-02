@@ -1073,3 +1073,123 @@ kbd {
   background: rgba(255, 255, 255, 0.15);
   color: var(--text);
 }
+
+/* ── Identify result banner ────────────────────────────────── */
+
+.identify-banner {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 92;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(135deg, rgba(255, 180, 50, 0.15), rgba(255, 120, 50, 0.12));
+  border: 1px solid rgba(255, 180, 50, 0.4);
+  border-radius: 10px;
+  padding: 8px 16px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  max-width: 850px;
+  animation: ai-slide-up 0.25s ease-out;
+}
+
+.identify-banner.hidden {
+  display: none;
+}
+
+.identify-banner.identify-loading {
+  animation: ai-pulse 1.5s ease-in-out infinite;
+}
+
+.identify-banner-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.identify-banner-artist {
+  font-weight: 700;
+  color: #ffb432;
+  font-size: 14px;
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identify-banner-sep {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.identify-banner-title {
+  font-weight: 700;
+  color: #ffd080;
+  font-size: 14px;
+  flex-shrink: 0;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identify-banner-version {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+.identify-banner-year {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.identify-banner-confidence {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.identify-banner-reasoning {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identify-banner-accept,
+.identify-banner-dismiss {
+  border: none;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.identify-banner-accept {
+  background: #ffb432;
+  color: #1a1a2e;
+}
+
+.identify-banner-accept:hover {
+  background: #ffc85c;
+}
+
+.identify-banner-dismiss {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+}
+
+.identify-banner-dismiss:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text);
+}

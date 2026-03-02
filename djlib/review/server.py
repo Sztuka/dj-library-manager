@@ -287,6 +287,7 @@ def api_reveal():
 # ── AI Genre Suggest ─────────────────────────────────────────────────────────
 
 _ai_cache: Dict[str, Dict[str, Any]] = {}  # track_id -> {genre, confidence, reasoning}
+_identify_cache: Dict[str, Dict[str, Any]] = {}  # track_id -> {artist, title, version, year, ...}
 _log = logging.getLogger(__name__)
 
 
@@ -418,8 +419,8 @@ def _build_genre_prompt(ctx: Dict[str, str], genre_labels: List[str]) -> str:
     )
 
 
-def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
-    """Call OpenAI Chat Completions API and parse JSON response."""
+def _call_openai_json(api_key: str, prompt: str, max_tokens: int = 200) -> Dict[str, Any]:
+    """Call OpenAI Chat Completions API and return parsed JSON response."""
     resp = http_requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={
@@ -430,7 +431,7 @@ def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
             "model": "gpt-4o-mini",
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
-            "max_tokens": 200,
+            "max_tokens": max_tokens,
         },
         timeout=15,
     )
@@ -446,7 +447,12 @@ def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
         content = re.sub(r"\n?```$", "", content)
         content = content.strip()
 
-    result = json.loads(content)
+    return json.loads(content)
+
+
+def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
+    """Call OpenAI for genre suggestion (with genre validation)."""
+    result = _call_openai_json(api_key, prompt)
 
     # Validate genre is from our list
     genre_labels = _load_genres()
@@ -460,6 +466,184 @@ def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
             result["warning"] = f"AI suggested '{result.get('genre')}' which is not in genres.yml"
 
     return result
+
+
+# ── AI Track Identify ─────────────────────────────────────────────────────────
+
+
+def _build_identify_prompt(row: Dict[str, str]) -> str:
+    """Build the prompt for AI track identification from CSV row data."""
+    # Extract filename and folder from file_path
+    file_path = (row.get("file_path") or "").strip()
+    filename = ""
+    folder = ""
+    if file_path:
+        p = Path(file_path).expanduser()
+        filename = p.name
+        folder = p.parent.name
+
+    parts = []
+
+    if filename:
+        parts.append(f"Filename: {filename}")
+    if folder:
+        parts.append(f"Folder: {folder}")
+
+    # Original audio file tags
+    tag_artist = (row.get("tag_artist_original") or "").strip()
+    tag_title = (row.get("tag_title_original") or "").strip()
+    tag_genre = (row.get("tag_genre_original") or "").strip()
+    if tag_artist:
+        parts.append(f"Audio tag artist: {tag_artist}")
+    if tag_title:
+        parts.append(f"Audio tag title: {tag_title}")
+    if tag_genre:
+        parts.append(f"Audio tag genre: {tag_genre}")
+
+    # Parser results (what our system extracted from filename)
+    artist_suggest = (row.get("artist_suggest") or "").strip()
+    title_suggest = (row.get("title_suggest") or "").strip()
+    version_suggest = (row.get("version_suggest") or "").strip()
+    if artist_suggest:
+        parts.append(f"Parsed artist: {artist_suggest}")
+    if title_suggest:
+        parts.append(f"Parsed title: {title_suggest}")
+    if version_suggest:
+        parts.append(f"Parsed version: {version_suggest}")
+
+    # Current user-edited values (may differ from parsed)
+    current_artist = (row.get("artist") or "").strip()
+    current_title = (row.get("title") or "").strip()
+    current_version = (row.get("version_info") or "").strip()
+    if current_artist and current_artist != artist_suggest:
+        parts.append(f"Current artist (user-edited): {current_artist}")
+    if current_title and current_title != title_suggest:
+        parts.append(f"Current title (user-edited): {current_title}")
+    if current_version and current_version != version_suggest:
+        parts.append(f"Current version (user-edited): {current_version}")
+
+    # Audio characteristics
+    bpm = (row.get("bpm") or "").strip()
+    key = (row.get("key_camelot") or "").strip()
+    duration = (row.get("duration_suggest") or "").strip()
+    if bpm:
+        parts.append(f"BPM: {bpm}")
+    if key:
+        parts.append(f"Key: {key}")
+    if duration:
+        parts.append(f"Duration: {duration}")
+
+    # Online metadata sources
+    sc_genres = (row.get("genres_soundcloud") or "").strip()
+    bp_genres = (row.get("genres_beatport") or "").strip()
+    mb_genres = (row.get("genres_musicbrainz") or "").strip()
+    lf_genres = (row.get("genres_lastfm") or "").strip()
+    if sc_genres:
+        parts.append(f"SoundCloud tags: {sc_genres}")
+    if bp_genres:
+        parts.append(f"Beatport genre: {bp_genres}")
+    if mb_genres:
+        parts.append(f"MusicBrainz genres: {mb_genres}")
+    if lf_genres:
+        parts.append(f"Last.fm genres: {lf_genres}")
+
+    # Other metadata
+    genre_suggest = (row.get("genre_suggest") or "").strip()
+    year_suggest = (row.get("year_suggest") or "").strip()
+    meta_source = (row.get("meta_source") or "").strip()
+    if genre_suggest:
+        parts.append(f"Genre suggestion: {genre_suggest}")
+    if year_suggest:
+        parts.append(f"Year suggestion: {year_suggest}")
+    if meta_source:
+        parts.append(f"Metadata sources that found results: {meta_source}")
+
+    track_info = "\n".join(parts)
+
+    return (
+        "You are a music track identification expert specializing in electronic "
+        "and dance music. Your job is to determine the correct artist name, track "
+        "title, version/remix information, and release year based on all available clues.\n\n"
+        f"Available information about this track:\n{track_info}\n\n"
+        "IDENTIFICATION RULES:\n"
+        "1. The filename is often the strongest clue. DJ naming convention: "
+        "\"Artist - Title (Remix/Edit).ext\"\n"
+        "2. \"w/\" or \"w_\" in filenames means \"featuring\" — format as \"feat.\"\n"
+        "3. SoundCloud uploader is NOT necessarily the artist — it could be a repost "
+        "channel, label, remixer, or fan upload\n"
+        "4. For remixes, the version field should contain the remix info: "
+        "\"Remixer Name Remix\" (without parentheses)\n"
+        "5. Featuring artists go in the title: \"Track Title feat. Artist B\"\n"
+        "6. Use proper capitalization (Title Case for names and titles)\n"
+        "7. If you cannot determine a field with reasonable confidence, return an "
+        "empty string for that field\n"
+        "8. Year should be the original release year. If uncertain, leave empty\n"
+        "9. If original audio tags and filename disagree, prefer the more "
+        "complete/structured source\n"
+        "10. Separate the main title from version info — don't include remix/edit "
+        "in the title field\n\n"
+        "Respond ONLY with valid JSON (no markdown, no code fences):\n"
+        '{"artist": "<Artist Name>", "title": "<Track Title>", '
+        '"version": "<Remix/Edit info or empty>", "year": "<YYYY or empty>", '
+        '"confidence": <0.0-1.0>, '
+        '"reasoning": "<1-2 sentences explaining your identification>"}'
+    )
+
+
+@app.route("/api/identify-track", methods=["POST"])
+def api_identify_track():
+    """Ask OpenAI to identify a track's artist, title, version, and year.
+
+    Loads all available metadata from CSV (filename, tags, BPM, key, online
+    sources) and builds context for the AI to identify the track.
+
+    Request body (JSON):
+        { "track_id": "..." }
+
+    Returns:
+        { "artist": "...", "title": "...", "version": "...", "year": "...",
+          "confidence": 0.8, "reasoning": "..." }
+    """
+    api_key = get_openai_api_key()
+    if not api_key:
+        return jsonify({"error": "OpenAI API key not configured. Add openai_api_key to config.local.yml"}), 501
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    tid = data.get("track_id", "")
+    if not tid:
+        return jsonify({"error": "Missing track_id"}), 400
+
+    # Check cache
+    if tid in _identify_cache:
+        return jsonify(_identify_cache[tid])
+
+    # Load row from CSV
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(UNSORTED_CSV)
+
+    row = None
+    for r in rows:
+        if r.get("track_id") == tid:
+            row = r
+            break
+
+    if not row:
+        return jsonify({"error": f"Track not found: {tid}"}), 404
+
+    # Build prompt with all available context
+    prompt = _build_identify_prompt(row)
+
+    try:
+        result = _call_openai_json(api_key, prompt, max_tokens=300)
+        if tid:
+            _identify_cache[tid] = result
+        return jsonify(result)
+    except Exception as e:
+        _log.warning("OpenAI identify error: %s", e)
+        return jsonify({"error": f"AI request failed: {e}"}), 502
 
 
 # ── Re-enrich (context menu) ─────────────────────────────────────────────────
