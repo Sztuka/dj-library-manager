@@ -584,10 +584,11 @@ def _search_track_impl(artist: str, title: str, duration_s: Optional[int] = None
     if not artist and not title:
         return None
     
-    # Skip Beatport when artist is missing — without a known artist,
-    # title-only queries produce false positive matches (e.g. random tracks
-    # matching noise titles like "Afro House start 1 augFeeling good").
-    if not (artist or "").strip():
+    # Skip Beatport when artist is missing AND no version info.
+    # Title-only queries produce false positives (e.g. "Afro House start 1").
+    # But for remixes, remixer_name + title is specific enough — the version
+    # matching (score > 0 required) prevents false positives.
+    if not (artist or "").strip() and not (version or "").strip():
         return None
 
     try:
@@ -710,6 +711,7 @@ def _search_track_impl(artist: str, title: str, duration_s: Optional[int] = None
             return 0
         
         artist_norm = _normalize(artist)
+        no_artist = not artist_norm
         
         # Find best match WITH artist verification and version matching
         best_match = None
@@ -721,21 +723,26 @@ def _search_track_impl(artist: str, title: str, duration_s: Optional[int] = None
             track_mix_name = track.get("mix_name", "")
             
             # Check if any artist matches
-            artist_match = False
-            for ta in track_artist_names:
-                ta_norm = _normalize(ta)
-                # Fuzzy match: one contains the other
-                if artist_norm in ta_norm or ta_norm in artist_norm:
-                    artist_match = True
-                    break
-                # Also check individual words for multi-word artists
-                artist_words = set(artist_norm.split())
-                ta_words = set(ta_norm.split())
-                if artist_words and ta_words and len(artist_words & ta_words) >= 1:
-                    # At least one significant word matches
-                    if any(len(w) > 3 for w in (artist_words & ta_words)):
+            if no_artist:
+                # No artist info — skip artist check, rely on title + version
+                # validation below (version_score > 0 is enforced later).
+                artist_match = True
+            else:
+                artist_match = False
+                for ta in track_artist_names:
+                    ta_norm = _normalize(ta)
+                    # Fuzzy match: one contains the other
+                    if artist_norm in ta_norm or ta_norm in artist_norm:
                         artist_match = True
                         break
+                    # Also check individual words for multi-word artists
+                    artist_words = set(artist_norm.split())
+                    ta_words = set(ta_norm.split())
+                    if artist_words and ta_words and len(artist_words & ta_words) >= 1:
+                        # At least one significant word matches
+                        if any(len(w) > 3 for w in (artist_words & ta_words)):
+                            artist_match = True
+                            break
             
             if not artist_match:
                 continue
@@ -783,11 +790,13 @@ def _search_track_impl(artist: str, title: str, duration_s: Optional[int] = None
                     best_version_score = this_version_score
         
         if best_match is None:
-            # No matching artist found in Beatport results
+            # No matching artist/title found in Beatport results
             return None
         
-        # If we're searching for a remix but found only original, reject match
-        # This prevents returning "Hip-Hop" for an Afro House remix
+        # If we're searching for a remix but found only original, reject match.
+        # This prevents returning "Hip-Hop" for an Afro House remix.
+        # Also required when artist is missing — version match is the only
+        # reliable signal to prevent false positives.
         if version and best_version_score == 0:
             return None
         

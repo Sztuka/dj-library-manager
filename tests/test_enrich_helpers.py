@@ -333,3 +333,90 @@ class TestSuggestMetadataOffline:
         result = suggest_metadata(p, tags, enable_online=False)
         # Should derive from filename
         assert result["artist_suggest"] or result["title_suggest"]
+
+
+# ---------------------------------------------------------------------------
+# _resolve_via_genre_sources: Beatport artist extraction
+# ---------------------------------------------------------------------------
+
+class TestResolveViaGenreSourcesBeatportArtist:
+    """When artist is empty and Beatport finds a remix, extract artist."""
+
+    @patch("djlib.metadata.beatport.search_track")
+    @patch("djlib.metadata.lastfm.track_info", return_value={})
+    def test_beatport_provides_artist_for_remix_without_artist(
+        self, mock_lastfm_info, mock_bp_search
+    ):
+        """Remix with no artist: Beatport result should populate artist_suggest."""
+        from djlib.enrich import _resolve_via_genre_sources
+
+        # Mock Beatport search_track to return a result with artist
+        mock_bp_search.return_value = {
+            "artist": "Pablo Fierro",
+            "genre": "Afro House",
+            "release_date": "2021-06-15",
+            "release_name": "El Carinoso EP",
+        }
+
+        # Mock the genre resolver to return a valid result
+        from djlib.metadata.genre_resolver import GenreResolution, SourceScore
+        mock_genre_result = GenreResolution(
+            main="Afro House",
+            subs=[],
+            confidence=0.8,
+            breakdown=[SourceScore(source="bp", weight=25.0, tags={"Afro House": 25.0})],
+        )
+
+        with patch(
+            "djlib.metadata.genre_resolver.resolve", return_value=mock_genre_result
+        ):
+            result = _resolve_via_genre_sources(
+                artist="",
+                title="El Carinoso",
+                version="Gregor Salto Remix",
+                dur_sec=468,
+                live=False,
+                tags={},
+            )
+
+        assert result is not None
+        assert result["artist_suggest"] == "Pablo Fierro"
+        assert result["year_suggest"] == "2021"
+
+    @patch("djlib.metadata.beatport.search_track")
+    @patch("djlib.metadata.lastfm.track_info", return_value={})
+    def test_beatport_does_not_overwrite_existing_artist(
+        self, mock_lastfm_info, mock_bp_search
+    ):
+        """When artist is already known, Beatport should not overwrite it."""
+        from djlib.enrich import _resolve_via_genre_sources
+
+        mock_bp_search.return_value = {
+            "artist": "Pablo Fierro",
+            "genre": "Afro House",
+            "release_date": "2021-06-15",
+        }
+
+        from djlib.metadata.genre_resolver import GenreResolution, SourceScore
+        mock_genre_result = GenreResolution(
+            main="Afro House",
+            subs=[],
+            confidence=0.8,
+            breakdown=[SourceScore(source="bp", weight=25.0, tags={"Afro House": 25.0})],
+        )
+
+        with patch(
+            "djlib.metadata.genre_resolver.resolve", return_value=mock_genre_result
+        ):
+            result = _resolve_via_genre_sources(
+                artist="Existing Artist",
+                title="El Carinoso",
+                version="Gregor Salto Remix",
+                dur_sec=468,
+                live=False,
+                tags={},
+            )
+
+        assert result is not None
+        # Should keep the existing artist, not overwrite with Beatport
+        assert result["artist_suggest"] == "Existing Artist"
