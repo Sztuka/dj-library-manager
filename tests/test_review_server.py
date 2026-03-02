@@ -1571,7 +1571,7 @@ def test_call_openai_chat_responses_api_format():
         call_args = mock_post.call_args
         assert "/v1/responses" in call_args[0][0]
         payload = call_args[1]["json"]
-        assert payload["model"] == "gpt-4o-mini"
+        assert payload["model"] == "gpt-4.1-mini"  # default ai_chat_model
         assert {"type": "web_search_preview"} in payload["tools"]
         assert payload["instructions"] == "You are a DJ assistant."
         # System message should NOT be in input

@@ -1,5 +1,6 @@
 import yaml
 from pathlib import Path
+from unittest.mock import patch
 
 import djlib.config as config
 
@@ -50,3 +51,60 @@ def test_config_and_folders(tmp_path, monkeypatch):
     assert artist_folder.exists()
 
     # Pliki YAML – pomijamy sprawdzenie, bo zapisują się do głównego katalogu
+
+
+# ── AI model config getters ──────────────────────────────────────────
+
+
+def test_get_ai_chat_model_default(tmp_path, monkeypatch):
+    """Returns default gpt-4.1-mini when no config or env is set."""
+    monkeypatch.delenv("DJLIB_AI_CHAT_MODEL", raising=False)
+    # Point _CANDIDATES to non-existent paths so no yaml is loaded
+    monkeypatch.setattr(config, "_CANDIDATES", [tmp_path / "nope.yml"])
+    assert config.get_ai_chat_model() == "gpt-4.1-mini"
+
+
+def test_get_ai_quick_model_default(tmp_path, monkeypatch):
+    """Returns default gpt-4o-mini when no config or env is set."""
+    monkeypatch.delenv("DJLIB_AI_QUICK_MODEL", raising=False)
+    monkeypatch.setattr(config, "_CANDIDATES", [tmp_path / "nope.yml"])
+    assert config.get_ai_quick_model() == "gpt-4o-mini"
+
+
+def test_get_ai_chat_model_from_env(monkeypatch):
+    """Env var DJLIB_AI_CHAT_MODEL takes priority."""
+    monkeypatch.setenv("DJLIB_AI_CHAT_MODEL", "gpt-4o")
+    assert config.get_ai_chat_model() == "gpt-4o"
+
+
+def test_get_ai_quick_model_from_env(monkeypatch):
+    """Env var DJLIB_AI_QUICK_MODEL takes priority."""
+    monkeypatch.setenv("DJLIB_AI_QUICK_MODEL", "gpt-4o")
+    assert config.get_ai_quick_model() == "gpt-4o"
+
+
+def test_get_ai_chat_model_from_yaml(tmp_path, monkeypatch):
+    """Reads ai_chat_model from config YAML file."""
+    monkeypatch.delenv("DJLIB_AI_CHAT_MODEL", raising=False)
+    cfg_file = tmp_path / "config.local.yml"
+    cfg_file.write_text(yaml.dump({"ai_chat_model": "o3-mini"}))
+    monkeypatch.setattr(config, "_CANDIDATES", [cfg_file])
+    assert config.get_ai_chat_model() == "o3-mini"
+
+
+def test_get_ai_quick_model_from_yaml(tmp_path, monkeypatch):
+    """Reads ai_quick_model from config YAML file."""
+    monkeypatch.delenv("DJLIB_AI_QUICK_MODEL", raising=False)
+    cfg_file = tmp_path / "config.local.yml"
+    cfg_file.write_text(yaml.dump({"ai_quick_model": "gpt-4.1-nano"}))
+    monkeypatch.setattr(config, "_CANDIDATES", [cfg_file])
+    assert config.get_ai_quick_model() == "gpt-4.1-nano"
+
+
+def test_get_ai_model_env_overrides_yaml(tmp_path, monkeypatch):
+    """Env var takes priority over YAML config for AI models."""
+    cfg_file = tmp_path / "config.local.yml"
+    cfg_file.write_text(yaml.dump({"ai_chat_model": "from-yaml"}))
+    monkeypatch.setattr(config, "_CANDIDATES", [cfg_file])
+    monkeypatch.setenv("DJLIB_AI_CHAT_MODEL", "from-env")
+    assert config.get_ai_chat_model() == "from-env"

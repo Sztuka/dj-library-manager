@@ -549,3 +549,35 @@ def get_openai_api_key() -> str:
         except Exception:
             pass
     return ""
+
+
+_DEFAULT_AI_CHAT_MODEL = "gpt-4.1-mini"
+_DEFAULT_AI_QUICK_MODEL = "gpt-4o-mini"
+
+
+def get_ai_chat_model() -> str:
+    """Return AI model for chat / web-search (configurable, default gpt-4.1-mini)."""
+    env = os.getenv("DJLIB_AI_CHAT_MODEL")
+    if env:
+        return env.strip()
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("ai_chat_model", "") or "").strip()
+        if val:
+            return val
+    return _DEFAULT_AI_CHAT_MODEL
+
+
+def get_ai_quick_model() -> str:
+    """Return AI model for one-shot tasks like identify / suggest-genre (default gpt-4o-mini)."""
+    env = os.getenv("DJLIB_AI_QUICK_MODEL")
+    if env:
+        return env.strip()
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("ai_quick_model", "") or "").strip()
+        if val:
+            return val
+    return _DEFAULT_AI_QUICK_MODEL

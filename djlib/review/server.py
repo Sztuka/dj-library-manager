@@ -26,7 +26,12 @@ import requests as http_requests
 import yaml
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-from djlib.config import UNSORTED_CSV, get_openai_api_key
+from djlib.config import (
+    UNSORTED_CSV,
+    get_ai_chat_model,
+    get_ai_quick_model,
+    get_openai_api_key,
+)
 from djlib.filename import parse_from_filename
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
 
@@ -430,7 +435,7 @@ def _call_openai_json(api_key: str, prompt: str, max_tokens: int = 200) -> Dict[
             "Content-Type": "application/json",
         },
         json={
-            "model": "gpt-4o-mini",
+            "model": get_ai_quick_model(),
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.3,
             "max_tokens": max_tokens,
@@ -749,7 +754,7 @@ def _call_openai_chat(
             conversation.append(msg)
 
     payload: Dict[str, Any] = {
-        "model": "gpt-4o-mini",
+        "model": get_ai_chat_model(),
         "input": conversation,
         "tools": [{"type": "web_search_preview"}],
         "temperature": 0.3,
