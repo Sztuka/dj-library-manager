@@ -637,6 +637,12 @@ kbd {
 .col-rating .star-off {
   color: rgba(255, 193, 7, 0.15);
 }
+.col-rating-editable {
+  cursor: pointer;
+}
+.col-rating-editable:hover .star-off {
+  color: rgba(255, 193, 7, 0.35);
+}
 
 /* ── Source badge ──────────────────────────────────────────── */
 

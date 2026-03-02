@@ -185,6 +185,7 @@
       },
       { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
       { key: "key_camelot", label: "Key", width: "40px", cls: "col-key" },
+      { key: "rating", label: "Rating", width: "72px", type: "rating" },
       { key: "destination", label: "Dest", width: "72px", type: "dest-select" },
       { key: "status", label: "Status", width: "68px", type: "status-display" },
       { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
@@ -277,6 +278,38 @@
           : '<span class="star-off">\u2605</span>';
     }
     return html;
+  }
+
+  // -- Interactive rating helper (click to set stars) --------
+  function handleRatingClick(td, track, key, e) {
+    var rect = td.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var starWidth = rect.width / 5;
+    var clicked = Math.min(5, Math.max(1, Math.ceil(x / starWidth)));
+    var current = parseInt(track[key]) || 0;
+    // Click same star again → clear rating
+    var newVal = clicked === current ? 0 : clicked;
+    track[key] = String(newVal);
+    td.innerHTML = ratingToStars(newVal);
+    saveTrackField(track, key, String(newVal));
+    showToast(newVal > 0 ? "Rating: " + "\u2605".repeat(newVal) : "Rating cleared", "");
+  }
+
+  function setRatingForCurrent(stars) {
+    if (currentSource !== "unsorted") return;
+    if (currentIndex < 0 || currentIndex >= filteredTracks.length) return;
+    var track = filteredTracks[currentIndex];
+    var current = parseInt(track.rating) || 0;
+    var newVal = stars === current ? 0 : stars;
+    track.rating = String(newVal);
+    // Update the cell in the DOM
+    var row = tableBody.children[currentIndex];
+    if (row) {
+      var cells = row.querySelectorAll(".col-rating");
+      if (cells.length) cells[0].innerHTML = ratingToStars(newVal);
+    }
+    saveTrackField(track, "rating", String(newVal));
+    showToast(newVal > 0 ? "Rating: " + "\u2605".repeat(newVal) : "Rating cleared", "");
   }
 
   // -- Source badge helper ------------------------------------
@@ -414,7 +447,7 @@
     // Library-only filters
     filterBpm.style.display = isLib ? "" : "none";
     filterKey.style.display = isLib ? "" : "none";
-    filterRating.style.display = isLib ? "" : "none";
+    filterRating.style.display = isLib || isUnsorted ? "" : "none";
   }
 
   // -- Filtering & sorting ------------------------------------
@@ -473,7 +506,7 @@
         if (kf) {
           if ((t.key || "").trim() !== kf) return false;
         }
-        // Rating
+        // Rating (library)
         if (rf) {
           const rat = parseFloat(t.rating) || 0;
           if (rf === "unrated") {
@@ -485,6 +518,20 @@
             } else {
               if (rat < minRat) return false;
             }
+          }
+        }
+      }
+      // Rating filter (unsorted — outside isLib block)
+      if (rf && !isLib) {
+        const rat = parseFloat(t.rating) || 0;
+        if (rf === "unrated") {
+          if (rat > 0) return false;
+        } else {
+          const minRat = parseFloat(rf);
+          if (rf === "5") {
+            if (Math.round(rat) !== 5) return false;
+          } else {
+            if (rat < minRat) return false;
           }
         }
       }
@@ -761,6 +808,18 @@
         } else if (col.type === "rating") {
           td.classList.add("col-rating");
           td.innerHTML = ratingToStars(track[col.key]);
+          if (currentSource === "unsorted") {
+            td.classList.add("col-rating-editable");
+            td.addEventListener(
+              "click",
+              (function (td, track, colKey) {
+                return function (e) {
+                  e.stopPropagation();
+                  handleRatingClick(td, track, colKey, e);
+                };
+              })(td, track, col.key),
+            );
+          }
         } else if (col.type === "color-dot") {
           td.innerHTML = colorDotHtml(track[col.key]);
           td.style.textAlign = "center";
@@ -2767,6 +2826,24 @@
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
           toggleDone();
+        }
+        break;
+
+      case "Digit1":
+      case "Digit2":
+      case "Digit3":
+      case "Digit4":
+      case "Digit5":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          setRatingForCurrent(parseInt(e.code.charAt(5)));
+        }
+        break;
+
+      case "Digit0":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          setRatingForCurrent(0);
         }
         break;
 
