@@ -686,9 +686,16 @@ def _build_chat_system_prompt(row: Dict[str, str]) -> str:
     genre_list = ", ".join(genre_labels)
 
     return (
-        "You are a DJ music metadata assistant. You help identify and classify "
-        "tracks in a DJ's music library. You are having a conversation with an "
-        "experienced DJ who may correct your initial analysis.\n\n"
+        "You are a DJ music metadata assistant with web search capabilities. "
+        "You help identify and classify tracks in a DJ's music library. You are "
+        "having a conversation with an experienced DJ who may correct your "
+        "initial analysis.\n\n"
+        "You have access to web search. USE IT proactively when:\n"
+        "- The track cannot be confidently identified from metadata alone\n"
+        "- The user asks you to search or look up a track\n"
+        "- You need to verify release year, remix credits, or artist spelling\n"
+        "- Genre classification is uncertain and online sources could help\n"
+        "Do NOT search when you already have high-confidence metadata.\n\n"
         f"Available information about this track:\n{track_info}\n\n"
         "IMPORTANT: The folder name where a track is stored is NOT a reliable genre indicator. "
         "Folders are used for file organization only. Base your genre analysis on BPM, "
@@ -720,29 +727,70 @@ def _call_openai_chat(
     api_key: str,
     messages: List[Dict[str, str]],
     max_tokens: int = 400,
-) -> str:
-    """Call OpenAI Chat Completions API with full message history.
+) -> Dict[str, Any]:
+    """Call OpenAI Responses API with web search and full message history.
 
-    Returns the assistant's reply text.
+    Uses the Responses API (``/v1/responses``) with the ``web_search_preview``
+    tool so the model can look up track information online when its training
+    data is insufficient.
+
+    Returns a dict with keys:
+        ``text``  – the assistant's reply text
+        ``web_search_used`` – whether web search was invoked
+        ``annotations`` – list of URL citations ``[{url, title}, ...]``
     """
+    # Separate system prompt → instructions parameter (Responses API convention)
+    instructions = None
+    conversation: List[Dict[str, str]] = []
+    for msg in messages:
+        if msg["role"] == "system":
+            instructions = msg["content"]
+        else:
+            conversation.append(msg)
+
+    payload: Dict[str, Any] = {
+        "model": "gpt-4o-mini",
+        "input": conversation,
+        "tools": [{"type": "web_search_preview"}],
+        "temperature": 0.3,
+        "max_output_tokens": max_tokens,
+    }
+    if instructions:
+        payload["instructions"] = instructions
+
     resp = http_requests.post(
-        "https://api.openai.com/v1/chat/completions",
+        "https://api.openai.com/v1/responses",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": "gpt-4o-mini",
-            "messages": messages,
-            "temperature": 0.3,
-            "max_tokens": max_tokens,
-        },
-        timeout=30,
+        json=payload,
+        timeout=60,
     )
     resp.raise_for_status()
 
     data = resp.json()
-    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+    # Detect if web search was used and extract citations
+    web_search_used = False
+    annotations: List[Dict[str, str]] = []
+    for item in data.get("output", []):
+        if item.get("type") == "web_search_call":
+            web_search_used = True
+        if item.get("type") == "message":
+            for content_block in item.get("content", []):
+                for ann in content_block.get("annotations", []):
+                    if ann.get("type") == "url_citation":
+                        annotations.append({
+                            "url": ann.get("url", ""),
+                            "title": ann.get("title", ""),
+                        })
+
+    return {
+        "text": data.get("output_text", ""),
+        "web_search_used": web_search_used,
+        "annotations": annotations,
+    }
 
 
 def _parse_suggestion_block(text: str) -> Optional[Dict[str, str]]:
@@ -861,7 +909,8 @@ def api_ai_chat():
     session.append({"role": "user", "content": user_msg})
 
     try:
-        reply = _call_openai_chat(api_key, session)
+        result = _call_openai_chat(api_key, session)
+        reply = result["text"]
         session.append({"role": "assistant", "content": reply})
         _chat_sessions[tid]["last_access"] = time.time()
 
@@ -877,11 +926,17 @@ def api_ai_chat():
             display_text = re.sub(pattern, '', display_text, flags=re.DOTALL)
         display_text = display_text.strip()
 
-        return jsonify({
+        response_data: Dict[str, Any] = {
             "reply": display_text,
             "suggestion": suggestion,
             "history_length": len(session) - 1,  # exclude system prompt
-        })
+        }
+        if result["web_search_used"]:
+            response_data["web_search"] = True
+            if result["annotations"]:
+                response_data["sources"] = result["annotations"]
+
+        return jsonify(response_data)
     except Exception as e:
         # Remove the failed user message
         session.pop()

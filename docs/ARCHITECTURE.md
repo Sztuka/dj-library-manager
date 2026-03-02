@@ -394,21 +394,32 @@ Flask-based single-page application for curating unsorted tracks.
 
 ### AI Chat (`/api/ai-chat`)
 
-Conversational endpoint for iterative metadata correction.
+Conversational endpoint for iterative metadata correction with **web search**.
 
+- **API backend:** OpenAI Responses API (`/v1/responses`) with `web_search_preview` tool
+- **Model:** `gpt-4o-mini` — cost-effective, supports web search and tool use
+- **Web search:** Enabled by default. The model decides when to search based on context:
+  - Track cannot be confidently identified from metadata alone
+  - User explicitly asks to search or look up a track
+  - Verification of release year, remix credits, or artist spelling is needed
 - **Request:** `{ "track_id": "...", "message": "..." }` or `{ "track_id": "...", "reset": true }`
-- **Response:** `{ "reply": "...", "suggestion": { ... } | null, "history_length": N }`
+- **Response:** `{ "reply": "...", "suggestion": { ... } | null, "history_length": N, "web_search": true, "sources": [{"url": "...", "title": "..."}] }`
+  - `web_search` and `sources` only present when the model used web search
 - **Sessions:** Per-track conversation stored in memory with TTL (1 hour) and LRU eviction (max 100 sessions)
 - **Stale prompt refresh:** System prompt is rebuilt from current CSV data on every request, so edits via the table are reflected immediately
 - **Suggestion blocks:** AI outputs ` ```suggestion ` fenced JSON, parsed and returned separately
 - **Field mapping:** `version` in AI output is normalized to `version_info` for CSV compatibility
 - **Track deletion guard:** If a track is removed while chatting, session is cleaned up and 404 returned
 - **Frontend features:**
-  - Quick prompt buttons (Identify, Genre?, Mashup?, Fix names) — shown on first open, hidden after first message
+  - Quick prompt buttons (Identify, Genre?, Mashup?, Fix names, **Search online**) — shown on first open, hidden after first message
+  - 🔍 web search badge on AI replies that used web search
+  - Clickable source citations (Beatport, Discogs, etc.) under AI replies
   - Current→suggested diff display in suggestion blocks (strikethrough old value)
   - Draggable panel (grab header to reposition)
   - Minimize/restore (─ button in header)
   - Keyboard shortcut: `Ctrl/Cmd+K` to toggle panel
+
+**Note:** The `/api/identify-track` and `/api/suggest-genre` endpoints still use the Chat Completions API (`/v1/chat/completions`) without web search, as they are one-shot calls where the model's training data is sufficient.
 
 ### AI Naming Conventions (in system prompt)
 
