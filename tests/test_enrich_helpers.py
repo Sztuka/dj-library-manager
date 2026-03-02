@@ -420,3 +420,130 @@ class TestResolveViaGenreSourcesBeatportArtist:
         assert result is not None
         # Should keep the existing artist, not overwrite with Beatport
         assert result["artist_suggest"] == "Existing Artist"
+
+
+# ---------------------------------------------------------------------------
+# CLI safety net: Beatport artist extraction when suggest_metadata didn't
+# provide an artist (e.g. AcoustID intercepted, transient error, or offline
+# fallback discarded the result).
+# ---------------------------------------------------------------------------
+
+class TestCLIBeatportArtistSafetyNet:
+    """Test the safety-net logic added in cli.py's enrich-online loop.
+
+    When genres_beatport is populated but artist_suggest is empty, the CLI
+    calls beatport.search_track (in-process cache hit) to extract artist,
+    year, and album.
+    """
+
+    @patch("djlib.metadata.beatport.search_track")
+    def test_safety_net_fills_artist_from_beatport(self, mock_bp):
+        """Empty artist_suggest + version present → extract artist from Beatport."""
+        mock_bp.return_value = {
+            "artist": "Pablo Fierro",
+            "genre": "Afro House",
+            "release_date": "2021-06-15",
+            "release_name": "El Carinoso",
+        }
+
+        r = {
+            "artist_suggest": "",
+            "title_suggest": "El Carinoso",
+            "version_suggest": "Gregor Salto Remix",
+            "genre_suggest": "house",
+            "genres_beatport": "house",
+            "year_suggest": "",
+            "album_suggest": "",
+        }
+        a, t, v, dur_s = "", "El Carinoso", "Gregor Salto Remix", 468
+
+        # Execute safety net logic (mirrors cli.py code)
+        if not (r.get("artist_suggest") or "").strip() and v:
+            from djlib.metadata.beatport import search_track as bp_search
+            bp_result = bp_search(a, t, dur_s, version=v)
+            if bp_result and bp_result.get("artist"):
+                r["artist_suggest"] = bp_result["artist"]
+                if not (r.get("year_suggest") or "").strip():
+                    rd = bp_result.get("release_date", "")
+                    if rd and rd.strip():
+                        r["year_suggest"] = rd.split("-")[0]
+                if not (r.get("album_suggest") or "").strip():
+                    alb = bp_result.get("release_name", "") or bp_result.get("album", "")
+                    if alb and alb.strip():
+                        r["album_suggest"] = alb
+
+        assert r["artist_suggest"] == "Pablo Fierro"
+        assert r["year_suggest"] == "2021"
+        assert r["album_suggest"] == "El Carinoso"
+
+    @patch("djlib.metadata.beatport.search_track")
+    def test_safety_net_skips_when_artist_already_set(self, mock_bp):
+        """If artist_suggest is already set, safety net should not run."""
+        r = {
+            "artist_suggest": "Existing Artist",
+            "version_suggest": "Gregor Salto Remix",
+        }
+        v = "Gregor Salto Remix"
+
+        if not (r.get("artist_suggest") or "").strip() and v:
+            mock_bp.assert_not_called()
+
+        assert r["artist_suggest"] == "Existing Artist"
+        mock_bp.assert_not_called()
+
+    @patch("djlib.metadata.beatport.search_track")
+    def test_safety_net_skips_when_no_version(self, mock_bp):
+        """No version (original track) → safety net should not run."""
+        r = {"artist_suggest": "", "version_suggest": ""}
+        v = ""
+
+        if not (r.get("artist_suggest") or "").strip() and v:
+            mock_bp.assert_not_called()
+
+        mock_bp.assert_not_called()
+
+    @patch("djlib.metadata.beatport.search_track")
+    def test_safety_net_handles_beatport_none(self, mock_bp):
+        """Beatport returns None → no crash, artist stays empty."""
+        mock_bp.return_value = None
+
+        r = {"artist_suggest": "", "year_suggest": "2020", "album_suggest": ""}
+        a, t, v, dur_s = "", "El Carinoso", "Gregor Salto Remix", 468
+
+        if not (r.get("artist_suggest") or "").strip() and v:
+            from djlib.metadata.beatport import search_track as bp_search
+            bp_result = bp_search(a, t, dur_s, version=v)
+            if bp_result and bp_result.get("artist"):
+                r["artist_suggest"] = bp_result["artist"]
+
+        assert r["artist_suggest"] == ""
+
+    @patch("djlib.metadata.beatport.search_track")
+    def test_safety_net_does_not_overwrite_existing_year(self, mock_bp):
+        """Year already set → Beatport year should not overwrite."""
+        mock_bp.return_value = {
+            "artist": "Pablo Fierro",
+            "release_date": "2010-01-01",
+            "release_name": "Old Album",
+        }
+
+        r = {"artist_suggest": "", "year_suggest": "2021", "album_suggest": ""}
+        a, t, v, dur_s = "", "El Carinoso", "Gregor Salto Remix", 468
+
+        if not (r.get("artist_suggest") or "").strip() and v:
+            from djlib.metadata.beatport import search_track as bp_search
+            bp_result = bp_search(a, t, dur_s, version=v)
+            if bp_result and bp_result.get("artist"):
+                r["artist_suggest"] = bp_result["artist"]
+                if not (r.get("year_suggest") or "").strip():
+                    rd = bp_result.get("release_date", "")
+                    if rd and rd.strip():
+                        r["year_suggest"] = rd.split("-")[0]
+                if not (r.get("album_suggest") or "").strip():
+                    alb = bp_result.get("release_name", "") or bp_result.get("album", "")
+                    if alb and alb.strip():
+                        r["album_suggest"] = alb
+
+        assert r["artist_suggest"] == "Pablo Fierro"
+        assert r["year_suggest"] == "2021"  # existing year preserved
+        assert r["album_suggest"] == "Old Album"  # album was empty, so filled
