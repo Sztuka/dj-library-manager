@@ -2056,3 +2056,78 @@ def test_ai_chat_stale_prompt_refresh(client, tmp_path):
 
     srv._chat_sessions.pop("stale-1", None)
 
+
+# ── Rating update (unsorted) ────────────────────────────────────────────────
+
+def test_update_rating_saves_to_csv(client, tmp_path):
+    """Rating field saved via /api/tracks/update persists in unsorted.csv."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "rating-test-1",
+        "file_path": "/tmp/test/Artist - Banger.wav",
+        "artist": "DJ Test",
+        "title": "Banger",
+        "rating": "",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path):
+        resp = client.post("/api/tracks/update", json={
+            "track_id": "rating-test-1",
+            "fields": {"rating": "4"},
+        })
+        assert resp.status_code == 200
+
+        # Verify CSV was updated
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        assert len(rows) == 1
+        assert rows[0]["rating"] == "4"
+
+
+def test_update_rating_clear(client, tmp_path):
+    """Setting rating to 0 clears the rating."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "rating-test-2",
+        "file_path": "/tmp/test/Artist - Track.wav",
+        "artist": "DJ Test",
+        "title": "Track",
+        "rating": "5",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path):
+        resp = client.post("/api/tracks/update", json={
+            "track_id": "rating-test-2",
+            "fields": {"rating": "0"},
+        })
+        assert resp.status_code == 200
+
+        with open(csv_path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        assert rows[0]["rating"] == "0"
+
+
+def test_unsorted_tracks_include_rating_field(client, tmp_path):
+    """Unsorted tracks API returns rating field."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "rating-test-3",
+        "file_path": "/tmp/test/Artist - Rated.wav",
+        "artist": "DJ Test",
+        "title": "Rated",
+        "rating": "3",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path):
+        resp = client.get("/api/tracks?source=unsorted")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert len(data) >= 1
+        track = next(t for t in data if t["track_id"] == "rating-test-3")
+        assert track["rating"] == "3"
+
