@@ -387,7 +387,7 @@ Flask-based single-page application for curating unsorted tracks.
 | GET    | `/api/library-index`     | Track IDs present in `library.csv`                   |
 | GET    | `/api/ai-status`         | Check if OpenAI API key is configured                |
 | POST   | `/api/suggest-genre`     | AI genre suggestion for a track (one-shot)           |
-| POST   | `/api/identify-track`    | AI track identification from filename/metadata       |
+| POST   | `/api/identify-track`    | AI track identification with web search              |
 | POST   | `/api/ai-chat`           | Conversational AI chat for metadata refinement       |
 | POST   | `/api/enrich-track`      | Re-enrich track from online sources                  |
 | POST   | `/api/swap-artist-title` | Swap artist/title and re-parse from filename         |
@@ -419,7 +419,7 @@ Conversational endpoint for iterative metadata correction with **web search**.
   - Minimize/restore (─ button in header)
   - Keyboard shortcut: `Ctrl/Cmd+K` to toggle panel
 
-**Note:** The `/api/identify-track` and `/api/suggest-genre` endpoints use the Chat Completions API (`/v1/chat/completions`) without web search, with model configurable via `ai_quick_model` (default `gpt-4o-mini`). Set in `config.local.yml` or env `DJLIB_AI_QUICK_MODEL`.
+**Note:** The `/api/identify-track` endpoint uses the Responses API (`/v1/responses`) with `web_search_preview` for better identification accuracy (especially release year). Model configurable via `ai_chat_model` (default `gpt-4.1-mini`). The `/api/suggest-genre` endpoint uses the Chat Completions API (`/v1/chat/completions`) without web search, with model configurable via `ai_quick_model` (default `gpt-4o-mini`). Set in `config.local.yml` or env `DJLIB_AI_QUICK_MODEL`.
 
 ### AI Naming Conventions (in system prompt)
 
