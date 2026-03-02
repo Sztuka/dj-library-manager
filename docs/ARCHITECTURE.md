@@ -398,9 +398,17 @@ Conversational endpoint for iterative metadata correction.
 
 - **Request:** `{ "track_id": "...", "message": "..." }` or `{ "track_id": "...", "reset": true }`
 - **Response:** `{ "reply": "...", "suggestion": { ... } | null, "history_length": N }`
-- **Sessions:** Per-track conversation stored in memory, capped at 20 messages
+- **Sessions:** Per-track conversation stored in memory with TTL (1 hour) and LRU eviction (max 100 sessions)
+- **Stale prompt refresh:** System prompt is rebuilt from current CSV data on every request, so edits via the table are reflected immediately
 - **Suggestion blocks:** AI outputs ` ```suggestion ` fenced JSON, parsed and returned separately
 - **Field mapping:** `version` in AI output is normalized to `version_info` for CSV compatibility
+- **Track deletion guard:** If a track is removed while chatting, session is cleaned up and 404 returned
+- **Frontend features:**
+  - Quick prompt buttons (Identify, Genre?, Mashup?, Fix names) — shown on first open, hidden after first message
+  - Current→suggested diff display in suggestion blocks (strikethrough old value)
+  - Draggable panel (grab header to reposition)
+  - Minimize/restore (─ button in header)
+  - Keyboard shortcut: `Ctrl/Cmd+K` to toggle panel
 
 ### AI Naming Conventions (in system prompt)
 
