@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import webbrowser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -656,7 +657,25 @@ def api_identify_track():
 
 # ── AI Chat ──────────────────────────────────────────────────────────────────
 
-_chat_sessions: Dict[str, List[Dict[str, str]]] = {}  # track_id -> messages
+# Session storage with TTL. Each entry: {"messages": [...], "last_access": float}
+_chat_sessions: Dict[str, Dict[str, Any]] = {}
+_CHAT_SESSION_TTL = 3600  # 1 hour
+_CHAT_MAX_SESSIONS = 100  # max concurrent sessions (LRU eviction)
+
+
+def _cleanup_chat_sessions() -> None:
+    """Remove expired sessions and enforce LRU cap."""
+    now = time.time()
+    # Remove expired
+    expired = [k for k, v in _chat_sessions.items()
+               if now - v["last_access"] > _CHAT_SESSION_TTL]
+    for k in expired:
+        del _chat_sessions[k]
+    # LRU eviction if over cap
+    if len(_chat_sessions) > _CHAT_MAX_SESSIONS:
+        sorted_keys = sorted(_chat_sessions, key=lambda k: _chat_sessions[k]["last_access"])
+        for k in sorted_keys[:len(_chat_sessions) - _CHAT_MAX_SESSIONS]:
+            del _chat_sessions[k]
 
 
 def _build_chat_system_prompt(row: Dict[str, str]) -> str:
@@ -714,7 +733,7 @@ def _call_openai_chat(
             "temperature": 0.3,
             "max_tokens": max_tokens,
         },
-        timeout=20,
+        timeout=30,
     )
     resp.raise_for_status()
 
@@ -791,6 +810,9 @@ def api_ai_chat():
         _chat_sessions.pop(tid, None)
         return jsonify({"ok": True, "history_length": 0})
 
+    # Periodic cleanup
+    _cleanup_chat_sessions()
+
     user_msg = (data.get("message") or "").strip()
     if not user_msg:
         return jsonify({"error": "Empty message"}), 400
@@ -806,19 +828,30 @@ def api_ai_chat():
             break
 
     if not row:
-        return jsonify({"error": f"Track not found: {tid}"}), 404
+        # Track deleted while chatting
+        _chat_sessions.pop(tid, None)
+        return jsonify({"error": "Track no longer exists in unsorted.csv"}), 404
+
+    # Build current system prompt (reflects latest field edits)
+    system_prompt = _build_chat_system_prompt(row)
 
     # Get or create session
     if tid not in _chat_sessions:
-        system_prompt = _build_chat_system_prompt(row)
-        _chat_sessions[tid] = [{"role": "system", "content": system_prompt}]
+        _chat_sessions[tid] = {
+            "messages": [{"role": "system", "content": system_prompt}],
+            "last_access": time.time(),
+        }
+    else:
+        # Refresh system prompt to reflect any field edits made via table
+        _chat_sessions[tid]["messages"][0] = {"role": "system", "content": system_prompt}
+        _chat_sessions[tid]["last_access"] = time.time()
 
-    session = _chat_sessions[tid]
+    session = _chat_sessions[tid]["messages"]
 
     # Cap conversation length (keep system + last 18 user/assistant messages)
     if len(session) > 20:
         session = [session[0]] + session[-18:]
-        _chat_sessions[tid] = session
+        _chat_sessions[tid]["messages"] = session
 
     # Add user message
     session.append({"role": "user", "content": user_msg})
@@ -826,6 +859,7 @@ def api_ai_chat():
     try:
         reply = _call_openai_chat(api_key, session)
         session.append({"role": "assistant", "content": reply})
+        _chat_sessions[tid]["last_access"] = time.time()
 
         # Parse suggestion block from reply
         suggestion = _parse_suggestion_block(reply)
@@ -1151,6 +1185,7 @@ def run_server(
     print(f"\n   Keyboard shortcuts:")
     print(f"   [Space] Play/Pause  [↑↓] Navigate  [Enter] Play selected")
     print(f"   [A] Accept  [R] Reject  [V] Review  [D] Toggle Done")
+    print(f"   [Ctrl+K] AI Chat")
     print(f"\n   Press Ctrl+C to stop\n")
 
     if not no_browser:

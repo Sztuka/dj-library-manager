@@ -14,6 +14,7 @@
  *  N            = jump to next undecided
  *  D            = toggle done
  *  Ctrl/Cmd+Z   = undo last status/dest change
+ *  Ctrl/Cmd+K   = toggle AI Chat panel
  * ============================================================ */
 
 (function () {
@@ -110,6 +111,9 @@
   const aiChatInput = document.getElementById("ai-chat-input");
   const aiChatSend = document.getElementById("ai-chat-send");
   const aiChatClose = document.getElementById("ai-chat-close");
+  const aiChatMinimize = document.getElementById("ai-chat-minimize");
+  const aiChatPrompts = document.getElementById("ai-chat-prompts");
+  const aiChatDragHandle = document.getElementById("ai-chat-drag-handle");
 
   // AI availability (checked once on load)
   let aiAvailable = false;
@@ -1629,15 +1633,17 @@
     aiChatTitle.textContent = "💬 " + label;
     aiChatTitle.title = label;
     aiChatPanel.classList.remove("hidden");
+    aiChatPanel.classList.remove("minimized");
     aiChatInput.focus();
 
-    // If messages area is empty, show a hint
+    // Show quick prompts when no messages yet
     if (aiChatMessages.children.length === 0) {
       var hint = document.createElement("div");
       hint.className = "chat-msg chat-msg-hint";
       hint.textContent =
         "Ask me anything about this track — correct artist/title, challenge genre, identify mashups...";
       aiChatMessages.appendChild(hint);
+      aiChatPrompts.classList.remove("hidden");
     }
   }
 
@@ -1653,6 +1659,7 @@
       body: JSON.stringify({ track_id: tid, reset: true }),
     }).catch(function () {});
     aiChatMessages.innerHTML = "";
+    aiChatPrompts.classList.remove("hidden");
   }
 
   function sendChatMessage() {
@@ -1666,6 +1673,9 @@
 
     // Append user message bubble
     appendChatBubble("user", msg);
+
+    // Hide quick prompts after first message
+    aiChatPrompts.classList.add("hidden");
 
     // Show loading indicator
     var loadingEl = document.createElement("div");
@@ -1742,10 +1752,25 @@
       fieldSpan.className = "suggestion-field";
       fieldSpan.textContent = fieldLabels[key];
 
+      // Values container with optional current (diff) display
+      var valuesDiv = document.createElement("div");
+      valuesDiv.className = "suggestion-values";
+
+      // Show current value as strikethrough if different from suggested
+      var currentVal = chatTrack ? (chatTrack[key] || "") : "";
+      if (currentVal && currentVal !== val) {
+        var currentSpan = document.createElement("span");
+        currentSpan.className = "suggestion-current";
+        currentSpan.textContent = currentVal;
+        currentSpan.title = "Current: " + currentVal;
+        valuesDiv.appendChild(currentSpan);
+      }
+
       var valSpan = document.createElement("span");
       valSpan.className = "suggestion-value";
       valSpan.textContent = val;
       valSpan.title = val;
+      valuesDiv.appendChild(valSpan);
 
       var applyBtn = document.createElement("button");
       applyBtn.className = "suggestion-apply-btn";
@@ -1758,7 +1783,7 @@
       });
 
       row.appendChild(fieldSpan);
-      row.appendChild(valSpan);
+      row.appendChild(valuesDiv);
       row.appendChild(applyBtn);
       block.appendChild(row);
     });
@@ -1806,6 +1831,56 @@
     }
   });
   aiChatClose.addEventListener("click", closeAiChat);
+
+  // Minimize / restore
+  aiChatMinimize.addEventListener("click", function () {
+    aiChatPanel.classList.toggle("minimized");
+  });
+
+  // Quick prompt buttons
+  aiChatPrompts.addEventListener("click", function (e) {
+    var btn = e.target.closest(".ai-chat-prompt-btn");
+    if (!btn) return;
+    var prompt = btn.dataset.prompt;
+    if (!prompt) return;
+    aiChatInput.value = prompt;
+    sendChatMessage();
+    // Hide quick prompts after first use
+    aiChatPrompts.classList.add("hidden");
+  });
+
+  // Drag to reposition
+  (function initChatDrag() {
+    var dragging = false;
+    var offsetX = 0, offsetY = 0;
+
+    aiChatDragHandle.addEventListener("mousedown", function (e) {
+      // Don't drag if clicking buttons
+      if (e.target.tagName === "BUTTON") return;
+      dragging = true;
+      var rect = aiChatPanel.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+      // Switch from bottom/right positioning to top/left
+      aiChatPanel.style.left = rect.left + "px";
+      aiChatPanel.style.top = rect.top + "px";
+      aiChatPanel.style.right = "auto";
+      aiChatPanel.style.bottom = "auto";
+      e.preventDefault();
+    });
+
+    document.addEventListener("mousemove", function (e) {
+      if (!dragging) return;
+      var x = Math.max(0, Math.min(e.clientX - offsetX, window.innerWidth - 100));
+      var y = Math.max(0, Math.min(e.clientY - offsetY, window.innerHeight - 60));
+      aiChatPanel.style.left = x + "px";
+      aiChatPanel.style.top = y + "px";
+    });
+
+    document.addEventListener("mouseup", function () {
+      dragging = false;
+    });
+  })();
 
   // Accept AI suggestion
   aiBannerAccept.addEventListener("click", function () {
@@ -2250,6 +2325,22 @@
 
   // -- Keyboard -----------------------------------------------
   document.addEventListener("keydown", function (e) {
+    // Ctrl/Cmd+K: toggle AI Chat (works even from input fields)
+    if ((e.ctrlKey || e.metaKey) && e.code === "KeyK") {
+      e.preventDefault();
+      if (aiChatPanel.classList.contains("hidden")) {
+        var track = (currentIndex >= 0 && currentIndex < filteredTracks.length)
+          ? filteredTracks[currentIndex]
+          : null;
+        if (track && currentSource === "unsorted") {
+          openAiChat(track);
+        }
+      } else {
+        closeAiChat();
+      }
+      return;
+    }
+
     const tag = e.target.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") {
       if (e.code === "Escape") {

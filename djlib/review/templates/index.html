@@ -248,21 +248,32 @@
     </div>
     <!-- ── AI Chat panel ─────────────────────────────────────── -->
     <div id="ai-chat-panel" class="ai-chat-panel hidden">
-      <div class="ai-chat-header">
+      <div class="ai-chat-header" id="ai-chat-drag-handle">
         <span id="ai-chat-title">💬 AI Chat</span>
-        <button id="ai-chat-close" class="ai-chat-close">✕</button>
+        <div class="ai-chat-header-btns">
+          <button id="ai-chat-minimize" class="ai-chat-header-btn" title="Minimize">─</button>
+          <button id="ai-chat-close" class="ai-chat-close ai-chat-header-btn" title="Close">✕</button>
+        </div>
       </div>
-      <div id="ai-chat-messages" class="ai-chat-messages"></div>
-      <div class="ai-chat-input-row">
-        <input
-          type="text"
-          id="ai-chat-input"
-          class="ai-chat-input"
-          placeholder="Ask AI about this track..."
-          autocomplete="off"
-          maxlength="500"
-        />
-        <button id="ai-chat-send" class="ai-chat-send">Send</button>
+      <div id="ai-chat-body" class="ai-chat-body">
+        <div id="ai-chat-messages" class="ai-chat-messages"></div>
+        <div id="ai-chat-prompts" class="ai-chat-prompts">
+          <button class="ai-chat-prompt-btn" data-prompt="Identify this track">🔍 Identify</button>
+          <button class="ai-chat-prompt-btn" data-prompt="What genre is this?">🎵 Genre?</button>
+          <button class="ai-chat-prompt-btn" data-prompt="Is this a mashup or edit?">🔀 Mashup?</button>
+          <button class="ai-chat-prompt-btn" data-prompt="Fix the artist/title naming">✏️ Fix names</button>
+        </div>
+        <div class="ai-chat-input-row">
+          <input
+            type="text"
+            id="ai-chat-input"
+            class="ai-chat-input"
+            placeholder="Ask AI about this track..."
+            autocomplete="off"
+            maxlength="500"
+          />
+          <button id="ai-chat-send" class="ai-chat-send">Send</button>
+        </div>
       </div>
     </div>
 

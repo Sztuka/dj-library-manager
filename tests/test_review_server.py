@@ -1050,7 +1050,10 @@ def test_ai_chat_reset(client):
     """Reset clears the session for a track."""
     import djlib.review.server as srv
 
-    srv._chat_sessions["reset-test"] = [{"role": "system", "content": "sys"}]
+    srv._chat_sessions["reset-test"] = {
+        "messages": [{"role": "system", "content": "sys"}],
+        "last_access": 0,
+    }
 
     with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
         resp = client.post("/api/ai-chat", json={"track_id": "reset-test", "reset": True})
@@ -1237,8 +1240,9 @@ def test_ai_chat_openai_error(client, tmp_path):
         assert "failed" in data["error"]
 
     # Session should exist but without the failed user message
-    session = srv._chat_sessions.get("chat-err-1", [])
-    user_msgs = [m for m in session if m["role"] == "user"]
+    entry = srv._chat_sessions.get("chat-err-1", {})
+    msgs = entry.get("messages", []) if isinstance(entry, dict) else entry
+    user_msgs = [m for m in msgs if m.get("role") == "user"]
     assert len(user_msgs) == 0
 
     srv._chat_sessions.pop("chat-err-1", None)
@@ -1383,4 +1387,185 @@ def test_build_chat_system_prompt():
     assert "```suggestion" in prompt
     # Should reference genre list
     assert "genre" in prompt.lower()
+
+
+def test_chat_session_ttl_cleanup():
+    """Expired sessions are cleaned up and LRU cap is enforced."""
+    import time
+    from djlib.review import server as srv
+
+    original = dict(srv._chat_sessions)
+    srv._chat_sessions.clear()
+
+    try:
+        # Add an old session (expired)
+        srv._chat_sessions["old-track"] = {
+            "messages": [{"role": "system", "content": "old"}],
+            "last_access": time.time() - 7200,  # 2 hours ago
+        }
+        # Add a fresh session
+        srv._chat_sessions["new-track"] = {
+            "messages": [{"role": "system", "content": "new"}],
+            "last_access": time.time(),
+        }
+
+        srv._cleanup_chat_sessions()
+
+        assert "old-track" not in srv._chat_sessions
+        assert "new-track" in srv._chat_sessions
+    finally:
+        srv._chat_sessions.clear()
+        srv._chat_sessions.update(original)
+
+
+def test_chat_session_lru_eviction():
+    """LRU eviction removes oldest sessions when cap is exceeded."""
+    import time
+    from djlib.review import server as srv
+
+    original = dict(srv._chat_sessions)
+    srv._chat_sessions.clear()
+    old_max = srv._CHAT_MAX_SESSIONS
+
+    try:
+        srv._CHAT_MAX_SESSIONS = 3
+
+        for i in range(5):
+            srv._chat_sessions[f"track-{i}"] = {
+                "messages": [{"role": "system", "content": f"sys-{i}"}],
+                "last_access": time.time() + i,
+            }
+
+        srv._cleanup_chat_sessions()
+
+        assert len(srv._chat_sessions) == 3
+        # Oldest two (track-0, track-1) should be evicted
+        assert "track-0" not in srv._chat_sessions
+        assert "track-1" not in srv._chat_sessions
+        assert "track-4" in srv._chat_sessions
+    finally:
+        srv._chat_sessions.clear()
+        srv._chat_sessions.update(original)
+        srv._CHAT_MAX_SESSIONS = old_max
+
+
+def test_ai_chat_track_deleted_clears_session(client, tmp_path):
+    """If track is deleted while chatting, session is cleaned up and 404 returned."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "del-test-1",
+        "file_path": "/tmp/test.wav",
+        "artist": "Test",
+        "title": "Track",
+        "version_info": "",
+        "tag_artist_original": "",
+        "tag_title_original": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "version_suggest": "",
+        "bpm": "",
+        "key_camelot": "",
+        "duration_suggest": "",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "",
+        "year_suggest": "",
+        "meta_source": "",
+    }])
+
+    srv._chat_sessions["gone-track"] = {
+        "messages": [{"role": "system", "content": "sys"}],
+        "last_access": 0,
+    }
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/ai-chat", json={
+            "track_id": "gone-track",
+            "message": "hello",
+        })
+        assert resp.status_code == 404
+        assert "no longer exists" in json.loads(resp.data)["error"]
+
+    assert "gone-track" not in srv._chat_sessions
+
+
+def test_ai_chat_stale_prompt_refresh(client, tmp_path):
+    """System prompt is refreshed with latest track data on each request."""
+    import time
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "stale-1",
+        "file_path": "/tmp/test.mp3",
+        "artist": "Old Artist",
+        "title": "Old Title",
+        "version_info": "",
+        "tag_artist_original": "",
+        "tag_title_original": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "version_suggest": "",
+        "bpm": "120",
+        "key_camelot": "",
+        "duration_suggest": "",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "",
+        "year_suggest": "",
+        "meta_source": "",
+    }])
+
+    mock_resp = {"choices": [{"message": {"content": "OK, noted."}}]}
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_resp
+
+        # First message
+        resp1 = client.post("/api/ai-chat", json={
+            "track_id": "stale-1",
+            "message": "hello",
+        })
+        assert resp1.status_code == 200
+
+        entry = srv._chat_sessions["stale-1"]
+        sys_msg = entry["messages"][0]["content"]
+        assert "Old Artist" in sys_msg
+
+        # Update CSV to change artist (simulating table edit)
+        import csv as csv_mod
+        rows = []
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv_mod.DictReader(f)
+            for row in reader:
+                if row["track_id"] == "stale-1":
+                    row["artist"] = "New Artist"
+                rows.append(row)
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+        # Second message — should refresh system prompt
+        resp2 = client.post("/api/ai-chat", json={
+            "track_id": "stale-1",
+            "message": "what about now?",
+        })
+        assert resp2.status_code == 200
+
+        sys_msg2 = srv._chat_sessions["stale-1"]["messages"][0]["content"]
+        assert "New Artist" in sys_msg2
+
+    srv._chat_sessions.pop("stale-1", None)
 
