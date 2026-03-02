@@ -1098,7 +1098,7 @@ def api_scrape_url():
                         changed = True
                     if changed:
                         r["meta_source"] = f"url_scrape({result.get('source', 'generic')})"
-                        save_unsorted_rows(rows, UNSORTED_CSV)
+                        write_unsorted_rows(UNSORTED_CSV, rows, [])
                     break
 
     return jsonify(result)
