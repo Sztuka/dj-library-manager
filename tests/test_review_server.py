@@ -1269,6 +1269,35 @@ def test_parse_suggestion_block():
     text4 = "```suggestion\n{not valid json}\n```"
     assert _parse_suggestion_block(text4) is None
 
+    # Generic ``` block should NOT be parsed (avoid false positives)
+    text5 = 'Use this format:\n\n```\n{"artist": "Oops"}\n```'
+    assert _parse_suggestion_block(text5) is None
+
+
+def test_parse_suggestion_block_version_normalization():
+    """AI 'version' key is normalized to 'version_info' for CSV compatibility."""
+    from djlib.review.server import _parse_suggestion_block
+
+    # AI uses "version" — should be remapped to "version_info"
+    text1 = '```suggestion\n{"artist": "Loup Musa", "title": "Ethnica x We Dem Boyz", "version": "Edit"}\n```'
+    result1 = _parse_suggestion_block(text1)
+    assert result1 is not None
+    assert "version_info" in result1
+    assert result1["version_info"] == "Edit"
+    assert "version" not in result1
+
+    # AI uses "version_info" directly — should be kept as-is
+    text2 = '```suggestion\n{"version_info": "Remix"}\n```'
+    result2 = _parse_suggestion_block(text2)
+    assert result2 is not None
+    assert result2["version_info"] == "Remix"
+
+    # If both are present somehow, version_info takes precedence
+    text3 = '```suggestion\n{"version": "Edit", "version_info": "Remix"}\n```'
+    result3 = _parse_suggestion_block(text3)
+    assert result3 is not None
+    assert result3["version_info"] == "Remix"
+
 
 def test_parse_suggestion_block_genre_validation():
     """Genre in suggestion block is validated against genres.yml."""

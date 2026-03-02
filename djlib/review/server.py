@@ -683,9 +683,10 @@ def _build_chat_system_prompt(row: Dict[str, str]) -> str:
         "When you suggest metadata changes, ALWAYS end your message with a JSON block "
         "on its own line. Include ONLY the fields you want to change:\n"
         '```suggestion\n'
-        '{"artist": "...", "title": "...", "version": "...", "year": "...", "genre": "..."}\n'
+        '{"artist": "...", "title": "...", "version_info": "...", "year": "...", "genre": "..."}\n'
         '```\n'
-        "Omit fields you are not changing. For genre, use EXACT name from the list above.\n"
+        "Omit fields you are not changing. Use \"version_info\" (not \"version\") for version/remix info. "
+        "For genre, use EXACT name from the list above.\n"
         "If the user just asks a question without requesting changes, respond normally "
         "without a suggestion block.\n"
         "Keep responses concise (2-4 sentences + suggestion block if applicable)."
@@ -725,12 +726,13 @@ def _parse_suggestion_block(text: str) -> Optional[Dict[str, str]]:
     """Extract suggestion JSON from AI response if present.
 
     Looks for ```suggestion ... ``` or ```json ... ``` fenced blocks.
+    Normalizes 'version' key to 'version_info' for CSV compatibility.
     """
-    # Try ```suggestion ... ``` first, then ```json ... ```, then ``` ... ```
+    # Try ```suggestion ... ``` first, then ```json ... ```
+    # (no generic ``` fallback — avoids false positives from code examples)
     patterns = [
         r'```suggestion\s*\n(.*?)\n\s*```',
         r'```json\s*\n(.*?)\n\s*```',
-        r'```\s*\n(.*?)\n\s*```',
     ]
     for pattern in patterns:
         m = re.search(pattern, text, re.DOTALL)
@@ -738,6 +740,9 @@ def _parse_suggestion_block(text: str) -> Optional[Dict[str, str]]:
             try:
                 obj = json.loads(m.group(1).strip())
                 if isinstance(obj, dict):
+                    # Normalize version → version_info (AI may use either)
+                    if "version" in obj and "version_info" not in obj:
+                        obj["version_info"] = obj.pop("version")
                     # Validate genre if present
                     if "genre" in obj:
                         genre_labels = _load_genres()

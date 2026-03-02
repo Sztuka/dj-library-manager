@@ -15,7 +15,8 @@
 5. [Metadata Pipeline](#metadata-pipeline)
 6. [DJ Software Integration](#dj-software-integration)
 7. [Audio Analysis](#audio-analysis)
-8. [Technical Details](#technical-details)
+8. [Review UI](#review-ui)
+9. [Technical Details](#technical-details)
 
 ---
 
@@ -365,6 +366,50 @@ Key modules:
 - `djlib/ml/train.py` — training code (TODO)
 
 Goal: Replace API-based genre resolution with audio-based ML classification.
+
+---
+
+## Review UI
+
+Flask-based single-page application for curating unsorted tracks.
+
+- **Server:** `djlib/review/server.py` (port 8899)
+- **Frontend:** Vanilla JS + CSS (no frameworks, no build step)
+- **Templates:** Jinja2 (`djlib/review/templates/index.html`)
+
+### API Endpoints
+
+| Method | Endpoint               | Purpose                                           |
+|--------|------------------------|---------------------------------------------------|
+| GET    | `/api/tracks`          | List tracks (`?source=unsorted\|library\|processed`) |
+| POST   | `/api/tracks/update`   | Update track fields in CSV                        |
+| GET    | `/api/genres`          | List canonical genres from `genres.yml`            |
+| GET    | `/api/library-index`   | Track IDs present in `library.csv`                |
+| GET    | `/api/ai-status`       | Check if OpenAI API key is configured             |
+| POST   | `/api/suggest-genre`   | AI genre suggestion for a track (one-shot)        |
+| POST   | `/api/identify-track`  | AI track identification from filename/metadata    |
+| POST   | `/api/ai-chat`         | Conversational AI chat for metadata refinement    |
+| POST   | `/api/enrich-track`    | Re-enrich track from online sources               |
+| POST   | `/api/swap-artist-title` | Swap artist/title and re-parse from filename    |
+
+### AI Chat (`/api/ai-chat`)
+
+Conversational endpoint for iterative metadata correction.
+
+- **Request:** `{ "track_id": "...", "message": "..." }` or `{ "track_id": "...", "reset": true }`
+- **Response:** `{ "reply": "...", "suggestion": { ... } | null, "history_length": N }`
+- **Sessions:** Per-track conversation stored in memory, capped at 20 messages
+- **Suggestion blocks:** AI outputs ` ```suggestion ` fenced JSON, parsed and returned separately
+- **Field mapping:** `version` in AI output is normalized to `version_info` for CSV compatibility
+
+### AI Naming Conventions (in system prompt)
+
+- **Mashups/Edits:** Edit creator = artist, combined track names = title, "Edit" = version  
+  Example: `Loup Musa - Ethnica x We Dem Boyz (Edit)`
+- **Remixes:** Original artist = artist, remixer name in version  
+  Example: `Original Artist - Title (Remixer Remix)`
+- **Featuring:** `feat.` goes in the title, not the artist field
+- **Title Case** for all names and titles
 
 ---
 
