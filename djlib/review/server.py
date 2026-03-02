@@ -491,7 +491,7 @@ def _gather_track_context(row: Dict[str, str]) -> str:
     if filename:
         parts.append(f"Filename: {filename}")
     if folder:
-        parts.append(f"Folder: {folder}")
+        parts.append(f"Folder: {folder} (NOTE: folder names are for file organization only, NOT reliable genre indicators)")
 
     # Original audio file tags
     tag_artist = (row.get("tag_artist_original") or "").strip()
@@ -689,6 +689,9 @@ def _build_chat_system_prompt(row: Dict[str, str]) -> str:
         "tracks in a DJ's music library. You are having a conversation with an "
         "experienced DJ who may correct your initial analysis.\n\n"
         f"Available information about this track:\n{track_info}\n\n"
+        "IMPORTANT: The folder name where a track is stored is NOT a reliable genre indicator. "
+        "Folders are used for file organization only. Base your genre analysis on BPM, "
+        "audio tags, online metadata sources, and artist/track knowledge instead.\n\n"
         "FORMATTING RULES:\n"
         "1. DJ naming convention: Artist - Title (Version/Remix)\n"
         "2. For mashups/edits combining multiple tracks: the edit creator is the artist, "
