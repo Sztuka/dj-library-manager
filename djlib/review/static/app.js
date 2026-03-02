@@ -97,14 +97,26 @@
   const enrichBannerDismiss = document.getElementById("enrich-banner-dismiss");
   const enrichBannerSwap = document.getElementById("enrich-banner-swap");
   const identifyBanner = document.getElementById("identify-banner");
-  const identifyBannerArtist = document.getElementById("identify-banner-artist");
+  const identifyBannerArtist = document.getElementById(
+    "identify-banner-artist",
+  );
   const identifyBannerTitle = document.getElementById("identify-banner-title");
-  const identifyBannerVersion = document.getElementById("identify-banner-version");
+  const identifyBannerVersion = document.getElementById(
+    "identify-banner-version",
+  );
   const identifyBannerYear = document.getElementById("identify-banner-year");
-  const identifyBannerConfidence = document.getElementById("identify-banner-confidence");
-  const identifyBannerReasoning = document.getElementById("identify-banner-reasoning");
-  const identifyBannerAccept = document.getElementById("identify-banner-accept");
-  const identifyBannerDismiss = document.getElementById("identify-banner-dismiss");
+  const identifyBannerConfidence = document.getElementById(
+    "identify-banner-confidence",
+  );
+  const identifyBannerReasoning = document.getElementById(
+    "identify-banner-reasoning",
+  );
+  const identifyBannerAccept = document.getElementById(
+    "identify-banner-accept",
+  );
+  const identifyBannerDismiss = document.getElementById(
+    "identify-banner-dismiss",
+  );
   const aiChatPanel = document.getElementById("ai-chat-panel");
   const aiChatTitle = document.getElementById("ai-chat-title");
   const aiChatMessages = document.getElementById("ai-chat-messages");
@@ -1532,9 +1544,7 @@
         identifyBannerVersion.textContent = data.version
           ? "(" + data.version + ")"
           : "";
-        identifyBannerYear.textContent = data.year
-          ? "[" + data.year + "]"
-          : "";
+        identifyBannerYear.textContent = data.year ? "[" + data.year + "]" : "";
         var conf = data.confidence
           ? Math.round(data.confidence * 100) + "%"
           : "";
@@ -1757,7 +1767,7 @@
       valuesDiv.className = "suggestion-values";
 
       // Show current value as strikethrough if different from suggested
-      var currentVal = chatTrack ? (chatTrack[key] || "") : "";
+      var currentVal = chatTrack ? chatTrack[key] || "" : "";
       if (currentVal && currentVal !== val) {
         var currentSpan = document.createElement("span");
         currentSpan.className = "suggestion-current";
@@ -1789,7 +1799,11 @@
     });
 
     // Apply All button if more than one field
-    if (fieldKeys.filter(function (k) { return fieldLabels[k] && suggestion[k]; }).length > 1) {
+    if (
+      fieldKeys.filter(function (k) {
+        return fieldLabels[k] && suggestion[k];
+      }).length > 1
+    ) {
       var allRow = document.createElement("div");
       allRow.className = "suggestion-apply-all";
       var allBtn = document.createElement("button");
@@ -1852,7 +1866,8 @@
   // Drag to reposition
   (function initChatDrag() {
     var dragging = false;
-    var offsetX = 0, offsetY = 0;
+    var offsetX = 0,
+      offsetY = 0;
 
     aiChatDragHandle.addEventListener("mousedown", function (e) {
       // Don't drag if clicking buttons
@@ -1871,8 +1886,14 @@
 
     document.addEventListener("mousemove", function (e) {
       if (!dragging) return;
-      var x = Math.max(0, Math.min(e.clientX - offsetX, window.innerWidth - 100));
-      var y = Math.max(0, Math.min(e.clientY - offsetY, window.innerHeight - 60));
+      var x = Math.max(
+        0,
+        Math.min(e.clientX - offsetX, window.innerWidth - 100),
+      );
+      var y = Math.max(
+        0,
+        Math.min(e.clientY - offsetY, window.innerHeight - 60),
+      );
       aiChatPanel.style.left = x + "px";
       aiChatPanel.style.top = y + "px";
     });
@@ -2329,9 +2350,10 @@
     if ((e.ctrlKey || e.metaKey) && e.code === "KeyK") {
       e.preventDefault();
       if (aiChatPanel.classList.contains("hidden")) {
-        var track = (currentIndex >= 0 && currentIndex < filteredTracks.length)
-          ? filteredTracks[currentIndex]
-          : null;
+        var track =
+          currentIndex >= 0 && currentIndex < filteredTracks.length
+            ? filteredTracks[currentIndex]
+            : null;
         if (track && currentSource === "unsorted") {
           openAiChat(track);
         }
