@@ -1101,9 +1101,12 @@ def test_ai_chat_success(client, tmp_path):
     )
 
     mock_openai_response = {
-        "choices": [{
-            "message": {"content": reply_text}
-        }]
+        "output_text": reply_text,
+        "output": [
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": reply_text, "annotations": []}
+            ]}
+        ],
     }
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
@@ -1165,8 +1168,18 @@ def test_ai_chat_conversation_history(client, tmp_path):
         "meta_source": "",
     }])
 
-    mock_resp1 = {"choices": [{"message": {"content": "Sure, this is a tech house track."}}]}
-    mock_resp2 = {"choices": [{"message": {"content": "You're right, it sounds more like Afro House.\n\n```suggestion\n{\"genre\": \"Afro House\"}\n```"}}]}
+    mock_resp1 = {
+        "output_text": "Sure, this is a tech house track.",
+        "output": [{"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "Sure, this is a tech house track.", "annotations": []}
+        ]}],
+    }
+    mock_resp2 = {
+        "output_text": "You're right, it sounds more like Afro House.\n\n```suggestion\n{\"genre\": \"Afro House\"}\n```",
+        "output": [{"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "You're right, it sounds more like Afro House.\n\n```suggestion\n{\"genre\": \"Afro House\"}\n```", "annotations": []}
+        ]}],
+    }
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
          patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
@@ -1387,6 +1400,183 @@ def test_build_chat_system_prompt():
     assert "```suggestion" in prompt
     # Should reference genre list
     assert "genre" in prompt.lower()
+    # Should mention web search capability
+    assert "web search" in prompt.lower()
+
+
+def test_ai_chat_web_search_used(client, tmp_path):
+    """When AI uses web search, response includes web_search flag and sources."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "ws-test-1",
+        "file_path": "/tmp/unknown_track.wav",
+        "artist": "",
+        "title": "",
+        "version_info": "",
+        "tag_artist_original": "",
+        "tag_title_original": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "version_suggest": "",
+        "bpm": "126",
+        "key_camelot": "",
+        "duration_suggest": "",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "",
+        "year_suggest": "",
+        "meta_source": "",
+    }])
+
+    reply_text = (
+        "Based on my web search, this track is by Bicep.\n\n"
+        "```suggestion\n"
+        '{"artist": "Bicep", "title": "Glue", "year": "2017"}\n'
+        "```"
+    )
+    mock_openai_response = {
+        "output_text": reply_text,
+        "output": [
+            {"type": "web_search_call", "id": "ws_123", "status": "completed"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": reply_text, "annotations": [
+                    {"type": "url_citation", "url": "https://www.beatport.com/track/glue/9876", "title": "Glue by Bicep - Beatport"},
+                    {"type": "url_citation", "url": "https://www.discogs.com/release/123", "title": "Bicep - Glue - Discogs"},
+                ]}
+            ]}
+        ],
+    }
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_openai_response
+
+        resp = client.post("/api/ai-chat", json={
+            "track_id": "ws-test-1",
+            "message": "search online for this track",
+        })
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+
+        assert data["web_search"] is True
+        assert len(data["sources"]) == 2
+        assert data["sources"][0]["url"] == "https://www.beatport.com/track/glue/9876"
+        assert data["sources"][0]["title"] == "Glue by Bicep - Beatport"
+        assert data["suggestion"]["artist"] == "Bicep"
+        assert data["suggestion"]["title"] == "Glue"
+
+    srv._chat_sessions.pop("ws-test-1", None)
+
+
+def test_ai_chat_no_web_search_flag(client, tmp_path):
+    """When AI does NOT use web search, response omits web_search key."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "nows-test-1",
+        "file_path": "/tmp/Artist - Title.mp3",
+        "artist": "Artist",
+        "title": "Title",
+        "version_info": "",
+        "tag_artist_original": "Artist",
+        "tag_title_original": "Title",
+        "tag_genre_original": "House",
+        "artist_suggest": "Artist",
+        "title_suggest": "Title",
+        "version_suggest": "",
+        "bpm": "126",
+        "key_camelot": "8B",
+        "duration_suggest": "6:00",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "House",
+        "year_suggest": "2024",
+        "meta_source": "",
+    }])
+
+    mock_openai_response = {
+        "output_text": "This looks like a house track from 2024. The metadata seems correct.",
+        "output": [
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "This looks like a house track from 2024. The metadata seems correct.", "annotations": []}
+            ]}
+        ],
+    }
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_openai_response
+
+        resp = client.post("/api/ai-chat", json={
+            "track_id": "nows-test-1",
+            "message": "what genre is this?",
+        })
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+
+        # web_search key should NOT be present when search wasn't used
+        assert "web_search" not in data
+        assert "sources" not in data
+
+    srv._chat_sessions.pop("nows-test-1", None)
+
+
+def test_call_openai_chat_responses_api_format():
+    """_call_openai_chat sends correct Responses API payload and parses result."""
+    from djlib.review.server import _call_openai_chat
+
+    messages = [
+        {"role": "system", "content": "You are a DJ assistant."},
+        {"role": "user", "content": "Identify this track"},
+    ]
+
+    mock_response = {
+        "output_text": "This is Bicep - Glue (2017).",
+        "output": [
+            {"type": "web_search_call", "id": "ws_abc", "status": "completed"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "This is Bicep - Glue (2017).", "annotations": [
+                    {"type": "url_citation", "url": "https://example.com", "title": "Example"},
+                ]}
+            ]}
+        ],
+    }
+
+    with patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_response
+
+        result = _call_openai_chat("sk-test", messages, max_tokens=400)
+
+        # Check result structure
+        assert result["text"] == "This is Bicep - Glue (2017)."
+        assert result["web_search_used"] is True
+        assert len(result["annotations"]) == 1
+        assert result["annotations"][0]["url"] == "https://example.com"
+
+        # Check the API was called with Responses API format
+        call_args = mock_post.call_args
+        assert "/v1/responses" in call_args[0][0]
+        payload = call_args[1]["json"]
+        assert payload["model"] == "gpt-4o-mini"
+        assert {"type": "web_search_preview"} in payload["tools"]
+        assert payload["instructions"] == "You are a DJ assistant."
+        # System message should NOT be in input
+        assert all(m["role"] != "system" for m in payload["input"])
+        assert payload["input"][0]["role"] == "user"
 
 
 def test_chat_session_ttl_cleanup():

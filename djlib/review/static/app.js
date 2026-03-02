@@ -1940,7 +1940,7 @@
           return;
         }
 
-        appendChatBubble("ai", data.reply, data.suggestion);
+        appendChatBubble("ai", data.reply, data.suggestion, data.web_search, data.sources);
       })
       .catch(function () {
         chatPending = false;
@@ -1950,14 +1950,45 @@
       });
   }
 
-  function appendChatBubble(role, text, suggestion) {
+  function appendChatBubble(role, text, suggestion, webSearch, sources) {
     var bubble = document.createElement("div");
     bubble.className = "chat-msg chat-msg-" + (role === "user" ? "user" : "ai");
-    bubble.textContent = text;
+
+    // Web search badge
+    if (role === "ai" && webSearch) {
+      var badge = document.createElement("span");
+      badge.className = "chat-web-search-badge";
+      badge.textContent = "🔍 web search";
+      bubble.appendChild(badge);
+    }
+
+    var textNode = document.createTextNode(text);
+    bubble.appendChild(textNode);
 
     if (role === "ai" && suggestion && typeof suggestion === "object") {
       var block = buildSuggestionBlock(suggestion);
       bubble.appendChild(block);
+    }
+
+    // Source citations
+    if (role === "ai" && sources && sources.length > 0) {
+      var srcBlock = document.createElement("div");
+      srcBlock.className = "chat-sources";
+      var srcLabel = document.createElement("span");
+      srcLabel.className = "chat-sources-label";
+      srcLabel.textContent = "Sources:";
+      srcBlock.appendChild(srcLabel);
+      sources.forEach(function (src) {
+        var link = document.createElement("a");
+        link.href = src.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "chat-source-link";
+        link.textContent = src.title || new URL(src.url).hostname;
+        link.title = src.url;
+        srcBlock.appendChild(link);
+      });
+      bubble.appendChild(srcBlock);
     }
 
     aiChatMessages.appendChild(bubble);
