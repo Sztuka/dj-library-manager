@@ -1377,7 +1377,11 @@
           enrichBannerSources.textContent =
             "Try editing artist/title and re-enriching";
         } else {
-          enrichBannerGenre.textContent = data.genre_full || data.genre;
+          var displayGenre = data.genre_full || data.genre;
+          if (data.year) {
+            displayGenre += " (" + data.year + ")";
+          }
+          enrichBannerGenre.textContent = displayGenre;
           var conf = data.confidence
             ? Math.round(data.confidence * 100) + "%"
             : "";
@@ -1426,13 +1430,17 @@
     var genre = enrichBannerAccept.dataset.genre;
     if (!genre || !enrichBannerTrack) return;
 
-    // Save genre to track and CSV
-    enrichBannerTrack.genre = genre;
-    saveTrackField(enrichBannerTrack, "genre", genre);
+    // Save MAIN genre (single canonical name) to genre column (dropdown-compatible)
+    var mainGenre = (enrichLastData && enrichLastData.genre) || genre;
+    enrichBannerTrack.genre = mainGenre;
+    saveTrackField(enrichBannerTrack, "genre", mainGenre);
 
-    // Save genre_suggest (same as genre for re-enrich)
-    enrichBannerTrack.genre_suggest = genre;
-    saveTrackField(enrichBannerTrack, "genre_suggest", genre);
+    // Save genre_full (main + subs) to genre_suggest (text field, not dropdown)
+    var genreFull =
+      (enrichLastData && (enrichLastData.genre_full || enrichLastData.genre)) ||
+      genre;
+    enrichBannerTrack.genre_suggest = genreFull;
+    saveTrackField(enrichBannerTrack, "genre_suggest", genreFull);
 
     // Save per-source genre tags (SC, BP, Last.fm, MB) to CSV
     if (enrichLastData && enrichLastData.source_genres) {
@@ -1453,6 +1461,12 @@
       );
     }
 
+    // Save year if returned by enrich
+    if (enrichLastData && enrichLastData.year) {
+      enrichBannerTrack.year = enrichLastData.year;
+      saveTrackField(enrichBannerTrack, "year", enrichLastData.year);
+    }
+
     // Update dropdown in table if visible
     if (currentSource === "unsorted") {
       var idx = filteredTracks.indexOf(enrichBannerTrack);
@@ -1464,7 +1478,20 @@
         if (genreColIdx >= 0 && tableBody.children[idx]) {
           var cell = tableBody.children[idx].children[genreColIdx];
           var sel = cell.querySelector("select");
-          if (sel) sel.value = genre;
+          if (sel) sel.value = mainGenre;
+        }
+        // Update year cell if visible
+        var yearColIdx = cols.findIndex(function (c) {
+          return c.key === "year";
+        });
+        if (
+          enrichLastData &&
+          enrichLastData.year &&
+          yearColIdx >= 0 &&
+          tableBody.children[idx]
+        ) {
+          var yearCell = tableBody.children[idx].children[yearColIdx];
+          if (yearCell) yearCell.textContent = enrichLastData.year;
         }
       }
     }
@@ -1472,7 +1499,11 @@
     // Refresh genre sources panel (SC, BP, etc. at bottom)
     updateGenreSources(enrichBannerTrack);
 
-    showToast("Genre: " + genre, "");
+    var toastMsg = "Genre: " + mainGenre;
+    if (enrichLastData && enrichLastData.year) {
+      toastMsg += " | Year: " + enrichLastData.year;
+    }
+    showToast(toastMsg, "");
     hideEnrichBanner();
   });
 

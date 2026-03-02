@@ -502,6 +502,8 @@ def test_enrich_track_success(client, tmp_path):
         assert "genres_lastfm" in data["source_genres"]
         # meta_source is pipe-separated sorted source list
         assert data["meta_source"] == "beatport|lastfm"
+        # year field is always present (may be None)
+        assert "year" in data
 
 
 def test_enrich_track_no_results(client, tmp_path):
@@ -595,6 +597,115 @@ def test_enrich_uses_user_edited_fields(client, tmp_path):
     assert captured_args["artist"] == "Natasha Bedingfield"
     assert captured_args["title"] == "Unwritten"
     assert captured_args["version"] == "Talon Remix"
+
+
+def test_enrich_track_returns_year_from_soundcloud(client, tmp_path):
+    """Year from SoundCloud cache is included in enrich response."""
+    from djlib.review import server as srv
+    from djlib.metadata.genre_resolver import GenreResolution, SourceScore
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "year-sc-1",
+        "file_path": "/tmp/test/Artist - Title.wav",
+        "artist": "Test Artist",
+        "title": "Test Title",
+        "version_info": "Extended Mix",
+        "duration_suggest": "6:00",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "genre_suggest": "",
+    }])
+
+    mock_result = GenreResolution(
+        main="Deep House", subs=["Afro House"], confidence=0.80,
+        breakdown=[
+            SourceScore(source="soundcloud", weight=8.0, tags={"Deep House": 12.0}),
+        ],
+    )
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch.object(srv, "_resolve_genres", return_value=mock_result), \
+         patch("djlib.metadata.soundcloud.get_cached_year", return_value="2023"):
+        resp = client.post("/api/enrich-track", json={"track_id": "year-sc-1"})
+
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["year"] == "2023"
+    assert data["genre"] == "Deep House"
+
+
+def test_enrich_track_returns_year_from_beatport(client, tmp_path):
+    """Year from Beatport release_date is included when SC has no year."""
+    from djlib.review import server as srv
+    from djlib.metadata.genre_resolver import GenreResolution, SourceScore
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "year-bp-1",
+        "file_path": "/tmp/test/Artist - Title.wav",
+        "artist": "Another Artist",
+        "title": "Another Title",
+        "version_info": "",
+        "duration_suggest": "4:30",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "genre_suggest": "",
+    }])
+
+    mock_result = GenreResolution(
+        main="Tech House", subs=[], confidence=0.90,
+        breakdown=[
+            SourceScore(source="beatport", weight=25.0, tags={"Tech House": 30.0}),
+        ],
+    )
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch.object(srv, "_resolve_genres", return_value=mock_result), \
+         patch("djlib.metadata.soundcloud.get_cached_year", return_value=None), \
+         patch("djlib.metadata.beatport.search_track", return_value={"release_date": "2024-06-15"}):
+        resp = client.post("/api/enrich-track", json={"track_id": "year-bp-1"})
+
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["year"] == "2024"
+
+
+def test_enrich_track_year_none_when_no_sources(client, tmp_path):
+    """Year is null when neither SC nor BP have year data."""
+    from djlib.review import server as srv
+    from djlib.metadata.genre_resolver import GenreResolution, SourceScore
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "year-none-1",
+        "file_path": "/tmp/test/Artist - Title.wav",
+        "artist": "No Year Artist",
+        "title": "No Year Title",
+        "version_info": "",
+        "duration_suggest": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "genre_suggest": "",
+    }])
+
+    mock_result = GenreResolution(
+        main="House", subs=[], confidence=0.70,
+        breakdown=[
+            SourceScore(source="lastfm", weight=15.0, tags={"house": 20.0}),
+        ],
+    )
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch.object(srv, "_resolve_genres", return_value=mock_result), \
+         patch("djlib.metadata.soundcloud.get_cached_year", return_value=None), \
+         patch("djlib.metadata.beatport.search_track", return_value=None):
+        resp = client.post("/api/enrich-track", json={"track_id": "year-none-1"})
+
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["year"] is None
+    assert data["genre"] == "House"
 
 
 # ── Swap Artist/Title API ────────────────────────────────────────────────────

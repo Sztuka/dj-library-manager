@@ -1288,6 +1288,29 @@ def api_enrich_track():
 
     meta_source = "|".join(sorted(sources))
 
+    # --- Extract year from sources (cached from genre resolution) ---
+    year: Optional[str] = None
+    # 1. SoundCloud year (cached during genre fetch)
+    try:
+        from djlib.metadata.soundcloud import get_cached_year
+        sc_year = get_cached_year(artist, title, version)
+        if sc_year:
+            year = sc_year
+    except Exception:
+        pass
+    # 2. Beatport release_date (HTTP-cached, so this is instant)
+    if not year:
+        try:
+            from djlib.metadata.beatport import search_track as bp_search
+            bp_res = bp_search(artist, title, dur_s, version=version)
+            if bp_res and bp_res.get("release_date"):
+                rd = str(bp_res["release_date"]).strip()
+                # Extract year from date string (e.g. "2024-03-15" → "2024")
+                if rd and len(rd) >= 4:
+                    year = rd[:4]
+        except Exception:
+            pass
+
     return jsonify({
         "genre": genre_res.main,
         "genre_full": genre_full,
@@ -1296,6 +1319,7 @@ def api_enrich_track():
         "source_details": source_details,
         "source_genres": source_genres,
         "meta_source": meta_source,
+        "year": year,
         "swap_suggestion": swap_suggestion,
     })
 
