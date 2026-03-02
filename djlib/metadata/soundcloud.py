@@ -28,7 +28,7 @@ _CLIENT_ID_CACHE_DAYS = 30  # SoundCloud client_id typically valid for ~30 days
 # Rate limiting and filtering constants
 _RATE_LIMIT_DELAY = 0.8  # Seconds between requests
 _RETRY_DELAY = 2.0  # Seconds to wait on 403 before retry
-_MAX_TRACK_DURATION = 600  # Skip tracks > 10 min (DJ mixes/sets)
+_MAX_TRACK_DURATION = 720  # Skip tracks > 12 min (DJ mixes/sets)
 
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -174,7 +174,7 @@ def get_soundcloud_genres(artist: str, title: str, version: str = "") -> Optiona
     Uses up to 5 ranked queries (see :func:`_candidate_queries`) with early
     exit when strong genre tokens are found.
 
-    For each query we take up to top 3 results (skipping DJ mixes >10min),
+    For each query we take up to top 3 results (skipping DJ mixes >12min),
     merge tokens and filter noise.
     Returns unique, normalized tokens sorted (for stable CSV diffs) or None.
     """
@@ -343,7 +343,7 @@ def _get_soundcloud_genres_impl(artist: str, title: str, version: str = "") -> O
             data = r.json() or {}
             coll = data.get("collection") or []
             
-            # Filter results: skip mixes/sets (duration > 10 min)
+            # Filter results: skip mixes/sets (duration > 12 min)
             # For remixes, separate matched (remixer found) from unmatched items
             # to avoid genre contamination from the original track or other remixes.
             count = 0
@@ -499,7 +499,7 @@ def get_track_year(artist: str, title: str, version: str = "") -> Optional[str]:
         
         data = r.json() or {}
         
-        # Filter: skip mixes/sets (duration > 10 min), take top 3
+        # Filter: skip mixes/sets (duration > 12 min), take top 3
         items = []
         for item in (data.get("collection") or []):
             duration_s = (item.get("duration") or 0) // 1000
@@ -559,7 +559,7 @@ def get_track_artwork_url(artist: str, title: str, version: str = "", client_id:
         
         data = r.json() or {}
         
-        # Filter: skip mixes/sets (duration > 10 min)
+        # Filter: skip mixes/sets (duration > 12 min)
         for item in (data.get("collection") or []):
             duration_s = (item.get("duration") or 0) // 1000
             if duration_s > _MAX_TRACK_DURATION:
