@@ -126,6 +126,35 @@
   const aiChatMinimize = document.getElementById("ai-chat-minimize");
   const aiChatPrompts = document.getElementById("ai-chat-prompts");
   const aiChatDragHandle = document.getElementById("ai-chat-drag-handle");
+  const urlScrapeBanner = document.getElementById("url-scrape-banner");
+  const urlScrapeBannerArtist = document.getElementById(
+    "url-scrape-banner-artist",
+  );
+  const urlScrapeBannerTitle = document.getElementById(
+    "url-scrape-banner-title",
+  );
+  const urlScrapeBannerVersion = document.getElementById(
+    "url-scrape-banner-version",
+  );
+  const urlScrapeBannerGenre = document.getElementById(
+    "url-scrape-banner-genre",
+  );
+  const urlScrapeBannerYear = document.getElementById(
+    "url-scrape-banner-year",
+  );
+  const urlScrapeBannerSource = document.getElementById(
+    "url-scrape-banner-source",
+  );
+  const urlScrapeBannerAccept = document.getElementById(
+    "url-scrape-banner-accept",
+  );
+  const urlScrapeBannerDismiss = document.getElementById(
+    "url-scrape-banner-dismiss",
+  );
+  const urlInputOverlay = document.getElementById("url-input-overlay");
+  const urlInputField = document.getElementById("url-input-field");
+  const urlInputCancel = document.getElementById("url-input-cancel");
+  const urlInputSubmit = document.getElementById("url-input-submit");
 
   // AI availability (checked once on load)
   let aiAvailable = false;
@@ -137,6 +166,8 @@
   let identifyBannerTrack = null;
   let chatPending = false;
   let chatTrack = null; // track the chat panel is open for
+  let scrapePending = false;
+  let scrapeTrack = null; // track for URL scrape
 
   // -- Column definitions per source --------------------------
   const COLUMNS = {
@@ -1080,6 +1111,9 @@
       if (action === "enrich-track" || action === "swap-artist-title") {
         btn.disabled = !isUnsorted;
       }
+      if (action === "scrape-url") {
+        btn.disabled = !isUnsorted;
+      }
     });
 
     // Position menu
@@ -1195,6 +1229,9 @@
         break;
       case "swap-artist-title":
         requestSwapArtistTitle(contextTrack);
+        break;
+      case "scrape-url":
+        openUrlInputDialog(contextTrack);
         break;
     }
     hideContextMenu();
@@ -1493,6 +1530,196 @@
         showToast("Swap request failed", "");
       });
   }
+
+  // -- URL Scrape -----------------------------------------------
+
+  function openUrlInputDialog(track) {
+    if (!track) return;
+    if (currentSource !== "unsorted") {
+      showToast("URL scrape only works on Unsorted tab", "");
+      return;
+    }
+    scrapeTrack = track;
+    urlInputField.value = "";
+    urlInputOverlay.classList.remove("hidden");
+    setTimeout(function () {
+      urlInputField.focus();
+    }, 50);
+  }
+
+  function closeUrlInputDialog() {
+    urlInputOverlay.classList.add("hidden");
+    urlInputField.value = "";
+  }
+
+  urlInputCancel.addEventListener("click", function () {
+    closeUrlInputDialog();
+  });
+
+  urlInputOverlay.addEventListener("click", function (e) {
+    if (e.target === urlInputOverlay) {
+      closeUrlInputDialog();
+    }
+  });
+
+  urlInputField.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      urlInputSubmit.click();
+    } else if (e.key === "Escape") {
+      closeUrlInputDialog();
+    }
+  });
+
+  urlInputSubmit.addEventListener("click", function () {
+    var url = (urlInputField.value || "").trim();
+    if (!url) {
+      showToast("Paste a URL first", "");
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      showToast("Invalid URL (must start with http/https)", "");
+      return;
+    }
+    closeUrlInputDialog();
+    requestUrlScrape(scrapeTrack, url);
+  });
+
+  function requestUrlScrape(track, url) {
+    if (!track || scrapePending) return;
+
+    scrapePending = true;
+    scrapeTrack = track;
+
+    // Show loading state in banner
+    urlScrapeBanner.classList.remove("hidden");
+    urlScrapeBanner.classList.add("url-scrape-loading");
+    urlScrapeBannerArtist.textContent = "Scraping…";
+    urlScrapeBannerTitle.textContent = "";
+    urlScrapeBannerVersion.textContent = "";
+    urlScrapeBannerGenre.textContent = "";
+    urlScrapeBannerYear.textContent = "";
+    urlScrapeBannerSource.textContent = "";
+    urlScrapeBannerAccept.style.display = "none";
+    urlScrapeBannerDismiss.style.display = "inline-block";
+
+    fetch("/api/scrape-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId(track), url: url }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (data) {
+        scrapePending = false;
+        urlScrapeBanner.classList.remove("url-scrape-loading");
+
+        if (data.error) {
+          showToast("Scrape error: " + data.error, "");
+          hideUrlScrapeBanner();
+          return;
+        }
+
+        var result = data.result || data;
+        var hasData =
+          result.artist || result.title || result.version || result.genre;
+        if (!hasData) {
+          showToast("No metadata found at URL", "");
+          hideUrlScrapeBanner();
+          return;
+        }
+
+        urlScrapeBannerArtist.textContent = result.artist || "?";
+        urlScrapeBannerTitle.textContent = result.title || "?";
+        urlScrapeBannerVersion.textContent = result.version
+          ? "(" + result.version + ")"
+          : "";
+        urlScrapeBannerGenre.textContent = result.genre
+          ? "[" + result.genre + "]"
+          : "";
+        urlScrapeBannerYear.textContent = result.year
+          ? "(" + result.year + ")"
+          : "";
+        urlScrapeBannerSource.textContent = result.source || "";
+
+        // Store data for Accept
+        urlScrapeBannerAccept.dataset.artist = result.artist || "";
+        urlScrapeBannerAccept.dataset.title = result.title || "";
+        urlScrapeBannerAccept.dataset.version = result.version || "";
+        urlScrapeBannerAccept.dataset.genre = result.genre || "";
+        urlScrapeBannerAccept.dataset.year = result.year || "";
+        urlScrapeBannerAccept.dataset.url = url;
+        urlScrapeBannerAccept.style.display = "inline-block";
+      })
+      .catch(function () {
+        scrapePending = false;
+        urlScrapeBanner.classList.remove("url-scrape-loading");
+        showToast("Scrape request failed", "");
+        hideUrlScrapeBanner();
+      });
+  }
+
+  function hideUrlScrapeBanner() {
+    urlScrapeBanner.classList.add("hidden");
+    urlScrapeBanner.classList.remove("url-scrape-loading");
+    scrapeTrack = null;
+  }
+
+  // Accept URL scrape result
+  urlScrapeBannerAccept.addEventListener("click", function () {
+    if (!scrapeTrack) return;
+
+    var newArtist = urlScrapeBannerAccept.dataset.artist || "";
+    var newTitle = urlScrapeBannerAccept.dataset.title || "";
+    var newVersion = urlScrapeBannerAccept.dataset.version || "";
+    var newGenre = urlScrapeBannerAccept.dataset.genre || "";
+    var newYear = urlScrapeBannerAccept.dataset.year || "";
+    var newUrl = urlScrapeBannerAccept.dataset.url || "";
+
+    if (newArtist) {
+      scrapeTrack.artist = newArtist;
+      saveTrackField(scrapeTrack, "artist", newArtist);
+    }
+    if (newTitle) {
+      scrapeTrack.title = newTitle;
+      saveTrackField(scrapeTrack, "title", newTitle);
+    }
+    if (newVersion !== undefined) {
+      scrapeTrack.version_info = newVersion;
+      saveTrackField(scrapeTrack, "version_info", newVersion);
+    }
+    if (newGenre) {
+      scrapeTrack.genre_suggest = newGenre;
+      saveTrackField(scrapeTrack, "genre_suggest", newGenre);
+    }
+    if (newYear) {
+      scrapeTrack.year = newYear;
+      saveTrackField(scrapeTrack, "year", newYear);
+    }
+    if (newUrl) {
+      scrapeTrack.source_url = newUrl;
+      saveTrackField(scrapeTrack, "source_url", newUrl);
+    }
+
+    // Re-render table to reflect changes
+    renderTable();
+    var idx = filteredTracks.indexOf(scrapeTrack);
+    if (idx >= 0) selectRow(idx);
+
+    var ver = newVersion ? " (" + newVersion + ")" : "";
+    var yr = newYear ? " [" + newYear + "]" : "";
+    showToast(
+      "\ud83d\udcce " + newArtist + " \u2014 " + newTitle + ver + yr,
+      "",
+    );
+    hideUrlScrapeBanner();
+  });
+
+  // Dismiss URL scrape banner
+  urlScrapeBannerDismiss.addEventListener("click", function () {
+    hideUrlScrapeBanner();
+  });
 
   // -- AI Track Identify ----------------------------------------
 
