@@ -104,6 +104,12 @@
   const identifyBannerReasoning = document.getElementById("identify-banner-reasoning");
   const identifyBannerAccept = document.getElementById("identify-banner-accept");
   const identifyBannerDismiss = document.getElementById("identify-banner-dismiss");
+  const aiChatPanel = document.getElementById("ai-chat-panel");
+  const aiChatTitle = document.getElementById("ai-chat-title");
+  const aiChatMessages = document.getElementById("ai-chat-messages");
+  const aiChatInput = document.getElementById("ai-chat-input");
+  const aiChatSend = document.getElementById("ai-chat-send");
+  const aiChatClose = document.getElementById("ai-chat-close");
 
   // AI availability (checked once on load)
   let aiAvailable = false;
@@ -113,6 +119,8 @@
   let enrichBannerTrack = null;
   let identifyPending = false;
   let identifyBannerTrack = null;
+  let chatPending = false;
+  let chatTrack = null; // track the chat panel is open for
 
   // -- Column definitions per source --------------------------
   const COLUMNS = {
@@ -1163,6 +1171,9 @@
       case "identify-track":
         requestAiIdentify(contextTrack);
         break;
+      case "ai-chat":
+        openAiChat(contextTrack);
+        break;
       case "enrich-track":
         requestEnrichTrack(contextTrack);
         break;
@@ -1590,6 +1601,211 @@
   identifyBannerDismiss.addEventListener("click", function () {
     hideIdentifyBanner();
   });
+
+  // -- AI Chat ------------------------------------------------
+
+  function openAiChat(track) {
+    if (!track) return;
+    if (!aiAvailable) {
+      showToast(
+        "AI not configured (add openai_api_key to config.local.yml)",
+        "",
+      );
+      return;
+    }
+
+    // If opening for a different track, reset session
+    if (chatTrack && trackId(chatTrack) !== trackId(track)) {
+      resetChatSession(trackId(chatTrack));
+    }
+
+    chatTrack = track;
+    var artist = track.artist || "";
+    var title = track.title || "";
+    var filename = track.filepath
+      ? getBasename(track.filepath)
+      : track.filename || "";
+    var label = artist && title ? artist + " — " + title : filename;
+    aiChatTitle.textContent = "💬 " + label;
+    aiChatTitle.title = label;
+    aiChatPanel.classList.remove("hidden");
+    aiChatInput.focus();
+
+    // If messages area is empty, show a hint
+    if (aiChatMessages.children.length === 0) {
+      var hint = document.createElement("div");
+      hint.className = "chat-msg chat-msg-ai";
+      hint.textContent =
+        "Ask me anything about this track — correct artist/title, challenge genre, identify mashups...";
+      aiChatMessages.appendChild(hint);
+    }
+  }
+
+  function closeAiChat() {
+    aiChatPanel.classList.add("hidden");
+    // Don't clear chatTrack so reopening keeps history
+  }
+
+  function resetChatSession(tid) {
+    fetch("/api/ai-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: tid, reset: true }),
+    }).catch(function () {});
+    aiChatMessages.innerHTML = "";
+  }
+
+  function sendChatMessage() {
+    if (chatPending || !chatTrack) return;
+    var msg = aiChatInput.value.trim();
+    if (!msg) return;
+
+    aiChatInput.value = "";
+    chatPending = true;
+    aiChatSend.disabled = true;
+
+    // Append user message bubble
+    appendChatBubble("user", msg);
+
+    // Show loading indicator
+    var loadingEl = document.createElement("div");
+    loadingEl.className = "chat-msg-loading";
+    loadingEl.innerHTML =
+      '<span class="chat-dots"><span></span><span></span><span></span></span>';
+    aiChatMessages.appendChild(loadingEl);
+    aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+
+    fetch("/api/ai-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId(chatTrack), message: msg }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (data) {
+        chatPending = false;
+        aiChatSend.disabled = false;
+        loadingEl.remove();
+
+        if (data.error) {
+          appendChatBubble("ai", "Error: " + data.error);
+          return;
+        }
+
+        appendChatBubble("ai", data.reply, data.suggestion);
+      })
+      .catch(function () {
+        chatPending = false;
+        aiChatSend.disabled = false;
+        loadingEl.remove();
+        appendChatBubble("ai", "Request failed. Please try again.");
+      });
+  }
+
+  function appendChatBubble(role, text, suggestion) {
+    var bubble = document.createElement("div");
+    bubble.className = "chat-msg chat-msg-" + (role === "user" ? "user" : "ai");
+    bubble.textContent = text;
+
+    if (role === "ai" && suggestion && typeof suggestion === "object") {
+      var block = buildSuggestionBlock(suggestion);
+      bubble.appendChild(block);
+    }
+
+    aiChatMessages.appendChild(bubble);
+    aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+  }
+
+  function buildSuggestionBlock(suggestion) {
+    var block = document.createElement("div");
+    block.className = "chat-suggestion-block";
+
+    var fieldLabels = {
+      artist: "Artist",
+      title: "Title",
+      version_info: "Version",
+      year: "Year",
+      genre: "Genre",
+    };
+
+    var fieldKeys = Object.keys(suggestion);
+    fieldKeys.forEach(function (key) {
+      if (!fieldLabels[key]) return;
+      var val = suggestion[key];
+      if (val === undefined || val === null || val === "") return;
+
+      var row = document.createElement("div");
+      row.className = "suggestion-row";
+
+      var fieldSpan = document.createElement("span");
+      fieldSpan.className = "suggestion-field";
+      fieldSpan.textContent = fieldLabels[key];
+
+      var valSpan = document.createElement("span");
+      valSpan.className = "suggestion-value";
+      valSpan.textContent = val;
+      valSpan.title = val;
+
+      var applyBtn = document.createElement("button");
+      applyBtn.className = "suggestion-apply-btn";
+      applyBtn.textContent = "Apply";
+      applyBtn.addEventListener("click", function () {
+        if (applyBtn.classList.contains("applied")) return;
+        applyChatField(key, val);
+        applyBtn.textContent = "✓";
+        applyBtn.classList.add("applied");
+      });
+
+      row.appendChild(fieldSpan);
+      row.appendChild(valSpan);
+      row.appendChild(applyBtn);
+      block.appendChild(row);
+    });
+
+    // Apply All button if more than one field
+    if (fieldKeys.filter(function (k) { return fieldLabels[k] && suggestion[k]; }).length > 1) {
+      var allRow = document.createElement("div");
+      allRow.className = "suggestion-apply-all";
+      var allBtn = document.createElement("button");
+      allBtn.textContent = "Apply All";
+      allBtn.addEventListener("click", function () {
+        fieldKeys.forEach(function (key) {
+          if (!fieldLabels[key] || !suggestion[key]) return;
+          applyChatField(key, suggestion[key]);
+        });
+        block.querySelectorAll(".suggestion-apply-btn").forEach(function (btn) {
+          btn.textContent = "✓";
+          btn.classList.add("applied");
+        });
+        allBtn.textContent = "✓ Applied";
+        allBtn.disabled = true;
+      });
+      allRow.appendChild(allBtn);
+      block.appendChild(allRow);
+    }
+
+    return block;
+  }
+
+  function applyChatField(key, value) {
+    if (!chatTrack) return;
+    chatTrack[key] = value;
+    saveTrackField(chatTrack, key, value);
+    renderTable();
+    var idx = filteredTracks.indexOf(chatTrack);
+    if (idx >= 0) selectRow(idx);
+  }
+
+  // Chat panel event listeners
+  aiChatSend.addEventListener("click", sendChatMessage);
+  aiChatInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+  aiChatClose.addEventListener("click", closeAiChat);
 
   // Accept AI suggestion
   aiBannerAccept.addEventListener("click", function () {
@@ -2210,6 +2426,10 @@
       aiAvailable = !!d.available;
       if (ctxAiSuggest && !aiAvailable) {
         ctxAiSuggest.style.display = "none";
+      }
+      var ctxAiChat = document.getElementById("ctx-ai-chat");
+      if (ctxAiChat && !aiAvailable) {
+        ctxAiChat.style.display = "none";
       }
     })
     .catch(function () {

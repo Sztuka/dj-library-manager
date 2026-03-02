@@ -157,6 +157,9 @@
       <button data-action="identify-track" id="ctx-identify">
         🔎 Identify track (AI)
       </button>
+      <button data-action="ai-chat" id="ctx-ai-chat">
+        💬 AI Chat
+      </button>
       <div class="context-sep"></div>
       <button data-action="show-finder">📁 Show in Finder</button>
       <button data-action="copy-filename">📋 Copy filename</button>
@@ -243,6 +246,25 @@
         ✕
       </button>
     </div>
+    <!-- ── AI Chat panel ─────────────────────────────────────── -->
+    <div id="ai-chat-panel" class="ai-chat-panel hidden">
+      <div class="ai-chat-header">
+        <span id="ai-chat-title">💬 AI Chat</span>
+        <button id="ai-chat-close" class="ai-chat-close">✕</button>
+      </div>
+      <div id="ai-chat-messages" class="ai-chat-messages"></div>
+      <div class="ai-chat-input-row">
+        <input
+          type="text"
+          id="ai-chat-input"
+          class="ai-chat-input"
+          placeholder="Ask AI about this track..."
+          autocomplete="off"
+        />
+        <button id="ai-chat-send" class="ai-chat-send">Send</button>
+      </div>
+    </div>
+
     <!-- ── Toast notification ─────────────────────────────────── -->
     <div id="toast" class="toast hidden"></div>
 

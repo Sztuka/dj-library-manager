@@ -471,8 +471,11 @@ def _call_openai(api_key: str, prompt: str) -> Dict[str, Any]:
 # ── AI Track Identify ─────────────────────────────────────────────────────────
 
 
-def _build_identify_prompt(row: Dict[str, str]) -> str:
-    """Build the prompt for AI track identification from CSV row data."""
+def _gather_track_context(row: Dict[str, str]) -> str:
+    """Extract all available track metadata from a CSV row as formatted text.
+
+    Used by identify prompt and AI chat system prompt to provide context.
+    """
     # Extract filename and folder from file_path
     file_path = (row.get("file_path") or "").strip()
     filename = ""
@@ -558,7 +561,12 @@ def _build_identify_prompt(row: Dict[str, str]) -> str:
     if meta_source:
         parts.append(f"Metadata sources that found results: {meta_source}")
 
-    track_info = "\n".join(parts)
+    return "\n".join(parts)
+
+
+def _build_identify_prompt(row: Dict[str, str]) -> str:
+    """Build the prompt for AI track identification from CSV row data."""
+    track_info = _gather_track_context(row)
 
     return (
         "You are a music track identification expert specializing in electronic "
@@ -643,6 +651,198 @@ def api_identify_track():
         return jsonify(result)
     except Exception as e:
         _log.warning("OpenAI identify error: %s", e)
+        return jsonify({"error": f"AI request failed: {e}"}), 502
+
+
+# ── AI Chat ──────────────────────────────────────────────────────────────────
+
+_chat_sessions: Dict[str, List[Dict[str, str]]] = {}  # track_id -> messages
+
+
+def _build_chat_system_prompt(row: Dict[str, str]) -> str:
+    """Build system prompt for AI chat about a specific track."""
+    track_info = _gather_track_context(row)
+    genre_labels = _load_genres()
+    genre_list = ", ".join(genre_labels)
+
+    return (
+        "You are a DJ music metadata assistant. You help identify and classify "
+        "tracks in a DJ's music library. You are having a conversation with an "
+        "experienced DJ who may correct your initial analysis.\n\n"
+        f"Available information about this track:\n{track_info}\n\n"
+        "FORMATTING RULES:\n"
+        "1. DJ naming convention: Artist - Title (Version/Remix)\n"
+        "2. For mashups/edits combining multiple tracks: the edit creator is the artist, "
+        "combined track names form the title. Example: "
+        "\"Loup Musa\" artist, \"Ethnica x We Dem Boyz\" title, \"Edit\" version\n"
+        "3. For remixes: original artist is the artist, version contains remixer name\n"
+        "4. \"feat.\" for featuring artists, goes in the title\n"
+        "5. Use Title Case for names and titles\n"
+        "6. \"x\" between track names means mashup/combined\n\n"
+        f"Valid genres (pick EXACTLY from this list): {genre_list}\n\n"
+        "When you suggest metadata changes, ALWAYS end your message with a JSON block "
+        "on its own line. Include ONLY the fields you want to change:\n"
+        '```suggestion\n'
+        '{"artist": "...", "title": "...", "version": "...", "year": "...", "genre": "..."}\n'
+        '```\n'
+        "Omit fields you are not changing. For genre, use EXACT name from the list above.\n"
+        "If the user just asks a question without requesting changes, respond normally "
+        "without a suggestion block.\n"
+        "Keep responses concise (2-4 sentences + suggestion block if applicable)."
+    )
+
+
+def _call_openai_chat(
+    api_key: str,
+    messages: List[Dict[str, str]],
+    max_tokens: int = 400,
+) -> str:
+    """Call OpenAI Chat Completions API with full message history.
+
+    Returns the assistant's reply text.
+    """
+    resp = http_requests.post(
+        "https://api.openai.com/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": max_tokens,
+        },
+        timeout=20,
+    )
+    resp.raise_for_status()
+
+    data = resp.json()
+    return (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+
+def _parse_suggestion_block(text: str) -> Optional[Dict[str, str]]:
+    """Extract suggestion JSON from AI response if present.
+
+    Looks for ```suggestion ... ``` or ```json ... ``` fenced blocks.
+    """
+    # Try ```suggestion ... ``` first, then ```json ... ```, then ``` ... ```
+    patterns = [
+        r'```suggestion\s*\n(.*?)\n\s*```',
+        r'```json\s*\n(.*?)\n\s*```',
+        r'```\s*\n(.*?)\n\s*```',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(1).strip())
+                if isinstance(obj, dict):
+                    # Validate genre if present
+                    if "genre" in obj:
+                        genre_labels = _load_genres()
+                        if obj["genre"] not in genre_labels:
+                            lower_map = {g.lower(): g for g in genre_labels}
+                            matched = lower_map.get(obj["genre"].lower())
+                            if matched:
+                                obj["genre"] = matched
+                    return obj
+            except (json.JSONDecodeError, AttributeError):
+                continue
+    return None
+
+
+@app.route("/api/ai-chat", methods=["POST"])
+def api_ai_chat():
+    """Conversational AI assistant for refining track metadata.
+
+    Maintains per-track conversation history. The system prompt includes
+    all available track context. User can ask follow-up questions,
+    correct the AI, or request genre re-evaluation.
+
+    Request body (JSON):
+        { "track_id": "...", "message": "..." }
+        or to reset:
+        { "track_id": "...", "reset": true }
+
+    Returns:
+        { "reply": "...", "suggestion": { "artist": "...", ... } | null,
+          "history_length": 3 }
+    """
+    api_key = get_openai_api_key()
+    if not api_key:
+        return jsonify({"error": "OpenAI API key not configured"}), 501
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    tid = data.get("track_id", "")
+    if not tid:
+        return jsonify({"error": "Missing track_id"}), 400
+
+    # Handle reset
+    if data.get("reset"):
+        _chat_sessions.pop(tid, None)
+        return jsonify({"ok": True, "history_length": 0})
+
+    user_msg = (data.get("message") or "").strip()
+    if not user_msg:
+        return jsonify({"error": "Empty message"}), 400
+
+    # Load row from CSV for system prompt context
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(UNSORTED_CSV)
+
+    row = None
+    for r in rows:
+        if r.get("track_id") == tid:
+            row = r
+            break
+
+    if not row:
+        return jsonify({"error": f"Track not found: {tid}"}), 404
+
+    # Get or create session
+    if tid not in _chat_sessions:
+        system_prompt = _build_chat_system_prompt(row)
+        _chat_sessions[tid] = [{"role": "system", "content": system_prompt}]
+
+    session = _chat_sessions[tid]
+
+    # Cap conversation length (keep system + last 18 user/assistant messages)
+    if len(session) > 20:
+        session = [session[0]] + session[-18:]
+        _chat_sessions[tid] = session
+
+    # Add user message
+    session.append({"role": "user", "content": user_msg})
+
+    try:
+        reply = _call_openai_chat(api_key, session)
+        session.append({"role": "assistant", "content": reply})
+
+        # Parse suggestion block from reply
+        suggestion = _parse_suggestion_block(reply)
+
+        # Clean display text (remove suggestion block for UI)
+        display_text = reply
+        for pattern in [
+            r'\n*```suggestion\s*\n.*?\n\s*```\s*',
+            r'\n*```json\s*\n.*?\n\s*```\s*',
+        ]:
+            display_text = re.sub(pattern, '', display_text, flags=re.DOTALL)
+        display_text = display_text.strip()
+
+        return jsonify({
+            "reply": display_text,
+            "suggestion": suggestion,
+            "history_length": len(session) - 1,  # exclude system prompt
+        })
+    except Exception as e:
+        # Remove the failed user message
+        session.pop()
+        _log.warning("AI chat error: %s", e)
         return jsonify({"error": f"AI request failed: {e}"}), 502
 
 
