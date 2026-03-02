@@ -1006,3 +1006,352 @@ def test_build_identify_prompt_minimal():
     assert "unknown_track.wav" in prompt
     assert "IDENTIFICATION RULES" in prompt
 
+
+# ── AI Chat tests ────────────────────────────────────────────────────────────
+
+def test_ai_chat_no_api_key(client):
+    """Returns 501 when OpenAI API key is not configured."""
+    with patch("djlib.review.server.get_openai_api_key", return_value=""):
+        resp = client.post("/api/ai-chat", json={"track_id": "t1", "message": "test"})
+        assert resp.status_code == 501
+        data = json.loads(resp.data)
+        assert "not configured" in data["error"]
+
+
+def test_ai_chat_no_body(client):
+    """Returns 400 when no JSON body."""
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/ai-chat")
+        assert resp.status_code in (400, 415)
+
+
+def test_ai_chat_missing_track_id(client):
+    """Returns 400 when track_id is missing."""
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/ai-chat", json={"message": "hello"})
+        assert resp.status_code == 400
+
+
+def test_ai_chat_empty_message(client):
+    """Returns 400 when message is empty."""
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/ai-chat", json={"track_id": "t1", "message": ""})
+        assert resp.status_code == 400
+
+
+def test_ai_chat_track_not_found(client):
+    """Returns 404 when track not in unsorted.csv."""
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/ai-chat", json={"track_id": "nonexistent", "message": "hi"})
+        assert resp.status_code == 404
+
+
+def test_ai_chat_reset(client):
+    """Reset clears the session for a track."""
+    import djlib.review.server as srv
+
+    srv._chat_sessions["reset-test"] = [{"role": "system", "content": "sys"}]
+
+    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+        resp = client.post("/api/ai-chat", json={"track_id": "reset-test", "reset": True})
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["ok"] is True
+        assert data["history_length"] == 0
+
+    assert "reset-test" not in srv._chat_sessions
+
+
+def test_ai_chat_success(client, tmp_path):
+    """Successful AI chat round-trip with suggestion block."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "chat-test-1",
+        "file_path": "/tmp/Ethnica x We Dem Boyz (Loup Musa Edit).wav",
+        "artist": "Ethnica",
+        "title": "We Dem Boyz",
+        "version_info": "Loup Musa Edit",
+        "tag_artist_original": "",
+        "tag_title_original": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "version_suggest": "",
+        "bpm": "128",
+        "key_camelot": "7A",
+        "duration_suggest": "5:30",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "",
+        "year_suggest": "",
+        "meta_source": "",
+    }])
+
+    reply_text = (
+        "This is a mashup/edit by Loup Musa combining Ethnica and We Dem Boyz.\n\n"
+        "```suggestion\n"
+        '{"artist": "Loup Musa", "title": "Ethnica x We Dem Boyz", "version_info": "Edit"}\n'
+        "```"
+    )
+
+    mock_openai_response = {
+        "choices": [{
+            "message": {"content": reply_text}
+        }]
+    }
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+        mock_post.return_value.json.return_value = mock_openai_response
+
+        resp = client.post("/api/ai-chat", json={
+            "track_id": "chat-test-1",
+            "message": "this is a mashup by Loup Musa, fix the metadata",
+        })
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+
+        # Reply text should NOT contain the suggestion block
+        assert "```suggestion" not in data["reply"]
+        assert "mashup" in data["reply"].lower()
+
+        # Suggestion should be parsed
+        assert data["suggestion"] is not None
+        assert data["suggestion"]["artist"] == "Loup Musa"
+        assert data["suggestion"]["title"] == "Ethnica x We Dem Boyz"
+        assert data["suggestion"]["version_info"] == "Edit"
+
+        # History length should be 2 (user msg + assistant msg)
+        assert data["history_length"] == 2
+
+    # Clean up
+    srv._chat_sessions.pop("chat-test-1", None)
+
+
+def test_ai_chat_conversation_history(client, tmp_path):
+    """Session persists across multiple messages."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "chat-hist-1",
+        "file_path": "/tmp/test.mp3",
+        "artist": "Test",
+        "title": "Track",
+        "version_info": "",
+        "tag_artist_original": "",
+        "tag_title_original": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "version_suggest": "",
+        "bpm": "120",
+        "key_camelot": "",
+        "duration_suggest": "",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "",
+        "year_suggest": "",
+        "meta_source": "",
+    }])
+
+    mock_resp1 = {"choices": [{"message": {"content": "Sure, this is a tech house track."}}]}
+    mock_resp2 = {"choices": [{"message": {"content": "You're right, it sounds more like Afro House.\n\n```suggestion\n{\"genre\": \"Afro House\"}\n```"}}]}
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.raise_for_status = lambda: None
+
+        # First message
+        mock_post.return_value.json.return_value = mock_resp1
+        resp1 = client.post("/api/ai-chat", json={
+            "track_id": "chat-hist-1",
+            "message": "what genre is this?",
+        })
+        d1 = json.loads(resp1.data)
+        assert d1["history_length"] == 2  # user + assistant
+
+        # Second message
+        mock_post.return_value.json.return_value = mock_resp2
+        resp2 = client.post("/api/ai-chat", json={
+            "track_id": "chat-hist-1",
+            "message": "are you sure? listen to the rhythm, it sounds more afro",
+        })
+        d2 = json.loads(resp2.data)
+        assert d2["history_length"] == 4  # 2 user + 2 assistant
+        assert d2["suggestion"] is not None
+        assert d2["suggestion"]["genre"] == "Afro House"
+
+    srv._chat_sessions.pop("chat-hist-1", None)
+
+
+def test_ai_chat_openai_error(client, tmp_path):
+    """Returns 502 when OpenAI call fails, does not add failed message to session."""
+    from djlib.review import server as srv
+
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "chat-err-1",
+        "file_path": "/tmp/test.wav",
+        "artist": "Test",
+        "title": "Track",
+        "version_info": "",
+        "tag_artist_original": "",
+        "tag_title_original": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "version_suggest": "",
+        "bpm": "",
+        "key_camelot": "",
+        "duration_suggest": "",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "",
+        "year_suggest": "",
+        "meta_source": "",
+    }])
+
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
+        mock_post.side_effect = Exception("Timeout")
+
+        resp = client.post("/api/ai-chat", json={
+            "track_id": "chat-err-1",
+            "message": "hello",
+        })
+        assert resp.status_code == 502
+        data = json.loads(resp.data)
+        assert "failed" in data["error"]
+
+    # Session should exist but without the failed user message
+    session = srv._chat_sessions.get("chat-err-1", [])
+    user_msgs = [m for m in session if m["role"] == "user"]
+    assert len(user_msgs) == 0
+
+    srv._chat_sessions.pop("chat-err-1", None)
+
+
+def test_parse_suggestion_block():
+    """Tests suggestion block parsing from AI response text."""
+    from djlib.review.server import _parse_suggestion_block
+
+    # Standard suggestion block
+    text1 = 'Here you go:\n\n```suggestion\n{"artist": "Loup Musa", "title": "Test"}\n```'
+    result1 = _parse_suggestion_block(text1)
+    assert result1 is not None
+    assert result1["artist"] == "Loup Musa"
+    assert result1["title"] == "Test"
+
+    # json block
+    text2 = 'Updated:\n\n```json\n{"genre": "Afro House"}\n```'
+    result2 = _parse_suggestion_block(text2)
+    assert result2 is not None
+    assert result2["genre"] == "Afro House"
+
+    # No block — should return None
+    text3 = "I think this is Tech House. No changes needed."
+    assert _parse_suggestion_block(text3) is None
+
+    # Invalid JSON
+    text4 = "```suggestion\n{not valid json}\n```"
+    assert _parse_suggestion_block(text4) is None
+
+
+def test_parse_suggestion_block_genre_validation():
+    """Genre in suggestion block is validated against genres.yml."""
+    from djlib.review.server import _parse_suggestion_block
+
+    # Case-insensitive match should correct casing
+    text = '```suggestion\n{"genre": "afro house"}\n```'
+    result = _parse_suggestion_block(text)
+    assert result is not None
+    # Should be corrected to proper case from genres.yml
+    assert result["genre"] == "Afro House"
+
+
+def test_gather_track_context():
+    """_gather_track_context returns formatted string with track info."""
+    from djlib.review.server import _gather_track_context
+
+    row = {
+        "file_path": "/tmp/Music Unsorted/Test Artist - Test Title.mp3",
+        "tag_artist_original": "Test Artist",
+        "tag_title_original": "Test Title",
+        "tag_genre_original": "House",
+        "artist_suggest": "Test Artist",
+        "title_suggest": "Test Title",
+        "version_suggest": "Original Mix",
+        "artist": "Test Artist",
+        "title": "Test Title",
+        "version_info": "Original Mix",
+        "bpm": "126",
+        "key_camelot": "8B",
+        "duration_suggest": "7:20",
+        "genres_soundcloud": "house, deep house",
+        "genres_beatport": "House",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "house",
+        "genre_suggest": "House",
+        "year_suggest": "2024",
+        "meta_source": "beatport",
+    }
+
+    ctx = _gather_track_context(row)
+    assert "Test Artist - Test Title.mp3" in ctx
+    assert "BPM: 126" in ctx
+    assert "Key: 8B" in ctx
+    assert "house, deep house" in ctx
+    assert "beatport" in ctx.lower() or "Beatport" in ctx
+
+
+def test_build_chat_system_prompt():
+    """Chat system prompt includes track context and formatting rules."""
+    from djlib.review.server import _build_chat_system_prompt
+
+    row = {
+        "file_path": "/tmp/Ethnica x We Dem Boyz (Loup Musa Edit).wav",
+        "tag_artist_original": "",
+        "tag_title_original": "",
+        "tag_genre_original": "",
+        "artist_suggest": "",
+        "title_suggest": "",
+        "version_suggest": "",
+        "artist": "Ethnica",
+        "title": "We Dem Boyz",
+        "version_info": "Loup Musa Edit",
+        "bpm": "128",
+        "key_camelot": "7A",
+        "duration_suggest": "5:30",
+        "genres_soundcloud": "",
+        "genres_beatport": "",
+        "genres_musicbrainz": "",
+        "genres_lastfm": "",
+        "genre_suggest": "",
+        "year_suggest": "",
+        "meta_source": "",
+    }
+
+    prompt = _build_chat_system_prompt(row)
+    # Should contain track context
+    assert "Ethnica x We Dem Boyz" in prompt
+    assert "Loup Musa Edit" in prompt
+    # Should contain mashup/edit formatting rules
+    assert "mashup" in prompt.lower() or "edit" in prompt.lower()
+    # Should mention suggestion block format
+    assert "```suggestion" in prompt
+    # Should reference genre list
+    assert "genre" in prompt.lower()
+
