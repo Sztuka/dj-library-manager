@@ -394,13 +394,14 @@ def _build_genre_prompt(ctx: Dict[str, str], genre_labels: List[str]) -> str:
         )
 
     bpm_guide = (
-        "\n\nBPM genre ranges (approximate, use as strong signal):\n"
+        "\n\nBPM genre ranges (approximate, ranges overlap — use together with other signals):\n"
         "70-100: Hip-Hop, R&B, Reggaeton, Dancehall\n"
         "100-115: Broken Beat, UK Garage, Afrobeats\n"
-        "115-122: Deep House, Soulful House\n"
-        "120-128: House, Tech House, Afro House, Jackin House\n"
-        "126-132: Melodic House & Techno, Progressive House\n"
-        "130-140: Techno, Hard Techno, Trance, Hard Dance\n"
+        "115-126: Deep House, Soulful House\n"
+        "116-128: Afro House, Organic House\n"
+        "120-128: House, Tech House, Jackin House\n"
+        "124-132: Melodic House & Techno, Progressive House\n"
+        "128-140: Techno, Hard Techno, Trance, Hard Dance\n"
         "140-150: Psytrance\n"
         "150-180: Jungle, Drum & Bass\n"
         "If BPM is available, it should STRONGLY influence your genre choice."
