@@ -95,6 +95,15 @@
   const enrichBannerAccept = document.getElementById("enrich-banner-accept");
   const enrichBannerDismiss = document.getElementById("enrich-banner-dismiss");
   const enrichBannerSwap = document.getElementById("enrich-banner-swap");
+  const identifyBanner = document.getElementById("identify-banner");
+  const identifyBannerArtist = document.getElementById("identify-banner-artist");
+  const identifyBannerTitle = document.getElementById("identify-banner-title");
+  const identifyBannerVersion = document.getElementById("identify-banner-version");
+  const identifyBannerYear = document.getElementById("identify-banner-year");
+  const identifyBannerConfidence = document.getElementById("identify-banner-confidence");
+  const identifyBannerReasoning = document.getElementById("identify-banner-reasoning");
+  const identifyBannerAccept = document.getElementById("identify-banner-accept");
+  const identifyBannerDismiss = document.getElementById("identify-banner-dismiss");
 
   // AI availability (checked once on load)
   let aiAvailable = false;
@@ -102,6 +111,8 @@
   let aiBannerTrack = null; // track the banner is showing for
   let enrichPending = false;
   let enrichBannerTrack = null;
+  let identifyPending = false;
+  let identifyBannerTrack = null;
 
   // -- Column definitions per source --------------------------
   const COLUMNS = {
@@ -1149,6 +1160,9 @@
       case "ai-suggest-genre":
         requestAiGenreSuggest(contextTrack);
         break;
+      case "identify-track":
+        requestAiIdentify(contextTrack);
+        break;
       case "enrich-track":
         requestEnrichTrack(contextTrack);
         break;
@@ -1452,6 +1466,130 @@
         showToast("Swap request failed", "");
       });
   }
+
+  // -- AI Track Identify ----------------------------------------
+
+  function requestAiIdentify(track) {
+    if (!track || identifyPending) return;
+    if (!aiAvailable) {
+      showToast(
+        "AI not configured (add openai_api_key to config.local.yml)",
+        "",
+      );
+      return;
+    }
+
+    identifyPending = true;
+    identifyBannerTrack = track;
+
+    // Show loading state
+    identifyBanner.classList.remove("hidden");
+    identifyBanner.classList.add("identify-loading");
+    identifyBannerArtist.textContent = "Identifying…";
+    identifyBannerTitle.textContent = "";
+    identifyBannerVersion.textContent = "";
+    identifyBannerYear.textContent = "";
+    identifyBannerConfidence.textContent = "";
+    identifyBannerReasoning.textContent = "";
+    identifyBannerAccept.style.display = "none";
+    identifyBannerDismiss.style.display = "inline-block";
+
+    fetch("/api/identify-track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId(track) }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (data) {
+        identifyPending = false;
+        identifyBanner.classList.remove("identify-loading");
+
+        if (data.error) {
+          showToast("Identify error: " + data.error, "");
+          hideIdentifyBanner();
+          return;
+        }
+
+        identifyBannerArtist.textContent = data.artist || "?";
+        identifyBannerTitle.textContent = data.title || "?";
+        identifyBannerVersion.textContent = data.version
+          ? "(" + data.version + ")"
+          : "";
+        identifyBannerYear.textContent = data.year
+          ? "[" + data.year + "]"
+          : "";
+        var conf = data.confidence
+          ? Math.round(data.confidence * 100) + "%"
+          : "";
+        identifyBannerConfidence.textContent = conf;
+        identifyBannerReasoning.textContent = data.reasoning || "";
+        identifyBannerReasoning.title = data.reasoning || "";
+
+        // Store data for Accept
+        identifyBannerAccept.dataset.artist = data.artist || "";
+        identifyBannerAccept.dataset.title = data.title || "";
+        identifyBannerAccept.dataset.version = data.version || "";
+        identifyBannerAccept.dataset.year = data.year || "";
+        identifyBannerAccept.style.display = "inline-block";
+      })
+      .catch(function (err) {
+        identifyPending = false;
+        identifyBanner.classList.remove("identify-loading");
+        showToast("Identify request failed", "");
+        hideIdentifyBanner();
+      });
+  }
+
+  function hideIdentifyBanner() {
+    identifyBanner.classList.add("hidden");
+    identifyBanner.classList.remove("identify-loading");
+    identifyBannerTrack = null;
+  }
+
+  // Accept identify result
+  identifyBannerAccept.addEventListener("click", function () {
+    if (!identifyBannerTrack) return;
+
+    var newArtist = identifyBannerAccept.dataset.artist || "";
+    var newTitle = identifyBannerAccept.dataset.title || "";
+    var newVersion = identifyBannerAccept.dataset.version || "";
+    var newYear = identifyBannerAccept.dataset.year || "";
+
+    // Save fields that have values
+    if (newArtist) {
+      identifyBannerTrack.artist = newArtist;
+      saveTrackField(identifyBannerTrack, "artist", newArtist);
+    }
+    if (newTitle) {
+      identifyBannerTrack.title = newTitle;
+      saveTrackField(identifyBannerTrack, "title", newTitle);
+    }
+    if (newVersion !== undefined) {
+      identifyBannerTrack.version_info = newVersion;
+      saveTrackField(identifyBannerTrack, "version_info", newVersion);
+    }
+    if (newYear) {
+      identifyBannerTrack.year = newYear;
+      saveTrackField(identifyBannerTrack, "year", newYear);
+    }
+
+    // Re-render table to reflect changes
+    renderTable();
+    var idx = filteredTracks.indexOf(identifyBannerTrack);
+    if (idx >= 0) selectRow(idx);
+
+    var ver = newVersion ? " (" + newVersion + ")" : "";
+    var yr = newYear ? " [" + newYear + "]" : "";
+    showToast("ID: " + newArtist + " \u2014 " + newTitle + ver + yr, "");
+    hideIdentifyBanner();
+  });
+
+  // Dismiss identify banner
+  identifyBannerDismiss.addEventListener("click", function () {
+    hideIdentifyBanner();
+  });
 
   // Accept AI suggestion
   aiBannerAccept.addEventListener("click", function () {

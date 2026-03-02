@@ -139,13 +139,24 @@
     </div>
 
     <!-- ── Context menu ───────────────────────────────────────── -->
-    <div id="context-menu" class="context-menu hidden">      <button data-action="enrich-track" id="ctx-enrich">🔄 Re-enrich (APIs)</button>
-      <button data-action="swap-artist-title" id="ctx-swap">🔀 Swap artist ↔ title</button>
-      <div class="context-sep"></div>      <button data-action="search-google">🔍 Search Google</button>
+    <div id="context-menu" class="context-menu hidden">
+      <button data-action="enrich-track" id="ctx-enrich">
+        🔄 Re-enrich (APIs)
+      </button>
+      <button data-action="swap-artist-title" id="ctx-swap">
+        🔀 Swap artist ↔ title
+      </button>
+      <div class="context-sep"></div>
+      <button data-action="search-google">🔍 Search Google</button>
       <button data-action="search-beatport">🔍 Search Beatport</button>
       <button data-action="search-soundcloud">🔍 Search SoundCloud</button>
       <div class="context-sep"></div>
-      <button data-action="ai-suggest-genre" id="ctx-ai-suggest">🤖 Suggest genre (AI)</button>
+      <button data-action="ai-suggest-genre" id="ctx-ai-suggest">
+        🤖 Suggest genre (AI)
+      </button>
+      <button data-action="identify-track" id="ctx-identify">
+        🔎 Identify track (AI)
+      </button>
       <div class="context-sep"></div>
       <button data-action="show-finder">📁 Show in Finder</button>
       <button data-action="copy-filename">📋 Copy filename</button>
@@ -158,18 +169,79 @@
       <span class="ai-banner-genre" id="ai-banner-genre"></span>
       <span class="ai-banner-confidence" id="ai-banner-confidence"></span>
       <span class="ai-banner-reasoning" id="ai-banner-reasoning"></span>
-      <button class="ai-banner-accept" id="ai-banner-accept" title="Accept AI suggestion">✓ Accept</button>
-      <button class="ai-banner-dismiss" id="ai-banner-dismiss" title="Dismiss">✕</button>
+      <button
+        class="ai-banner-accept"
+        id="ai-banner-accept"
+        title="Accept AI suggestion"
+      >
+        ✓ Accept
+      </button>
+      <button class="ai-banner-dismiss" id="ai-banner-dismiss" title="Dismiss">
+        ✕
+      </button>
     </div>
     <!-- ── Enrich result banner ─────────────────────────────────────── -->
     <div id="enrich-banner" class="enrich-banner hidden">
       <span class="enrich-banner-icon">🔄</span>
       <span class="enrich-banner-genre" id="enrich-banner-genre"></span>
-      <span class="enrich-banner-confidence" id="enrich-banner-confidence"></span>
+      <span
+        class="enrich-banner-confidence"
+        id="enrich-banner-confidence"
+      ></span>
       <span class="enrich-banner-sources" id="enrich-banner-sources"></span>
-      <button class="enrich-banner-accept" id="enrich-banner-accept" title="Accept genre">✓ Accept</button>
-      <button class="enrich-banner-swap" id="enrich-banner-swap" title="Swap artist ↔ title" style="display:none">🔀 Swap</button>
-      <button class="enrich-banner-dismiss" id="enrich-banner-dismiss" title="Dismiss">✕</button>
+      <button
+        class="enrich-banner-accept"
+        id="enrich-banner-accept"
+        title="Accept genre"
+      >
+        ✓ Accept
+      </button>
+      <button
+        class="enrich-banner-swap"
+        id="enrich-banner-swap"
+        title="Swap artist ↔ title"
+        style="display: none"
+      >
+        🔀 Swap
+      </button>
+      <button
+        class="enrich-banner-dismiss"
+        id="enrich-banner-dismiss"
+        title="Dismiss"
+      >
+        ✕
+      </button>
+    </div>
+    <!-- ── Identify result banner ───────────────────────────────────── -->
+    <div id="identify-banner" class="identify-banner hidden">
+      <span class="identify-banner-icon">🔎</span>
+      <span class="identify-banner-artist" id="identify-banner-artist"></span>
+      <span class="identify-banner-sep">—</span>
+      <span class="identify-banner-title" id="identify-banner-title"></span>
+      <span class="identify-banner-version" id="identify-banner-version"></span>
+      <span class="identify-banner-year" id="identify-banner-year"></span>
+      <span
+        class="identify-banner-confidence"
+        id="identify-banner-confidence"
+      ></span>
+      <span
+        class="identify-banner-reasoning"
+        id="identify-banner-reasoning"
+      ></span>
+      <button
+        class="identify-banner-accept"
+        id="identify-banner-accept"
+        title="Accept identification"
+      >
+        ✓ Accept
+      </button>
+      <button
+        class="identify-banner-dismiss"
+        id="identify-banner-dismiss"
+        title="Dismiss"
+      >
+        ✕
+      </button>
     </div>
     <!-- ── Toast notification ─────────────────────────────────── -->
     <div id="toast" class="toast hidden"></div>
