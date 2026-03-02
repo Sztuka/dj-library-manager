@@ -1217,6 +1217,224 @@ kbd {
   color: var(--text);
 }
 
+/* ── URL Scrape Banner ─────────────────────────────────────── */
+
+.url-scrape-banner {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 92;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(
+    135deg,
+    rgba(100, 180, 255, 0.15),
+    rgba(60, 140, 220, 0.12)
+  );
+  border: 1px solid rgba(100, 180, 255, 0.4);
+  border-radius: 10px;
+  padding: 8px 16px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+  max-width: 850px;
+  animation: ai-slide-up 0.25s ease-out;
+}
+
+.url-scrape-banner.hidden {
+  display: none;
+}
+
+.url-scrape-banner.url-scrape-loading {
+  animation: ai-pulse 1.5s ease-in-out infinite;
+}
+
+.url-scrape-banner-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.url-scrape-banner-artist {
+  font-weight: 700;
+  color: #64b4ff;
+  font-size: 14px;
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.url-scrape-banner-sep {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.url-scrape-banner-title {
+  font-weight: 700;
+  color: #90ccff;
+  font-size: 14px;
+  flex-shrink: 0;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.url-scrape-banner-version {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+.url-scrape-banner-genre {
+  font-size: 11px;
+  color: #7ecbff;
+  flex-shrink: 0;
+}
+
+.url-scrape-banner-year {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.url-scrape-banner-source {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.url-scrape-banner-accept,
+.url-scrape-banner-dismiss {
+  border: none;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.url-scrape-banner-accept {
+  background: #64b4ff;
+  color: #1a1a2e;
+}
+
+.url-scrape-banner-accept:hover {
+  background: #90ccff;
+}
+
+.url-scrape-banner-dismiss {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+}
+
+.url-scrape-banner-dismiss:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text);
+}
+
+/* ── URL Input Dialog ─────────────────────────────────────── */
+
+.url-input-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  animation: ai-fade-in 0.15s ease-out;
+}
+
+.url-input-overlay.hidden {
+  display: none;
+}
+
+.url-input-dialog {
+  background: var(--surface);
+  border: 1px solid rgba(100, 180, 255, 0.3);
+  border-radius: 12px;
+  padding: 20px 24px;
+  min-width: 420px;
+  max-width: 560px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  animation: ai-slide-up 0.2s ease-out;
+}
+
+.url-input-header {
+  font-size: 15px;
+  font-weight: 600;
+  color: #64b4ff;
+  margin-bottom: 14px;
+}
+
+.url-input-field {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font-ui);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.url-input-field:focus {
+  border-color: rgba(100, 180, 255, 0.5);
+}
+
+.url-input-field::placeholder {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.url-input-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.url-input-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.url-input-btn.cancel {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+}
+
+.url-input-btn.cancel:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: var(--text);
+}
+
+.url-input-btn.submit {
+  background: #64b4ff;
+  color: #1a1a2e;
+  font-weight: 600;
+}
+
+.url-input-btn.submit:hover {
+  background: #90ccff;
+}
+
 /* ── AI Chat Panel ────────────────────────────────────────── */
 
 .ai-chat-panel {

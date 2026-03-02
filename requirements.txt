@@ -10,6 +10,7 @@ requests          # online enrichment (MusicBrainz)
 musicbrainzngs    # oficjalny klient MusicBrainz Web Service 2
 tenacity          # retry/backoff na 429/5xx
 requests-cache    # cache HTTP (TTL)
+beautifulsoup4    # HTML parsing for URL metadata scraping (og:tags, JSON-LD)
 pandas            # data processing dla ML i CSV
 scikit-learn>=1.3.0  # ML dla bucket assigner
 # openpyxl — removed: XLSX staging replaced by CSV + Review UI

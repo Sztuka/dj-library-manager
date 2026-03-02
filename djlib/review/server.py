@@ -949,6 +949,76 @@ def _detect_artist_title_swap(row: Dict[str, str]) -> Optional[Dict[str, str]]:
     return None
 
 
+@app.route("/api/scrape-url", methods=["POST"])
+def api_scrape_url():
+    """Scrape metadata from a URL (SoundCloud, YouTube, Beatport, etc.).
+
+    Extracts artist, title, version, genre, year from the linked page.
+    For SoundCloud (JS-rendered) falls back to URL slug parsing.
+
+    Request body (JSON):
+        { "track_id": "...", "url": "https://soundcloud.com/..." }
+
+    Returns:
+        { "artist": "...", "title": "...", "version": "...",
+          "genre": "...", "year": "...", "source": "soundcloud",
+          "artwork_url": "...", "url": "..." }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    url = (data.get("url") or "").strip()
+    tid = (data.get("track_id") or "").strip()
+
+    if not url:
+        return jsonify({"error": "Missing url"}), 400
+
+    try:
+        from djlib.metadata.url_scraper import scrape_url
+        result = scrape_url(url)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        _log.error("URL scrape failed: %s", e)
+        return jsonify({"error": f"Failed to scrape URL: {e}"}), 502
+
+    # If track_id provided, save scraped data to CSV
+    if tid and (result.get("artist") or result.get("title")):
+        with _CSV_LOCK:
+            rows = load_unsorted_rows(UNSORTED_CSV)
+            for r in rows:
+                if r.get("track_id") == tid:
+                    changed = False
+                    if result.get("artist") and not (r.get("artist_suggest") or "").strip():
+                        r["artist_suggest"] = result["artist"]
+                        r["artist"] = result["artist"]
+                        changed = True
+                    if result.get("title"):
+                        r["title_suggest"] = result["title"]
+                        r["title"] = result["title"]
+                        changed = True
+                    if result.get("version"):
+                        r["version_suggest"] = result["version"]
+                        r["version_info"] = result["version"]
+                        changed = True
+                    if result.get("genre") and not (r.get("genre_suggest") or "").strip():
+                        r["genre_suggest"] = result["genre"]
+                        changed = True
+                    if result.get("year") and not (r.get("year_suggest") or "").strip():
+                        r["year_suggest"] = result["year"]
+                        changed = True
+                    if result.get("url"):
+                        r["source_url"] = result["url"]
+                        changed = True
+                    if changed:
+                        r["meta_source"] = f"url_scrape({result.get('source', 'generic')})"
+                        save_unsorted_rows(rows, UNSORTED_CSV)
+                    break
+
+    return jsonify(result)
+
+
 @app.route("/api/enrich-track", methods=["POST"])
 def api_enrich_track():
     """Re-enrich a single track using user-edited artist/title values.
