@@ -414,7 +414,7 @@ class TestResolveIntegration:
         """Beatport returning single specific EDM genre → early exit, high confidence."""
         result = resolve("Artist", "Title")
         assert result is not None
-        assert result.main == "tech house"
+        assert result.main == "Tech House"
         assert result.confidence == pytest.approx(0.8)
         assert len(result.breakdown) == 1
         assert result.breakdown[0].source == "beatport"
@@ -430,7 +430,7 @@ class TestResolveIntegration:
         """Only Last.fm returns data → score by log-weighted counts."""
         result = resolve("Artist", "Title")
         assert result is not None
-        assert result.main in {"rock", "indie rock"}
+        assert result.main in {"Rock", "Indie Rock"}
         assert len(result.breakdown) >= 1
         sources = {s.source for s in result.breakdown}
         assert "lastfm" in sources
@@ -443,7 +443,7 @@ class TestResolveIntegration:
         """MB + LFM agree on house → should be main."""
         result = resolve("Artist", "Title")
         assert result is not None
-        assert result.main == "house"
+        assert result.main == "House"
 
     @patch(_SC_PREFIX, return_value=None)
     @patch(_MB_PREFIX, return_value=None)
@@ -475,7 +475,7 @@ class TestResolveIntegration:
         """Specific subgenre with boost should be the main result."""
         result = resolve("Artist", "Title")
         assert result is not None
-        assert result.main == "afro house"
+        assert result.main == "Afro House"
 
 
 # ============================================================================
@@ -497,7 +497,7 @@ class TestGoldenCases:
         """Beatport says 'Afro House' → specific EDM early exit."""
         result = resolve("Black Coffee", "Drive")
         assert result is not None
-        assert result.main == "afro house"
+        assert result.main == "Afro House"
 
     @patch(_SC_PREFIX, return_value=None)
     @patch(_MB_PREFIX, return_value=["pop", "dance pop"])
@@ -507,7 +507,7 @@ class TestGoldenCases:
         """Pop track without Beatport data → LFM+MB consensus on pop."""
         result = resolve("Dua Lipa", "Levitating")
         assert result is not None
-        assert result.main == "pop"
+        assert result.main == "Pop"
 
     @patch(_SC_PREFIX, return_value={"tags": ["tech house", "remix"]})
     @patch(_MB_PREFIX, return_value=None)
@@ -517,7 +517,7 @@ class TestGoldenCases:
         """Remix where only SoundCloud has tags → SC result used."""
         result = resolve("Artist", "Track", version="Remix")
         assert result is not None
-        assert "tech house" in result.main or "remix" in result.main
+        assert "Tech House" in result.main or "Remix" in result.main
 
 
 # ============================================================================
@@ -535,7 +535,7 @@ class TestResolveTagGenreFallback:
         """When all sources return nothing, tag_genre becomes the only signal."""
         result = resolve("Artist", "Title", tag_genre="House")
         assert result is not None
-        assert result.main == "house"
+        assert result.main == "House"
         sources = {s.source for s in result.breakdown}
         assert "tag_genre" in sources
 
@@ -547,7 +547,7 @@ class TestResolveTagGenreFallback:
         """When Beatport returns strong data, tag_genre is not used."""
         result = resolve("Artist", "Title", tag_genre="Pop")
         assert result is not None
-        assert result.main == "afro house"
+        assert result.main == "Afro House"
         # tag_genre should not appear in breakdown
         sources = {s.source for s in result.breakdown}
         assert "tag_genre" not in sources
@@ -577,7 +577,7 @@ class TestResolveVersionHint:
         """Version hint 'Afro House' should beat LFM/MB hip-hop for remixes."""
         result = resolve("Kanye West", "Stronger", version="DJ Davy Afro House Remix")
         assert result is not None
-        assert result.main == "afro house"
+        assert result.main == "Afro House"
         sources = {s.source for s in result.breakdown}
         assert "version_hint" in sources
 
@@ -598,4 +598,4 @@ class TestResolveRemixFiltering:
         result = resolve("Artist", "Track", version="DJ Test Remix")
         assert result is not None
         # "house" should survive; hip-hop/pop should be filtered
-        assert result.main == "house"
+        assert result.main == "House"

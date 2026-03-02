@@ -823,6 +823,30 @@
     tableBody.appendChild(frag);
   }
 
+  /**
+   * Find best-matching genre label from the genres list.
+   * Handles case/spacing mismatches: "afrohouse" → "Afro House".
+   */
+  function matchGenreLabel(raw) {
+    if (!raw) return raw;
+    // Exact match first
+    for (var i = 0; i < genres.length; i++) {
+      if (genres[i] === raw) return genres[i];
+    }
+    // Case-insensitive match
+    var lower = raw.toLowerCase();
+    for (var i = 0; i < genres.length; i++) {
+      if (genres[i].toLowerCase() === lower) return genres[i];
+    }
+    // Normalized match (strip spaces/hyphens)
+    var norm = lower.replace(/[\s\-]+/g, "");
+    for (var i = 0; i < genres.length; i++) {
+      if (genres[i].toLowerCase().replace(/[\s\-]+/g, "") === norm)
+        return genres[i];
+    }
+    return raw;
+  }
+
   function buildGenreSelect(currentValue) {
     const sel = document.createElement("select");
     sel.classList.add("inline-select");
@@ -832,11 +856,14 @@
     empty.textContent = "\u2014";
     sel.appendChild(empty);
 
+    // Normalize currentValue to match a dropdown option
+    var matched = matchGenreLabel(currentValue);
+
     for (const g of genres) {
       const o = document.createElement("option");
       o.value = g;
       o.textContent = g;
-      if (g === currentValue) o.selected = true;
+      if (g === matched) o.selected = true;
       sel.appendChild(o);
     }
     return sel;
@@ -1431,7 +1458,9 @@
     if (!genre || !enrichBannerTrack) return;
 
     // Save MAIN genre (single canonical name) to genre column (dropdown-compatible)
-    var mainGenre = (enrichLastData && enrichLastData.genre) || genre;
+    var mainGenre = matchGenreLabel(
+      (enrichLastData && enrichLastData.genre) || genre,
+    );
     enrichBannerTrack.genre = mainGenre;
     saveTrackField(enrichBannerTrack, "genre", mainGenre);
 
