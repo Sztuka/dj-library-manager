@@ -5,11 +5,13 @@ genre stripping, mashup handling, dedup, originals,
 _keep_token filtering of artist/title fragments.
 """
 import pytest
+from unittest.mock import patch, MagicMock
 
 from djlib.metadata.soundcloud import (
     _candidate_queries,
     _clean_for_query,
     _light_clean,
+    _sc_year_cache,
     get_soundcloud_genres,
 )
 
@@ -251,3 +253,77 @@ class TestCandidateQueriesNoArtist:
     def test_empty_artist_and_title_returns_empty(self):
         qs = _candidate_queries("", "", "")
         assert qs == []
+
+
+# ---------------------------------------------------------------------------
+# Year cache: remix match preference
+# ---------------------------------------------------------------------------
+
+class TestYearCacheRemixPreference:
+    """Year cache should prefer the upload year from a remix-matched SC result
+    over the original track's upload year.
+
+    Scenario: searching for 'Billie Eilish - Lovely (BAI Remix)' on SC.
+    First result: original Lovely (2018), second: BAI Remix (2024).
+    Year cache should store 2024 (remix), not 2018 (original).
+    """
+
+    def _make_sc_response(self, *items):
+        """Build a fake SC search API response."""
+        return MagicMock(
+            status_code=200,
+            json=lambda: {"collection": list(items)},
+            from_cache=True,
+        )
+
+    def _sc_item(self, title, artist, year, duration_s=300, genre="", tag_list=""):
+        return {
+            "title": title,
+            "user": {"username": artist},
+            "genre": genre,
+            "tag_list": tag_list,
+            "duration": duration_s * 1000,
+            "created_at": f"{year}-06-15T00:00:00Z",
+        }
+
+    def test_remix_year_overwrites_original_year(self):
+        """When SC returns original (2018) then remix (2024), cache stores 2024."""
+        from djlib.metadata import soundcloud as sc_mod
+
+        items = [
+            self._sc_item("Lovely", "Billie Eilish", 2018, genre="Pop"),
+            self._sc_item("Billie Eilish - Lovely (BAI Remix)", "DJ BAI", 2024,
+                          genre="Afro House", tag_list="bai remix afro house"),
+        ]
+        resp = self._make_sc_response(*items)
+
+        # Clear year cache and mock client_id + requests
+        cache_key = sc_mod._norm("billie eilish|lovely|bai remix")
+        _sc_year_cache.pop(cache_key, None)
+
+        with patch.object(sc_mod, "get_valid_client_id", return_value="fake_cid"), \
+             patch.object(sc_mod, "requests") as mock_req:
+            mock_req.get.return_value = resp
+            get_soundcloud_genres("Billie Eilish", "Lovely", "BAI Remix")
+
+        assert _sc_year_cache.get(cache_key) == "2024"
+
+    def test_non_remix_uses_first_result_year(self):
+        """Without version/remix, year comes from the first result."""
+        from djlib.metadata import soundcloud as sc_mod
+
+        items = [
+            self._sc_item("Lovely", "Billie Eilish", 2018, genre="Pop"),
+            self._sc_item("Lovely (Another Remix)", "Someone", 2023, genre="House"),
+        ]
+        resp = self._make_sc_response(*items)
+
+        cache_key = sc_mod._norm("billie eilish|lovely|")
+        _sc_year_cache.pop(cache_key, None)
+
+        with patch.object(sc_mod, "get_valid_client_id", return_value="fake_cid"), \
+             patch.object(sc_mod, "requests") as mock_req:
+            mock_req.get.return_value = resp
+            get_soundcloud_genres("Billie Eilish", "Lovely", "")
+
+        assert _sc_year_cache.get(cache_key) == "2018"

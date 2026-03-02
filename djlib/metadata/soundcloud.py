@@ -383,10 +383,17 @@ def _get_soundcloud_genres_impl(artist: str, title: str, version: str = "") -> O
 
                 _sc_result_items.append(item_info)
 
-                # Capture upload year from the first valid result
-                if _year_cache_key not in _sc_year_cache:
-                    ca = item.get("created_at") or ""
-                    if ca and ca[:4].isdigit():
+                # Capture upload year from SC results.
+                # For remix searches: prefer the year from a remix-matched
+                # result (the actual remix upload date) over the first result
+                # (which may be the original track from years earlier).
+                ca = item.get("created_at") or ""
+                if ca and ca[:4].isdigit():
+                    if is_remix_match:
+                        # Remix match always wins — overwrite any previous year
+                        _sc_year_cache[_year_cache_key] = ca[:4]
+                    elif _year_cache_key not in _sc_year_cache:
+                        # Fallback: first result (non-remix or no version search)
                         _sc_year_cache[_year_cache_key] = ca[:4]
                 count += 1
                 if count >= 3:  # Top 3 per query
