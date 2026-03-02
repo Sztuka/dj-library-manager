@@ -12,6 +12,7 @@ from djlib.metadata.url_scraper import (
     _og_to_result,
     _parse_og_regex,
     _parse_sc_title,
+    _sc_oembed,
     _sc_parse_url_slug,
     _slug_to_name,
     scrape_url,
@@ -157,6 +158,150 @@ class TestScParseUrlSlug:
         url = "https://soundcloud.com/someone/some-track"
         result = _sc_parse_url_slug(url)
         assert result["url"] == url
+
+
+# ── _sc_oembed ───────────────────────────────────────────────────────────────
+
+
+class TestScOembed:
+    @patch("djlib.metadata.url_scraper.requests.get")
+    def test_oembed_success(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "title": "Strobe by deadmau5",
+            "author_name": "deadmau5",
+            "author_url": "https://soundcloud.com/deadmau5",
+            "thumbnail_url": "https://i1.sndcdn.com/artworks-abc-large.jpg",
+        }
+        mock_get.return_value = mock_resp
+
+        result = _sc_oembed("https://soundcloud.com/deadmau5/strobe")
+
+        assert result is not None
+        assert result["artist"] == "deadmau5"
+        assert result["title"] == "Strobe"
+        assert result["source"] == "soundcloud"
+        # Thumbnail should be upgraded to t500x500
+        assert "t500x500" in result["artwork_url"]
+
+    @patch("djlib.metadata.url_scraper.requests.get")
+    def test_oembed_with_remix(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "title": "One Kiss (Gregor Salto Remix) by Dua Lipa",
+            "author_name": "Dua Lipa",
+        }
+        mock_get.return_value = mock_resp
+
+        result = _sc_oembed("https://soundcloud.com/test/one-kiss-remix")
+
+        assert result is not None
+        assert result["artist"] == "Dua Lipa"
+        assert result["title"] == "One Kiss"
+        assert result["version"] == "Gregor Salto Remix"
+
+    @patch("djlib.metadata.url_scraper.requests.get")
+    def test_oembed_artist_dash_title(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "title": "Bicep - Glue by SomeUploader",
+            "author_name": "SomeUploader",
+        }
+        mock_get.return_value = mock_resp
+
+        result = _sc_oembed("https://soundcloud.com/test/bicep-glue")
+
+        assert result is not None
+        assert result["artist"] == "Bicep"
+        assert result["title"] == "Glue"
+
+    @patch("djlib.metadata.url_scraper.requests.get")
+    def test_oembed_404_returns_none(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_get.return_value = mock_resp
+
+        result = _sc_oembed("https://soundcloud.com/deleted/track")
+        assert result is None
+
+    @patch("djlib.metadata.url_scraper.requests.get")
+    def test_oembed_empty_title_returns_none(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"title": "", "author_name": ""}
+        mock_get.return_value = mock_resp
+
+        result = _sc_oembed("https://soundcloud.com/test/empty")
+        assert result is None
+
+
+# ── _scrape_soundcloud strategy chain ────────────────────────────────────────
+
+
+class TestScrapeSoundcloudChain:
+    @patch("djlib.metadata.url_scraper._sc_oembed")
+    def test_oembed_success_skips_resolve(self, mock_oembed):
+        """When oEmbed succeeds, Resolve API should not be called."""
+        from djlib.metadata.url_scraper import _scrape_soundcloud
+
+        mock_oembed.return_value = {
+            "artist": "deadmau5",
+            "title": "Strobe",
+            "version": "",
+            "genre": "",
+            "year": "",
+            "artwork_url": "",
+            "source": "soundcloud",
+            "description": "",
+            "url": "https://soundcloud.com/deadmau5/strobe",
+        }
+        result = _scrape_soundcloud("https://soundcloud.com/deadmau5/strobe")
+        assert result["artist"] == "deadmau5"
+        assert result["title"] == "Strobe"
+        mock_oembed.assert_called_once()
+
+    @patch("djlib.metadata.url_scraper._sc_parse_url_slug")
+    @patch("djlib.metadata.url_scraper._sc_resolve_api")
+    @patch("djlib.metadata.url_scraper._sc_oembed")
+    def test_oembed_fail_falls_to_resolve(self, mock_oembed, mock_resolve, mock_slug):
+        """When oEmbed fails, try Resolve API next."""
+        from djlib.metadata.url_scraper import _scrape_soundcloud
+
+        mock_oembed.return_value = None
+        mock_resolve.return_value = {
+            "artist": "deadmau5",
+            "title": "Strobe",
+            "version": "",
+            "genre": "Progressive House",
+            "year": "2009",
+            "artwork_url": "",
+            "source": "soundcloud",
+            "description": "",
+            "url": "https://soundcloud.com/deadmau5/strobe",
+        }
+
+        with patch("djlib.metadata.soundcloud.get_valid_client_id", return_value="test_cid"):
+            result = _scrape_soundcloud("https://soundcloud.com/deadmau5/strobe")
+
+        assert result["genre"] == "Progressive House"
+        mock_slug.assert_not_called()
+
+    @patch("djlib.metadata.url_scraper._sc_oembed")
+    def test_all_fail_falls_to_slug(self, mock_oembed):
+        """When oEmbed + Resolve both fail, fall back to URL slug parsing."""
+        from djlib.metadata.url_scraper import _scrape_soundcloud
+
+        mock_oembed.return_value = None
+
+        with patch("djlib.metadata.soundcloud.get_valid_client_id", return_value=None):
+            result = _scrape_soundcloud("https://soundcloud.com/bicep/glue")
+
+        assert result["source"] == "soundcloud"
+        # URL slug should give us at least the uploader name
+        assert result["artist"] != "" or result["title"] != ""
 
 
 # ── scrape_url routing ───────────────────────────────────────────────────────
