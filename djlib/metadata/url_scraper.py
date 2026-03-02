@@ -67,12 +67,26 @@ def scrape_url(url: str) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def _scrape_soundcloud(url: str) -> Dict[str, str]:
-    """Scrape SoundCloud track.  Tries Resolve API first, falls back to HTML."""
-    # Strategy 1: SoundCloud Resolve API
-    try:
-        from djlib.config import get_soundcloud_client_id
+    """Scrape SoundCloud track.
 
-        cid = get_soundcloud_client_id()
+    Strategy chain (stops at first success):
+    1. oEmbed API — public, no auth needed, returns title + author + thumbnail
+    2. Resolve API with auto-refreshed client_id — full structured JSON
+    3. URL slug parsing — offline fallback, lossy but instant
+    """
+    # Strategy 1: oEmbed (fast, reliable for most public tracks)
+    try:
+        data = _sc_oembed(url)
+        if data:
+            return data
+    except Exception as exc:
+        logger.debug("SC oEmbed failed: %s", exc)
+
+    # Strategy 2: Resolve API with auto-refreshed client_id
+    try:
+        from djlib.metadata.soundcloud import get_valid_client_id
+
+        cid = get_valid_client_id()
         if cid:
             data = _sc_resolve_api(url, cid)
             if data:
@@ -80,8 +94,65 @@ def _scrape_soundcloud(url: str) -> Dict[str, str]:
     except Exception as exc:
         logger.debug("SC Resolve API failed: %s", exc)
 
-    # Strategy 2: parse URL slug (SC pages are JS-rendered, og:tags are empty)
+    # Strategy 3: parse URL slug (lossy but guaranteed)
     return _sc_parse_url_slug(url)
+
+
+def _sc_oembed(url: str) -> Optional[Dict[str, str]]:
+    """Call SoundCloud oEmbed API — no auth required.
+
+    Returns structured track data or None on failure.
+    oEmbed docs: https://developers.soundcloud.com/docs/oembed
+    """
+    resp = requests.get(
+        "https://soundcloud.com/oembed",
+        params={"format": "json", "url": url},
+        timeout=_TIMEOUT,
+        headers={"User-Agent": _USER_AGENT},
+    )
+    if resp.status_code != 200:
+        logger.debug("SC oEmbed returned %d", resp.status_code)
+        return None
+
+    d = resp.json()
+    oembed_title = d.get("title", "")  # "Strobe by deadmau5"
+    author = d.get("author_name", "")
+    thumbnail = d.get("thumbnail_url", "") or ""
+
+    if not oembed_title:
+        return None
+
+    # oEmbed title format: "Track Title by Author" — parse it
+    artist = author
+    title = oembed_title
+    version = ""
+
+    # Remove " by Author" suffix if present
+    if author and oembed_title.lower().endswith(f" by {author.lower()}"):
+        title = oembed_title[: -(len(author) + 4)].strip()
+
+    # Parse "Artist - Title (Version)" from the cleaned title
+    artist_parsed, title_parsed, version_parsed = _parse_sc_title(title, author)
+    if title_parsed:
+        artist = artist_parsed
+        title = title_parsed
+        version = version_parsed
+
+    # Upgrade thumbnail to higher resolution
+    if thumbnail:
+        thumbnail = thumbnail.replace("-large.", "-t500x500.")
+
+    return {
+        "artist": artist,
+        "title": title,
+        "version": version,
+        "genre": "",
+        "year": "",
+        "artwork_url": thumbnail,
+        "source": "soundcloud",
+        "description": "",
+        "url": url,
+    }
 
 
 def _sc_resolve_api(url: str, client_id: str) -> Optional[Dict[str, str]]:
