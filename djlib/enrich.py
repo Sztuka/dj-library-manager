@@ -832,9 +832,13 @@ def _resolve_via_genre_sources(
                     rd = bp_data.get("release_date", "")
                     if rd and rd.strip():
                         year_online = rd.split("-")[0]
-                    alb = bp_data.get("album", "")
+                    alb = bp_data.get("release_name", "") or bp_data.get("album", "")
                     if alb and alb.strip():
                         album_online = alb
+                    # Extract artist from Beatport when our parsed artist
+                    # is empty (e.g. filename without "Artist - Title" pattern).
+                    if not artist.strip() and bp_data.get("artist"):
+                        artist = bp_data["artist"]
             except Exception:
                 pass
 
