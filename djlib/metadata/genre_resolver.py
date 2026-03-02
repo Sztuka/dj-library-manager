@@ -10,6 +10,7 @@ from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 import yaml
 
 from djlib.genre_utils import normalize_genre
+from djlib.genre_canonical import resolve_genre as _resolve_genre_label
 
 log = logging.getLogger(__name__)
 
@@ -667,6 +668,20 @@ def _score_soundcloud(
     return SourceScore("soundcloud", sc_w, sc_local) if sc_local else None
 
 
+def _to_label(tag: str) -> str:
+    """Map a normalized genre tag to its canonical label from genres.yml.
+
+    Uses genre_canonical synonym resolution: "afrohouse" → "Afro House",
+    "tech house" → "Tech House", etc.  Falls back to the raw tag
+    (title-cased) if no canonical match is found.
+    """
+    result = _resolve_genre_label(tag)
+    if result:
+        return result[1]  # (canonical_key, label) → label
+    # Fallback: title-case the raw tag for display
+    return tag.title()
+
+
 def _rank(
     scores: Dict[str, float],
     parts: List[SourceScore],
@@ -683,8 +698,14 @@ def _rank(
         by cross-source agreement instead of score dominance.
     """
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    main = ranked[0][0]
-    subs = [k for k, _ in ranked[1:3]]
+    main_raw = ranked[0][0]
+    subs_raw = [k for k, _ in ranked[1:3]]
+
+    # Map raw normalized tags to canonical genre labels from genres.yml.
+    # e.g. "afrohouse" → "Afro House", "electronic" → "Electronic".
+    # Falls back to the raw tag if no canonical match is found.
+    main = _to_label(main_raw)
+    subs = [_to_label(s) for s in subs_raw]
 
     # TODO(#8): Replace with cross-source agreement metric
     total_w = sum(scores.values()) or 1.0
@@ -790,7 +811,7 @@ def resolve(
         parts.append(bp_score)
         # Early exit: single specific EDM genre → trust Beatport completely
         if beatport_is_electronic and len(bp_score.tags) == 1:
-            main = next(iter(bp_score.tags))
+            main = _to_label(next(iter(bp_score.tags)))
             return GenreResolution(
                 main=main, subs=[],
                 confidence=BEATPORT_EARLY_EXIT_CONFIDENCE,
