@@ -552,7 +552,7 @@ def get_openai_api_key() -> str:
 
 
 _DEFAULT_AI_CHAT_MODEL = "gpt-4.1-mini"
-_DEFAULT_AI_QUICK_MODEL = "gpt-4o-mini"
+_DEFAULT_AI_QUICK_MODEL = "gpt-5-nano"
 
 
 def get_ai_chat_model() -> str:

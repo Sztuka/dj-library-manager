@@ -29,6 +29,11 @@
   let sortKey = null;
   let sortDir = 1; // 1 = ascending, -1 = descending
 
+  // Helper: is the current source editable?
+  function isEditableSource() {
+    return currentSource === "unsorted" || currentSource === "library-review";
+  }
+
   // Auto-play on navigation
   let autoPlay = false;
 
@@ -255,6 +260,26 @@
         type: "in-dj-badge",
       },
     ],
+    "library-review": [
+      { key: "_index", label: "#", width: "36px" },
+      { key: "artist", label: "Artist", width: "14%", type: "editable" },
+      { key: "title", label: "Title", width: "15%", type: "editable" },
+      { key: "version_info", label: "Version", width: "10%", type: "editable" },
+      { key: "genre", label: "Genre", width: "10%", type: "genre-select" },
+      {
+        key: "year",
+        label: "Year",
+        width: "48px",
+        type: "editable",
+        cls: "col-bpm",
+      },
+      { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
+      { key: "key_camelot", label: "Key", width: "40px", cls: "col-key" },
+      { key: "rating", label: "Rating", width: "72px", type: "rating" },
+      { key: "rekordbox_id", label: "RB", width: "36px", cls: "col-bpm" },
+      { key: "traktor_id", label: "TK", width: "36px", cls: "col-bpm" },
+      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+    ],
   };
 
   // -- Helpers ------------------------------------------------
@@ -319,7 +344,7 @@
   }
 
   function setRatingForCurrent(stars) {
-    if (currentSource !== "unsorted") return;
+    if (!isEditableSource()) return;
     if (currentIndex < 0 || currentIndex >= filteredTracks.length) return;
     var track = filteredTracks[currentIndex];
     var current = parseInt(track.rating) || 0;
@@ -1129,12 +1154,12 @@
 
   function applyGenreSuggestionFromBadge(el) {
     const g = el.dataset.genre;
-    if (!g || currentSource !== "unsorted" || currentIndex < 0) return;
+    if (!g || !isEditableSource() || currentIndex < 0) return;
     const t = filteredTracks[currentIndex];
     t.genre = g;
     saveTrackField(t, "genre", g);
     showToast("Genre: " + g, "");
-    const cols = COLUMNS.unsorted;
+    const cols = COLUMNS[currentSource] || COLUMNS.unsorted;
     const genreColIdx = cols.findIndex(function (c) {
       return c.key === "genre";
     });
@@ -1146,7 +1171,7 @@
   }
 
   function applyGenreSuggestion() {
-    if (currentIndex < 0 || currentSource !== "unsorted") return;
+    if (currentIndex < 0 || !isEditableSource()) return;
     const track = filteredTracks[currentIndex];
     const g = track.genre_suggest;
     if (!g) {
@@ -1156,7 +1181,7 @@
     track.genre = g;
     saveTrackField(track, "genre", g);
     showToast("Genre: " + g, "");
-    const cols = COLUMNS.unsorted;
+    const cols = COLUMNS[currentSource] || COLUMNS.unsorted;
     const genreColIdx = cols.findIndex(function (c) {
       return c.key === "genre";
     });
@@ -2016,7 +2041,7 @@
     fetch("/api/ai-classify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ track_id: trackId(track) }),
+      body: JSON.stringify({ track_id: trackId(track), source: currentSource }),
     })
       .then(function (r) {
         return r.json();
@@ -2689,7 +2714,7 @@
 
   // -- Save (debounced, merging multiple field changes) -------
   function saveTrackField(track, key, value) {
-    if (currentSource !== "unsorted") return;
+    if (currentSource !== "unsorted" && currentSource !== "library-review") return;
     const id = trackId(track);
     if (!id) return;
 
@@ -2705,7 +2730,7 @@
       fetch("/api/tracks/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: id, fields: fields }),
+        body: JSON.stringify({ track_id: id, fields: fields, source: currentSource }),
       }).catch(function (e) {
         console.error("Save failed:", e);
       });
@@ -2741,7 +2766,7 @@
       fetch("/api/tracks/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: id, fields: { [k]: v } }),
+        body: JSON.stringify({ track_id: id, fields: { [k]: v }, source: currentSource }),
       }).catch(function (e) {
         console.error("Undo save failed:", e);
       });
@@ -2759,7 +2784,7 @@
 
   // -- Status / actions ---------------------------------------
   function setStatus(status) {
-    if (currentSource !== "unsorted") return;
+    if (!isEditableSource()) return;
 
     const targets = [];
     if (selectedSet.size > 0) {
@@ -2832,7 +2857,7 @@
   }
 
   function toggleDone() {
-    if (currentIndex < 0 || currentSource !== "unsorted") return;
+    if (currentIndex < 0 || !isEditableSource()) return;
     const track = filteredTracks[currentIndex];
     const newVal = track.done === "TRUE" ? "FALSE" : "TRUE";
     track.done = newVal;

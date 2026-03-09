@@ -55,6 +55,9 @@ mimetypes.add_type("audio/wav", ".wav")
 _REPO = Path(__file__).resolve().parents[2]
 _CSV_LOCK = threading.Lock()
 
+# Library review CSV (temporary, for re-processing existing library tracks)
+LIBRARY_REVIEW_CSV = _REPO / "data" / "library_review.csv"
+
 
 def _static_version() -> str:
     """Return max mtime of static files as cache-buster query string."""
@@ -86,6 +89,13 @@ def _load_library_csv() -> List[Dict[str, str]]:
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         return [dict(row) for row in reader]
+
+
+def _load_library_review_csv() -> List[Dict[str, str]]:
+    """Load library_review.csv (same format as unsorted.csv) for re-review."""
+    if not LIBRARY_REVIEW_CSV.exists():
+        return []
+    return load_unsorted_rows(LIBRARY_REVIEW_CSV)
 
 
 def _load_processed_tracks() -> List[Dict[str, str]]:
@@ -179,6 +189,8 @@ def api_tracks():
         rows = load_unsorted_rows(UNSORTED_CSV)
     elif source == "library":
         rows = _load_library_csv()
+    elif source == "library-review":
+        rows = _load_library_review_csv()
     elif source == "processed":
         rows = _load_processed_tracks()
     else:
@@ -237,13 +249,17 @@ def api_update_track():
 
     tid = data.get("track_id") or data.get("file_hash")
     fields = data.get("fields", {})
+    source = data.get("source", "unsorted")
     if not tid:
         return jsonify({"error": "Missing track_id or file_hash"}), 400
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
 
+    # Determine which CSV to update
+    csv_file = LIBRARY_REVIEW_CSV if source == "library-review" else UNSORTED_CSV
+
     with _CSV_LOCK:
-        rows = load_unsorted_rows(UNSORTED_CSV)
+        rows = load_unsorted_rows(csv_file)
         updated = False
         for row in rows:
             if row.get("track_id") == tid or row.get("file_hash") == tid:
@@ -256,7 +272,7 @@ def api_update_track():
         if not updated:
             return jsonify({"error": f"Track not found: {tid}"}), 404
 
-        write_unsorted_rows(UNSORTED_CSV, rows, [])
+        write_unsorted_rows(csv_file, rows, [])
     return jsonify({"ok": True})
 
 
@@ -755,9 +771,15 @@ def api_ai_classify():
     if tid in _classify_cache:
         return jsonify(_classify_cache[tid])
 
+    # Determine source CSV (library-review or unsorted)
+    source = data.get("source", "unsorted")
+
     # Load row from CSV
     with _CSV_LOCK:
-        rows = load_unsorted_rows(UNSORTED_CSV)
+        if source == "library-review":
+            rows = load_unsorted_rows(LIBRARY_REVIEW_CSV)
+        else:
+            rows = load_unsorted_rows(UNSORTED_CSV)
 
     row = None
     for r in rows:

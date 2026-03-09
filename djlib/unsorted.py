@@ -19,6 +19,8 @@ class ColumnSpec:
 UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     # Read-only metadata (locked)
     ColumnSpec("track_id", hidden=True, width=22, locked=True),
+    ColumnSpec("rekordbox_id", hidden=True, width=16, locked=True),
+    ColumnSpec("traktor_id", hidden=True, width=16, locked=True),
     ColumnSpec("file_path", width=115, locked=True),  # Visible for reference
     ColumnSpec("file_hash", hidden=True, width=30, locked=True),
     ColumnSpec("fingerprint", hidden=True, width=26, locked=True),
