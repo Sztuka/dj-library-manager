@@ -15,7 +15,7 @@ import csv
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add project root to path
@@ -125,11 +125,12 @@ def main() -> None:
     )
 
     # Write results back to rows
-    now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # batch_classify returns List[Tuple[row, result]]
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     classified = 0
     errors = 0
 
-    for row, result in zip(to_classify, results):
+    for row, result in results:
         if result.get("error"):
             errors += 1
             continue
@@ -166,7 +167,7 @@ def main() -> None:
     else:
         print("\n🔍 DRY RUN — no changes written.", file=sys.stderr)
         # Print sample results
-        for row, result in zip(to_classify[:5], results[:5]):
+        for row, result in results[:5]:
             if not result.get("error"):
                 ver = result.get("version", [])
                 ver_str = " ".join(f"({v})" for v in ver) if ver else ""

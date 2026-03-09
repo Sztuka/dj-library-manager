@@ -206,19 +206,29 @@ def _call_openai(
     messages = json.loads(prompt_json)
     model = model or get_ai_quick_model()
 
+    # GPT-5+ / reasoning models: need max_completion_tokens (not max_tokens),
+    # no temperature support, and higher token budget for reasoning + output
+    is_reasoning = model and (model.startswith("gpt-5") or model.startswith("o"))
+    token_param = "max_completion_tokens" if is_reasoning else "max_tokens"
+    # Reasoning models use ~1500-2000 tokens for thinking before producing output
+    token_limit = 4000 if is_reasoning else 400
+
+    body: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        token_param: token_limit,
+    }
+    if not is_reasoning:
+        body["temperature"] = 0.2
+
     resp = http_requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 400,
-        },
-        timeout=30,
+        json=body,
+        timeout=90 if is_reasoning else 30,
     )
     resp.raise_for_status()
     data = resp.json()
