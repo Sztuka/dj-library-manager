@@ -117,6 +117,27 @@
   const identifyBannerDismiss = document.getElementById(
     "identify-banner-dismiss",
   );
+  const classifyBanner = document.getElementById("classify-banner");
+  const classifyBannerArtist = document.getElementById(
+    "classify-banner-artist",
+  );
+  const classifyBannerTitle = document.getElementById("classify-banner-title");
+  const classifyBannerVersion = document.getElementById(
+    "classify-banner-version",
+  );
+  const classifyBannerGenre = document.getElementById("classify-banner-genre");
+  const classifyBannerConfidence = document.getElementById(
+    "classify-banner-confidence",
+  );
+  const classifyBannerReasoning = document.getElementById(
+    "classify-banner-reasoning",
+  );
+  const classifyBannerAccept = document.getElementById(
+    "classify-banner-accept",
+  );
+  const classifyBannerDismiss = document.getElementById(
+    "classify-banner-dismiss",
+  );
   const aiChatPanel = document.getElementById("ai-chat-panel");
   const aiChatTitle = document.getElementById("ai-chat-title");
   const aiChatMessages = document.getElementById("ai-chat-messages");
@@ -162,6 +183,8 @@
   let enrichBannerTrack = null;
   let identifyPending = false;
   let identifyBannerTrack = null;
+  let classifyPending = false;
+  let classifyBannerTrack = null;
   let chatPending = false;
   let chatTrack = null; // track the chat panel is open for
   let scrapePending = false;
@@ -1305,6 +1328,9 @@
       case "identify-track":
         requestAiIdentify(contextTrack);
         break;
+      case "ai-classify":
+        requestAiClassify(contextTrack);
+        break;
       case "ai-chat":
         openAiChat(contextTrack);
         break;
@@ -1958,6 +1984,141 @@
   // Dismiss identify banner
   identifyBannerDismiss.addEventListener("click", function () {
     hideIdentifyBanner();
+  });
+
+  // -- Unified AI Classify (naming + genre in one call) -------
+
+  function requestAiClassify(track) {
+    if (!track || classifyPending) return;
+    if (!aiAvailable) {
+      showToast(
+        "AI not configured (add openai_api_key to config.local.yml)",
+        "",
+      );
+      return;
+    }
+
+    classifyPending = true;
+    classifyBannerTrack = track;
+
+    // Show loading state
+    classifyBanner.classList.remove("hidden");
+    classifyBanner.classList.add("classify-loading");
+    classifyBannerArtist.textContent = "Classifying…";
+    classifyBannerTitle.textContent = "";
+    classifyBannerVersion.textContent = "";
+    classifyBannerGenre.textContent = "";
+    classifyBannerConfidence.textContent = "";
+    classifyBannerReasoning.textContent = "";
+    classifyBannerAccept.style.display = "none";
+    classifyBannerDismiss.style.display = "inline-block";
+
+    fetch("/api/ai-classify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId(track) }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (data) {
+        classifyPending = false;
+        classifyBanner.classList.remove("classify-loading");
+
+        if (data.error) {
+          showToast("Classify error: " + data.error, "");
+          hideClassifyBanner();
+          return;
+        }
+
+        classifyBannerArtist.textContent = data.artist || "?";
+        classifyBannerTitle.textContent = data.title || "?";
+
+        // Version is an array — display as (Token1) (Token2)
+        var versionArr = data.version || [];
+        if (typeof versionArr === "string") versionArr = versionArr ? [versionArr] : [];
+        var versionDisplay = versionArr
+          .map(function (v) {
+            return "(" + v + ")";
+          })
+          .join(" ");
+        classifyBannerVersion.textContent = versionDisplay;
+
+        classifyBannerGenre.textContent = data.genre || "";
+        var conf = data.confidence
+          ? Math.round(data.confidence * 100) + "%"
+          : "";
+        classifyBannerConfidence.textContent = conf;
+        classifyBannerReasoning.textContent = data.reasoning || "";
+        classifyBannerReasoning.title = data.reasoning || "";
+
+        if (data.genre_warning) {
+          classifyBannerReasoning.textContent += " ⚠ " + data.genre_warning;
+        }
+
+        // Store data for Accept
+        classifyBannerAccept.dataset.artist = data.artist || "";
+        classifyBannerAccept.dataset.title = data.title || "";
+        // Store version as comma-separated for CSV (each token separate)
+        classifyBannerAccept.dataset.version = versionArr.join(", ");
+        classifyBannerAccept.dataset.genre = data.genre || "";
+        classifyBannerAccept.style.display = "inline-block";
+      })
+      .catch(function (err) {
+        classifyPending = false;
+        classifyBanner.classList.remove("classify-loading");
+        showToast("Classify request failed", "");
+        hideClassifyBanner();
+      });
+  }
+
+  function hideClassifyBanner() {
+    classifyBanner.classList.add("hidden");
+    classifyBanner.classList.remove("classify-loading");
+    classifyBannerTrack = null;
+  }
+
+  // Accept classify result — saves all fields at once
+  classifyBannerAccept.addEventListener("click", function () {
+    if (!classifyBannerTrack) return;
+
+    var newArtist = classifyBannerAccept.dataset.artist || "";
+    var newTitle = classifyBannerAccept.dataset.title || "";
+    var newVersion = classifyBannerAccept.dataset.version || "";
+    var newGenre = classifyBannerAccept.dataset.genre || "";
+
+    if (newArtist) {
+      classifyBannerTrack.artist = newArtist;
+      saveTrackField(classifyBannerTrack, "artist", newArtist);
+    }
+    if (newTitle) {
+      classifyBannerTrack.title = newTitle;
+      saveTrackField(classifyBannerTrack, "title", newTitle);
+    }
+    if (newVersion !== undefined) {
+      classifyBannerTrack.version_info = newVersion;
+      saveTrackField(classifyBannerTrack, "version_info", newVersion);
+    }
+    if (newGenre) {
+      classifyBannerTrack.genre = newGenre;
+      saveTrackField(classifyBannerTrack, "genre", newGenre);
+    }
+
+    renderTable();
+    var idx = filteredTracks.indexOf(classifyBannerTrack);
+    if (idx >= 0) selectRow(idx);
+
+    var ver = newVersion ? " " + newVersion.split(", ").map(function(v) { return "(" + v + ")"; }).join(" ") : "";
+    showToast(
+      newArtist + " \u2014 " + newTitle + ver + " [" + newGenre + "]",
+      "",
+    );
+    hideClassifyBanner();
+  });
+
+  // Dismiss classify banner
+  classifyBannerDismiss.addEventListener("click", function () {
+    hideClassifyBanner();
   });
 
   // -- AI Chat ------------------------------------------------

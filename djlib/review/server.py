@@ -723,6 +723,64 @@ def api_identify_track():
         return jsonify({"error": f"AI request failed: {e}"}), 502
 
 
+# ── Unified AI Classify (identify + genre in one call) ───────────────────────
+
+_classify_cache: Dict[str, Dict[str, Any]] = {}
+
+
+@app.route("/api/ai-classify", methods=["POST"])
+def api_ai_classify():
+    """Unified AI classification: artist, title, version[], genre in one call.
+
+    Request body (JSON):
+        { "track_id": "..." }
+
+    Returns:
+        { "artist": "...", "title": "...", "version": ["Token1", "Token2"],
+          "genre": "Tech House", "confidence": 0.85, "reasoning": "..." }
+    """
+    api_key = get_openai_api_key()
+    if not api_key:
+        return jsonify({"error": "OpenAI API key not configured"}), 501
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    tid = data.get("track_id", "")
+    if not tid:
+        return jsonify({"error": "Missing track_id"}), 400
+
+    # Check cache
+    if tid in _classify_cache:
+        return jsonify(_classify_cache[tid])
+
+    # Load row from CSV
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(UNSORTED_CSV)
+
+    row = None
+    for r in rows:
+        if r.get("track_id") == tid:
+            row = r
+            break
+
+    if not row:
+        return jsonify({"error": f"Track not found: {tid}"}), 404
+
+    try:
+        from djlib.ai_classify import classify_track
+        result = classify_track(row, api_key=api_key)
+        if tid:
+            _classify_cache[tid] = result
+        # Strip internal _usage from API response
+        result_safe = {k: v for k, v in result.items() if not k.startswith("_")}
+        return jsonify(result_safe)
+    except Exception as e:
+        _log.warning("AI classify error: %s", e)
+        return jsonify({"error": f"AI request failed: {e}"}), 502
+
+
 # ── AI Chat ──────────────────────────────────────────────────────────────────
 
 # Session storage with TTL. Each entry: {"messages": [...], "last_access": float}
