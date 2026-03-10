@@ -80,6 +80,11 @@ def main() -> None:
         default=0.15,
         help="Seconds between API calls (rate limiting)",
     )
+    parser.add_argument(
+        "--web-search",
+        action="store_true",
+        help="Enable web search so AI can look up tracks on SoundCloud/Beatport",
+    )
     args = parser.parse_args()
 
     api_key = get_openai_api_key()
@@ -110,10 +115,14 @@ def main() -> None:
         to_classify = to_classify[: args.limit]
 
     print(f"Classifying {len(to_classify)} tracks...", file=sys.stderr)
+    if args.web_search:
+        print("Web search ENABLED — model will search SoundCloud/Beatport for genre info", file=sys.stderr)
     genre_labels = load_genre_labels()
     print(f"Genre labels: {len(genre_labels)} genres", file=sys.stderr)
 
-    # Run batch
+    # Run batch — exclude file's ID3 genre tag to prevent AI from parroting
+    # the bulk-applied tag_genre_original. External sources (Beatport, SC,
+    # Last.fm, MusicBrainz) are still included as per-track data.
     total_tokens_in = 0
     total_tokens_out = 0
     results = batch_classify(
@@ -122,6 +131,8 @@ def main() -> None:
         model=args.model,
         on_progress=_progress,
         delay=args.delay,
+        exclude_file_genre_tag=True,
+        use_web_search=args.web_search,
     )
 
     # Write results back to rows

@@ -121,6 +121,43 @@ def test_build_classify_prompt_includes_remix_rule():
     assert "REMIX RULE" in messages[0]["content"]
 
 
+def test_build_classify_prompt_exclude_file_genre_tag():
+    """When exclude_file_genre_tag=True, prompt omits tag_genre_original but keeps external sources."""
+    row = {
+        "file_path": "~/Music Library/Artist/Track.mp3",
+        "tag_artist_original": "Some Artist",
+        "tag_title_original": "Some Track",
+        "tag_genre_original": "Afro House",
+        "genres_beatport": "Afro House",
+        "genres_lastfm": "afro house, house",
+        "bpm": "124",
+    }
+    labels = ["Afro House", "Tech House", "House"]
+
+    # Without exclusion — all genre tags present
+    prompt_with = build_classify_prompt(row, labels, exclude_file_genre_tag=False)
+    msgs_with = json.loads(prompt_with)
+    user_with = msgs_with[1]["content"]
+    assert "Audio tag genre" in user_with  # tag_genre_original visible
+    assert "Beatport genre" in user_with
+
+    # With exclusion — only file genre tag removed, external sources kept
+    prompt_without = build_classify_prompt(row, labels, exclude_file_genre_tag=True)
+    msgs_without = json.loads(prompt_without)
+    user_without = msgs_without[1]["content"]
+    system_without = msgs_without[0]["content"]
+    assert "Audio tag genre" not in user_without  # tag_genre_original stripped
+    # External sources are KEPT (per-track data from online DBs)
+    assert "Beatport genre" in user_without
+    assert "Last.fm genres" in user_without
+    # Artist/title/BPM still present
+    assert "Some Artist" in user_without
+    assert "Some Track" in user_without
+    assert "124" in user_without
+    # System prompt should note that file tag was excluded
+    assert "embedded genre tag has been excluded" in system_without
+
+
 # ── Result validation ────────────────────────────────────────────────────────
 
 

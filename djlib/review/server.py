@@ -792,7 +792,17 @@ def api_ai_classify():
 
     try:
         from djlib.ai_classify import classify_track
-        result = classify_track(row, api_key=api_key)
+        # For library-review, exclude the file's ID3 genre tag which is often
+        # a bulk-applied generic value (e.g. "Afro House" for 75% of tracks).
+        # External sources (Beatport, SoundCloud, Last.fm) are always kept.
+        exclude_file_tag = source == "library-review"
+        web_search = bool(data.get("web_search", False))
+        result = classify_track(
+            row,
+            api_key=api_key,
+            exclude_file_genre_tag=exclude_file_tag,
+            use_web_search=web_search,
+        )
         if tid:
             _classify_cache[tid] = result
         # Strip internal _usage from API response

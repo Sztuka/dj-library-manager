@@ -856,7 +856,7 @@
         } else if (col.type === "rating") {
           td.classList.add("col-rating");
           td.innerHTML = ratingToStars(track[col.key]);
-          if (currentSource === "unsorted") {
+          if (isEditableSource()) {
             td.classList.add("col-rating-editable");
             td.addEventListener(
               "click",
@@ -1140,6 +1140,20 @@
           escHtml(track.genre_suggest) +
           "</span>",
       );
+    // AI batch classify results (from library review or batch scripts)
+    if (track.ai_genre) {
+      var aiLabel = 'AI: ' + escHtml(track.ai_genre);
+      if (track.ai_confidence) aiLabel += ' (' + Math.round(track.ai_confidence * 100) + '%)';
+      parts.push(
+        '<span class="gs gs-ai clickable" data-genre="' +
+          escHtml(track.ai_genre).replace(/"/g, '&quot;') +
+          '" data-ai-artist="' + escHtml(track.ai_artist || '').replace(/"/g, '&quot;') +
+          '" data-ai-title="' + escHtml(track.ai_title || '').replace(/"/g, '&quot;') +
+          '" data-ai-version="' + escHtml(track.ai_version || '').replace(/"/g, '&quot;') +
+          '" title="' + escHtml(track.ai_reasoning || '').replace(/"/g, '&quot;') +
+          '">' + aiLabel + '</span>',
+      );
+    }
     genreSources.innerHTML = parts.join("");
 
     // Make genre suggestion clickable to apply it
@@ -1148,6 +1162,14 @@
       .forEach(function (el) {
         el.addEventListener("click", function () {
           applyGenreSuggestionFromBadge(el);
+        });
+      });
+    // Make AI batch suggestion clickable to apply all AI fields
+    genreSources
+      .querySelectorAll(".gs-ai.clickable")
+      .forEach(function (el) {
+        el.addEventListener("click", function () {
+          applyAiBatchSuggestion(el);
         });
       });
   }
@@ -1167,6 +1189,55 @@
       const cell = tableBody.children[currentIndex].children[genreColIdx];
       const sel = cell.querySelector("select");
       if (sel) sel.value = g;
+    }
+  }
+
+  function applyAiBatchSuggestion(el) {
+    if (!isEditableSource() || currentIndex < 0) return;
+    var t = filteredTracks[currentIndex];
+    var genre = el.dataset.genre;
+    var artist = el.dataset.aiArtist;
+    var title = el.dataset.aiTitle;
+    var version = el.dataset.aiVersion;
+    var fields = [];
+    if (genre && genre !== t.genre) {
+      t.genre = genre;
+      saveTrackField(t, 'genre', genre);
+      fields.push('genre');
+    }
+    if (artist && artist !== t.artist) {
+      t.artist = artist;
+      saveTrackField(t, 'artist', artist);
+      fields.push('artist');
+    }
+    if (title && title !== t.title) {
+      t.title = title;
+      saveTrackField(t, 'title', title);
+      fields.push('title');
+    }
+    if (version && version !== t.version_info) {
+      t.version_info = version;
+      saveTrackField(t, 'version_info', version);
+      fields.push('version');
+    }
+    if (fields.length) {
+      showToast('AI applied: ' + fields.join(', '), '');
+      // Refresh row cells
+      var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
+      var row = tableBody.children[currentIndex];
+      if (row) {
+        cols.forEach(function(col, ci) {
+          if (col.key === 'genre') {
+            var sel = row.children[ci].querySelector('select');
+            if (sel) sel.value = genre || '';
+          } else if (['artist', 'title', 'version_info'].indexOf(col.key) >= 0) {
+            row.children[ci].textContent = t[col.key] || '';
+            row.children[ci].title = t[col.key] || '';
+          }
+        });
+      }
+    } else {
+      showToast('AI: no changes needed', '');
     }
   }
 

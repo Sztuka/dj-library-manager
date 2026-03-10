@@ -533,6 +533,18 @@ td input[type="checkbox"] {
   background: rgba(124, 108, 255, 0.2);
   color: #a89cff;
 }
+.gs-ai {
+  background: rgba(52, 152, 219, 0.25);
+  color: #5dade2;
+  font-weight: 500;
+}
+.gs-ai.clickable {
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(93, 173, 226, 0.5);
+}
+.gs-ai.clickable:hover {
+  background: rgba(52, 152, 219, 0.4);
+}
 
 /* ── Shortcuts bar ─────────────────────────────────────────── */
 
