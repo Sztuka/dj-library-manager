@@ -31,7 +31,7 @@
 
   // Helper: is the current source editable?
   function isEditableSource() {
-    return currentSource === "unsorted" || currentSource === "library-review";
+    return currentSource === "unsorted" || currentSource === "library-review" || currentSource === "library-fix";
   }
 
   // Auto-play on navigation
@@ -278,6 +278,23 @@
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
       { key: "rekordbox_id", label: "RB", width: "36px", cls: "col-bpm" },
       { key: "traktor_id", label: "TK", width: "36px", cls: "col-bpm" },
+      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+    ],
+    "library-fix": [
+      { key: "_index", label: "#", width: "32px" },
+      { key: "artist", label: "Artist", width: "11%", type: "editable" },
+      { key: "title", label: "Title", width: "12%", type: "editable" },
+      { key: "version_info", label: "Version", width: "8%", type: "editable" },
+      { key: "genre", label: "Genre", width: "9%", type: "genre-select" },
+      { key: "year", label: "Year", width: "40px", type: "editable", cls: "col-bpm" },
+      { key: "bpm", label: "BPM", width: "40px", cls: "col-bpm" },
+      { key: "key_camelot", label: "Key", width: "36px", cls: "col-key" },
+      { key: "ai_artist", label: "AI Artist", width: "11%", cls: "col-ai" },
+      { key: "ai_title", label: "AI Title", width: "12%", cls: "col-ai" },
+      { key: "ai_version", label: "AI Ver", width: "8%", cls: "col-ai" },
+      { key: "ai_genre", label: "AI Genre", width: "8%", cls: "col-ai" },
+      { key: "ai_confidence", label: "Conf", width: "40px", cls: "col-ai col-bpm" },
+      { key: "status", label: "Status", width: "60px", type: "status-badge" },
       { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
     ],
   };
@@ -2785,7 +2802,7 @@
 
   // -- Save (debounced, merging multiple field changes) -------
   function saveTrackField(track, key, value) {
-    if (currentSource !== "unsorted" && currentSource !== "library-review") return;
+    if (currentSource !== "unsorted" && currentSource !== "library-review" && currentSource !== "library-fix") return;
     const id = trackId(track);
     if (!id) return;
 

@@ -189,7 +189,7 @@ def api_tracks():
         rows = load_unsorted_rows(UNSORTED_CSV)
     elif source == "library":
         rows = _load_library_csv()
-    elif source == "library-review":
+    elif source in ("library-review", "library-fix"):
         rows = _load_library_review_csv()
     elif source == "processed":
         rows = _load_processed_tracks()
@@ -256,7 +256,7 @@ def api_update_track():
         return jsonify({"error": "No fields to update"}), 400
 
     # Determine which CSV to update
-    csv_file = LIBRARY_REVIEW_CSV if source == "library-review" else UNSORTED_CSV
+    csv_file = LIBRARY_REVIEW_CSV if source in ("library-review", "library-fix") else UNSORTED_CSV
 
     with _CSV_LOCK:
         rows = load_unsorted_rows(csv_file)
@@ -776,7 +776,7 @@ def api_ai_classify():
 
     # Load row from CSV
     with _CSV_LOCK:
-        if source == "library-review":
+        if source in ("library-review", "library-fix"):
             rows = load_unsorted_rows(LIBRARY_REVIEW_CSV)
         else:
             rows = load_unsorted_rows(UNSORTED_CSV)
@@ -795,7 +795,7 @@ def api_ai_classify():
         # For library-review, exclude the file's ID3 genre tag which is often
         # a bulk-applied generic value (e.g. "Afro House" for 75% of tracks).
         # External sources (Beatport, SoundCloud, Last.fm) are always kept.
-        exclude_file_tag = source == "library-review"
+        exclude_file_tag = source in ("library-review", "library-fix")
         web_search = bool(data.get("web_search", False))
         result = classify_track(
             row,
