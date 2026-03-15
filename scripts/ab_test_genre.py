@@ -34,6 +34,7 @@ import yaml
 import requests
 
 from djlib.config import get_openai_api_key
+from djlib.metadata.web_search import create_searcher, search_track_genre
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -51,8 +52,12 @@ TF_MODELS_DIR = PROJECT_ROOT / "models" / "essentia-tf"
 
 ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+E2", "mini+E2", "full+E2",
-                "nano+EI", "mini+EI", "full+EI",
+                "nano+EI",
+                "nano+WS", "nano+EI+WS",
                 "nano+D400", "mini+D400", "full+D400"]
+
+# Default run preset: the 4 variants we care about
+RUN1_VARIANTS = ["nano", "nano+EI", "nano+WS", "nano+EI+WS"]
 
 
 # ── Track discovery ──────────────────────────────────────────────────────────
@@ -746,7 +751,8 @@ def load_genre_labels() -> List[str]:
     return [v["label"] for v in data.values() if isinstance(v, dict) and "label" in v]
 
 
-def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str = "") -> str:
+def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str = "",
+                 web_search_context: str = "") -> str:
     """Build genre classification prompt (mirrors server.py _build_genre_prompt)."""
     genre_list = ", ".join(genre_labels)
 
@@ -775,6 +781,10 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
     if audio_desc:
         parts.append("")
         parts.append(audio_desc)
+
+    if web_search_context:
+        parts.append("")
+        parts.append(f"Web search results:\n{web_search_context}")
 
     track_info = "\n".join(parts)
 
@@ -840,6 +850,14 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
             "when metadata signals are ambiguous. Artist identity and BPM remain stronger signals."
         )
 
+    web_search_signal = ""
+    if web_search_context:
+        web_search_signal = (
+            "\n* WEB SEARCH RESULTS — real-time search snippets from Beatport, Discogs, SoundCloud, "
+            "DJ blogs etc. Beatport genre is the gold standard for EDM tracks. "
+            "Use web results to confirm genre when metadata is ambiguous or missing."
+        )
+
     system_prompt = (
         f"You are an expert DJ music classifier. Classify tracks into exactly ONE of these genres:\n"
         f"{genre_list}\n\n"
@@ -847,6 +865,7 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         f"* REMIXER/EDITOR identity — strongest signal for remixes (their known scene/style)\n"
         f"* BPM — strong structural signal\n"
         f"* Metadata tags — from music databases (may be wrong for remixes)"
+        f"{web_search_signal}"
         f"{audio_signal_line}"
         f"{remix_instruction}"
         f"{bpm_guide}\n\n"
@@ -1101,6 +1120,56 @@ def run_ab_test(variants: List[str], resume: bool = False):
                 d400_fail += 1
         print(f"\n   Discogs400: {d400_ok} OK, {d400_fail} failed\n")
 
+    # Pre-run web search if needed
+    ws_variants = [v for v in variants if "+WS" in v]
+    ws_cache: Dict[str, str] = {}  # track_key -> prompt_context
+
+    if ws_variants:
+        print("🔍 Running web search (SearXNG)...\n")
+        try:
+            searcher = create_searcher("searxng")
+            if not searcher.is_available():
+                print("  ⚠️  SearXNG not available — WS variants will have empty context")
+                searcher = None
+        except Exception as e:
+            print(f"  ⚠️  SearXNG init failed: {e}")
+            searcher = None
+
+        ws_ok = ws_fail = 0
+        for i, t in enumerate(tracks):
+            meta = extract_metadata_from_filename(t["filename"])
+            tk = f"{meta.get('artist', '')} - {meta.get('title', '')}"
+
+            if not searcher:
+                ws_cache[t["path"]] = ""
+                ws_fail += 1
+                continue
+
+            print(f"  [{i+1}/{len(tracks)}] {tk[:55]}...", end=" ", flush=True)
+            t0 = time.time()
+            try:
+                sr = search_track_genre(
+                    searcher,
+                    artist=meta.get("artist", ""),
+                    title=meta.get("title", ""),
+                    version=meta.get("version", ""),
+                    max_queries=3,
+                )
+                elapsed = time.time() - t0
+                context = sr.to_prompt_context()
+                ws_cache[t["path"]] = context
+                n = len(sr.results)
+                bp = sum(1 for r in sr.results if r.source == "beatport")
+                print(f"✅ {elapsed:.1f}s → {n} results ({bp} beatport)")
+                ws_ok += 1
+            except Exception as e:
+                elapsed = time.time() - t0
+                ws_cache[t["path"]] = ""
+                ws_fail += 1
+                print(f"❌ {elapsed:.1f}s — {e}")
+            time.sleep(1.0)  # Rate limit for SearXNG
+        print(f"\n   Web search: {ws_ok} OK, {ws_fail} failed\n")
+
     # Run tests
     all_results: List[Dict[str, Any]] = []
     total_calls = 0
@@ -1111,7 +1180,8 @@ def run_ab_test(variants: List[str], resume: bool = False):
         use_essentia_interp = "+EI" in variant
         use_essentia_v2 = "+E2" in variant
         use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp
-        model_key = variant.replace("+D400", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        use_ws = "+WS" in variant
+        model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         print(f"\n{'─'*70}")
@@ -1151,7 +1221,9 @@ def run_ab_test(variants: List[str], resume: bool = False):
                 audio_desc = essentia_cache.get(t["path"], "")
             else:
                 audio_desc = ""
-            prompt = build_prompt(meta, genre_labels, audio_desc)
+
+            ws_context = ws_cache.get(t["path"], "") if use_ws else ""
+            prompt = build_prompt(meta, genre_labels, audio_desc, ws_context)
 
             try:
                 result = call_openai(api_key, prompt, model_name)
@@ -1228,7 +1300,7 @@ def run_ab_test(variants: List[str], resume: bool = False):
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)
@@ -1271,8 +1343,10 @@ def main():
     parser = argparse.ArgumentParser(description="A/B test genre classification with Essentia")
     parser.add_argument("--scan", action="store_true", help="Just list discovered tracks")
     parser.add_argument("--essentia", action="store_true", help="Run Essentia analysis only (no API calls)")
-    parser.add_argument("--variants", nargs="+", default=ALL_VARIANTS,
-                        choices=ALL_VARIANTS, help="Which variants to test")
+    parser.add_argument("--run", choices=["run1"],
+                        help="Run preset: run1 = nano, nano+EI, nano+WS, nano+EI+WS")
+    parser.add_argument("--variants", nargs="+", default=None,
+                        choices=ALL_VARIANTS, help="Which variants to test (overrides --run)")
     parser.add_argument("--resume", action="store_true", help="Skip already-tested tracks")
     args = parser.parse_args()
 
@@ -1281,7 +1355,13 @@ def main():
     elif args.essentia:
         run_essentia_only()
     else:
-        run_ab_test(args.variants, resume=args.resume)
+        if args.variants:
+            variants = args.variants
+        elif args.run == "run1":
+            variants = RUN1_VARIANTS
+        else:
+            variants = RUN1_VARIANTS  # default to the 4 key variants
+        run_ab_test(variants, resume=args.resume)
 
 
 if __name__ == "__main__":
