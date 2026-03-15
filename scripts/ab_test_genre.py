@@ -51,6 +51,7 @@ TF_MODELS_DIR = PROJECT_ROOT / "models" / "essentia-tf"
 
 ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+E2", "mini+E2", "full+E2",
+                "nano+EI", "mini+EI", "full+EI",
                 "nano+D400", "mini+D400", "full+D400"]
 
 
@@ -410,6 +411,152 @@ def describe_audio_features_v2(features: Dict[str, Any]) -> str:
     )
 
 
+# ── Essentia interpreter (LLM-based) ───────────────────────────────────────
+
+def _call_openai_text(api_key: str, messages: List[Dict[str, str]], model: str) -> str:
+    """Call OpenAI Responses API and return raw text (no JSON forcing)."""
+    resp = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "input": messages,
+            "temperature": 0,
+            "max_output_tokens": 1024,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = ""
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    text = c.get("text", "")
+    return text
+
+
+def _prepare_interpreter_input(features: Dict[str, Any], bpm: str = "", key: str = "") -> str:
+    """Extract curated ~20 features from Essentia output and format as text for interpreter."""
+    lines: List[str] = []
+
+    # BPM and key from rekordbox (passed separately, more reliable than Essentia)
+    if bpm:
+        lines.append(f"BPM: {bpm}")
+    if key:
+        lines.append(f"Key: {key}")
+
+    def fv(k: str, decimals: int = 2) -> Optional[str]:
+        v = features.get(k)
+        if v is None:
+            return None
+        return f"{v:.{decimals}f}" if isinstance(v, float) else str(v)
+
+    # Tempo / Rhythm
+    for k, d in [("onset_rate", 2), ("bpm_conf", 2), ("danceability", 2), ("dyn_complex", 2)]:
+        val = fv(k, d)
+        if val:
+            lines.append(f"{k}: {val}")
+
+    # Energy
+    for k, d in [("energy", 3), ("lufs", 1), ("spec_flux_mean", 3)]:
+        val = fv(k, d)
+        if val:
+            unit = " LUFS" if k == "lufs" else ""
+            lines.append(f"{k}: {val}{unit}")
+
+    # Timbre — spectral
+    for k, d, unit in [
+        ("spec_centroid", 0, " Hz"), ("spec_centroid_std", 0, ""),
+        ("spec_rolloff", 0, " Hz"), ("spec_rolloff_std", 0, ""),
+        ("hfc_mean", 1, ""),
+    ]:
+        val = fv(k, d)
+        if val:
+            lines.append(f"{k}: {val}{unit}")
+
+    # Timbre — MFCC 0-4
+    for i in range(5):
+        v = features.get(f"mfcc_{i}")
+        if v is not None:
+            lines.append(f"mfcc_{i}: {v:.0f}")
+    kurtosis = features.get("mfcc_kurtosis_mean")
+    skew = features.get("mfcc_skew_mean")
+    if kurtosis is not None:
+        lines.append(f"mfcc_kurtosis_mean: {kurtosis:.1f}")
+    if skew is not None:
+        lines.append(f"mfcc_skew_mean: {skew:.2f}")
+
+    # Texture
+    for k, d in [("spec_flatness_mean", 3), ("zero_crossing_rate", 3)]:
+        val = fv(k, d)
+        if val:
+            lines.append(f"{k}: {val}")
+
+    # Harmony
+    for k, d in [("chords_changes_rate", 3), ("tuning_diatonic_strength", 3)]:
+        val = fv(k, d)
+        if val:
+            lines.append(f"{k}: {val}")
+
+    return "\n".join(lines)
+
+
+def interpret_audio_features(
+    features: Dict[str, Any],
+    bpm: str,
+    key: str,
+    api_key: str,
+    model: str = "gpt-5-nano",
+) -> str:
+    """Use LLM to interpret raw Essentia features into 6 semantic descriptors.
+
+    Essentia Interpreter step: a separate LLM call that converts objective
+    numerical audio features into plain-text sonic descriptions.
+    Output is injected into the genre classifier prompt.
+
+    Returns formatted text with Tempo, Rhythm, Energy, Timbre, Texture, Harmony.
+    Returns empty string on failure.
+    """
+    feature_input = _prepare_interpreter_input(features, bpm, key)
+    if not feature_input:
+        return ""
+
+    # Load interpreter prompt template
+    prompt_path = AB_DIR / "prompts" / "interpreter_essentia.md"
+    if not prompt_path.exists():
+        print(f"  ⚠️  Interpreter prompt not found: {prompt_path}")
+        return ""
+    prompt_template = prompt_path.read_text(encoding="utf-8")
+
+    # Load audio features reference sheet and inject
+    ref_path = AB_DIR / "audio_features.md"
+    if not ref_path.exists():
+        print(f"  ⚠️  Audio features reference not found: {ref_path}")
+        return ""
+    reference = ref_path.read_text(encoding="utf-8")
+    system_prompt = prompt_template.replace("{audio_features_reference}", reference)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Interpret these audio features:\n\n{feature_input}"},
+    ]
+
+    try:
+        text = _call_openai_text(api_key, messages, model)
+        # Validate we got at least 4/6 descriptors
+        expected_keys = ["Tempo:", "Rhythm:", "Energy:", "Timbre:", "Texture:", "Harmony:"]
+        found = sum(1 for k in expected_keys if k in text)
+        if found < 4:
+            print(f"  ⚠️  Interpreter returned only {found}/6 descriptors")
+        # Wrap with standard prefix for build_prompt() detection
+        return "Audio character (Essentia → interpreted):\n" + text.strip()
+    except Exception as e:
+        print(f"  ❌ Interpreter API error: {e}")
+        return ""
+
+
 # ── Discogs400 deep learning analysis ───────────────────────────────────────
 
 # Module-level singletons for TF models (loaded once, reused across tracks)
@@ -672,6 +819,14 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
             "When the audio analysis and metadata agree, be confident. "
             "When they differ, consider that remixes transform the sound — trust the audio genre for the remix's actual style."
         )
+    elif audio_desc and audio_desc.startswith("Audio character (Essentia"):
+        # EI format — LLM-interpreted sonic description (no genre names, objective)
+        audio_signal_line = (
+            "\n* AUDIO CHARACTER (Essentia → interpreted) — objective sonic description of what this "
+            "track SOUNDS LIKE, derived from computational audio analysis. Describes tempo feel, "
+            "rhythm character, energy level, brightness, texture and harmony WITHOUT naming genres. "
+            "Use this to confirm or challenge metadata-based genre signals."
+        )
     elif audio_desc and not audio_desc.startswith("Audio analysis (Essentia"):
         # v1 format — aggressive framing
         audio_signal_line = (
@@ -857,13 +1012,19 @@ def run_ab_test(variants: List[str], resume: bool = False):
     print(f"{'='*70}\n")
 
     # Pre-run Essentia if needed
-    essentia_variants = [v for v in variants if "+E" in v and "+E2" not in v and "+D400" not in v]
+    essentia_variants = [v for v in variants if "+E" in v and "+E2" not in v and "+EI" not in v and "+D400" not in v]
     essentia_cache: Dict[str, str] = {}  # path -> audio_description
 
     essentia_v2_variants = [v for v in variants if "+E2" in v]
     essentia_cache_v2: Dict[str, str] = {}  # path -> audio_description v2
 
-    if essentia_variants or essentia_v2_variants:
+    essentia_interp_variants = [v for v in variants if "+EI" in v]
+    essentia_interp_cache: Dict[str, str] = {}  # path -> interpreted description
+    essentia_raw_cache: Dict[str, Dict[str, Any]] = {}  # path -> raw features (for interpreter)
+
+    needs_essentia = essentia_variants or essentia_v2_variants or essentia_interp_variants
+
+    if needs_essentia:
         print("🔬 Loading cached Essentia audio features...\n")
         essentia_ok = essentia_miss = 0
         for t in tracks:
@@ -873,12 +1034,49 @@ def run_ab_test(variants: List[str], resume: bool = False):
                     essentia_cache[t["path"]] = describe_audio_features(features)
                 if essentia_v2_variants:
                     essentia_cache_v2[t["path"]] = describe_audio_features_v2(features)
+                if essentia_interp_variants:
+                    essentia_raw_cache[t["path"]] = features
                 essentia_ok += 1
             else:
                 essentia_cache[t["path"]] = ""
                 essentia_cache_v2[t["path"]] = ""
                 essentia_miss += 1
         print(f"   Essentia: {essentia_ok} OK, {essentia_miss} missing (run --essentia first)\n")
+
+    # Pre-run Essentia interpreter (LLM calls) if needed
+    if essentia_interp_variants and essentia_raw_cache:
+        print("🧠 Running Essentia interpreter (LLM-based)...\n")
+        interp_ok = interp_fail = 0
+        for i, t in enumerate(tracks):
+            features = essentia_raw_cache.get(t["path"])
+            if not features:
+                essentia_interp_cache[t["path"]] = ""
+                interp_fail += 1
+                print(f"  [{i+1}/{len(tracks)}] {t['filename'][:55]}... ❌ no features")
+                continue
+
+            meta = extract_metadata_from_filename(t["filename"])
+            tag_bpm = read_bpm_from_audio_tag(t["path"])
+            bpm = tag_bpm or meta.get("bpm", "")
+            key = features.get("key_camelot", "")
+
+            print(f"  [{i+1}/{len(tracks)}] {t['filename'][:55]}...", end=" ", flush=True)
+            t0 = time.time()
+            desc = interpret_audio_features(features, bpm, key, api_key)
+            elapsed = time.time() - t0
+
+            if desc:
+                essentia_interp_cache[t["path"]] = desc
+                interp_ok += 1
+                # Show first descriptor as preview
+                first_line = desc.split("\n")[1] if "\n" in desc else desc[:60]
+                print(f"✅ {elapsed:.1f}s → {first_line[:60]}")
+            else:
+                essentia_interp_cache[t["path"]] = ""
+                interp_fail += 1
+                print(f"❌ {elapsed:.1f}s")
+            time.sleep(0.3)  # Rate limit
+        print(f"\n   Interpreter: {interp_ok} OK, {interp_fail} failed\n")
 
     # Pre-run Discogs400 deep learning analysis if needed
     discogs_variants = [v for v in variants if "+D400" in v]
@@ -910,9 +1108,10 @@ def run_ab_test(variants: List[str], resume: bool = False):
 
     for variant in variants:
         use_d400 = "+D400" in variant
+        use_essentia_interp = "+EI" in variant
         use_essentia_v2 = "+E2" in variant
-        use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400
-        model_key = variant.replace("+D400", "").replace("+E2", "").replace("+E", "")
+        use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp
+        model_key = variant.replace("+D400", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         print(f"\n{'─'*70}")
@@ -944,6 +1143,8 @@ def run_ab_test(variants: List[str], resume: bool = False):
 
             if use_d400:
                 audio_desc = discogs_cache.get(t["path"], "")
+            elif use_essentia_interp:
+                audio_desc = essentia_interp_cache.get(t["path"], "")
             elif use_essentia_v2:
                 audio_desc = essentia_cache_v2.get(t["path"], "")
             elif use_essentia:
@@ -1027,7 +1228,7 @@ def run_ab_test(variants: List[str], resume: bool = False):
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)
@@ -1038,6 +1239,9 @@ def run_ab_test(variants: List[str], resume: bool = False):
         }
         in_price, out_price = pricing.get(model_name, (1.0, 4.0))
         cost_5k = 5000 * (avg_in * in_price / 1_000_000 + avg_out * out_price / 1_000_000)
+        # EI variants have 2 API calls per track (interpreter + classifier)
+        if "+EI" in variant:
+            cost_5k *= 2  # rough estimate — interpreter uses similar token count
         print(f"    {variant:12s} : ~${cost_5k:.2f}")
 
     # Per-genre breakdown
