@@ -147,26 +147,32 @@ def _build_search_queries(
     artist: str,
     title: str,
     version: str = "",
+    filename: str = "",
 ) -> List[Dict[str, str]]:
     """Build ranked search queries for a track.
 
     Returns list of {query, site, purpose} dicts, ordered by expected quality.
 
-    Strategy ("hybrid detective"):
-      - Tier 1: ``site:beatport.com`` — gold standard for EDM subgenres.
-      - Tier 2: Broad query with DJ keywords — lets the search engine
-        organically surface DJCity, 1001Tracklists, Hypeddit, SoundCloud,
-        Wikipedia, YouTube compilations, etc.  No ``site:`` restriction.
-      - Tier 3 (remixes only): Remixer identity query — "who is this
-        producer?"  Finds DJMag profiles, Wikipedia, interviews.
+    Strategy ("targeted sites"):
+      - Q1: ``site:beatport.com`` — gold standard for EDM subgenres.
+      - Q2: ``site:traxsource.com`` — best for house subgenres (Afro, Soulful, etc.).
+      - Q3: ``site:discogs.com`` — universal, has Style field (Deep House, Tech House).
+      - Q4: ``site:last.fm`` — non-EDM tag cloud from user consensus.
+      - Q5: ``site:soundcloud.com`` — niche remixes, bootlegs, free DLs. Uses filename.
+      - Q6 (remixes only): Broad remixer identity query.
 
-    This replaces the old per-site (SC/Discogs/generic) tiers which were
-    noisier and required more API calls.  Empirical testing showed broad
-    queries catch all relevant sources organically.
+    Targeted ``site:`` queries return metadata pages with real genre labels
+    instead of SEO articles ("what genre is X?").  Each site has a different
+    taxonomy strength, so multiple sources give the classifier diverse signals.
     """
     artist_clean = _normalize_query(artist)
     title_clean = _normalize_query(title)
     version_clean = _normalize_query(version)
+
+    # Filename without extension for SoundCloud query
+    filename_stem = ""
+    if filename:
+        filename_stem = re.sub(r"\.[a-zA-Z0-9]{2,5}$", "", filename).strip()
 
     # Detect remix
     is_remix = bool(
@@ -187,52 +193,69 @@ def _build_search_queries(
         ).strip()
 
     queries = []
+    # Base query: artist + title (+ version for Beatport which needs exact match)
+    base_q = f"{artist_clean} {title_clean}".strip()
+    base_q_full = base_q
+    if version_clean:
+        base_q_full = f"{base_q} {version_clean}"
 
-    # === Tier 1: Beatport (targeted — gold standard for EDM) ===
-    if artist_clean and title_clean:
-        bp_q = f"{artist_clean} {title_clean}"
-        if version_clean:
-            bp_q += f" {version_clean}"
+    # === Q1: Beatport (EDM gold standard — best subgenre precision) ===
+    if base_q:
         queries.append({
-            "query": f"{bp_q} site:beatport.com",
+            "query": f"{base_q_full} site:beatport.com",
             "site": "beatport",
-            "purpose": "EDM genre from Beatport catalog",
+            "purpose": "EDM subgenre from Beatport catalog",
         })
 
-    # === Tier 2: Broad detective — DJ keywords, no site: restriction ===
-    # Lets the search engine organically find DJCity, 1001Tracklists,
-    # Hypeddit, SoundCloud, Wikipedia, YouTube compilations, Discogs, etc.
-    if artist_clean and title_clean:
-        detective_q = f"{artist_clean} {title_clean}"
-        if version_clean:
-            detective_q += f" {version_clean}"
-        # Only add "remix" keyword for actual remixes — for originals it
-        # pollutes results with unrelated remix versions (#6)
-        keywords = "genre DJ" if not is_remix else "genre remix DJ"
+    # === Q2: Traxsource (house subgenres — Afro, Soulful, Jackin, Deep) ===
+    if base_q:
         queries.append({
-            "query": f"{detective_q} {keywords}",
-            "site": "detective",
-            "purpose": "Broad — DJCity, 1001TL, Hypeddit, Wikipedia, SC, YT",
+            "query": f"{base_q} site:traxsource.com",
+            "site": "traxsource",
+            "purpose": "House subgenre from Traxsource catalog",
         })
 
-    # === Tier 3 (remixes only): Remixer identity research ===
-    # "Who is this producer?" — finds DJMag profiles, Wikipedia, interviews
-    # with genre/style mentions.  Critical for remixes where the remixer's
-    # style determines the genre, not the original artist.
+    # === Q3: Discogs (universal — Style field: Electronic > House > Deep House) ===
+    if base_q:
+        queries.append({
+            "query": f"{base_q} site:discogs.com",
+            "site": "discogs",
+            "purpose": "Genre/Style from Discogs release page",
+        })
+
+    # === Q4: Last.fm (non-EDM strength — user tag cloud consensus) ===
+    if base_q:
+        queries.append({
+            "query": f"{base_q} site:last.fm",
+            "site": "last.fm",
+            "purpose": "User tag cloud (strong for non-EDM: pop, R&B, hip-hop)",
+        })
+
+    # === Q5: SoundCloud (niche remixes, bootlegs, free DLs — use filename) ===
+    sc_q = filename_stem or base_q_full
+    if sc_q:
+        queries.append({
+            "query": f"{sc_q} site:soundcloud.com",
+            "site": "soundcloud",
+            "purpose": "SoundCloud track page (niche remixes, bootlegs)",
+        })
+
+    # === Q6 (remixes only): Remixer identity — broad query ===
+    # Who is this producer?  Finds Wikipedia, RA, DJMag profiles, interviews.
+    # Broad query (no site:) because remixer info can be anywhere.
     if is_remix and remixer:
         queries.append({
-            "query": f"{remixer} DJ producer genre style",
+            "query": f"{remixer} producer music style",
             "site": "remixer",
-            "purpose": f"Remixer identity: {remixer}'s DJ style/genre",
+            "purpose": f"Remixer identity: {remixer}'s music style",
         })
 
     # === Edge case: only filename, no parsed artist/title ===
-    if not queries and (artist_clean or title_clean):
-        fallback = artist_clean or title_clean
+    if not queries and filename_stem:
         queries.append({
-            "query": f"{fallback} music genre",
+            "query": filename_stem,
             "site": "generic",
-            "purpose": "Fallback genre search",
+            "purpose": "Fallback: raw filename search",
         })
 
     return queries
@@ -250,6 +273,7 @@ def _detect_source(url: str) -> str:
         "wikipedia", "allmusic", "musicbrainz", "last.fm",
         "youtube", "spotify", "apple.music", "genius",
         "djmag", "residentadvisor", "ra.co",
+        "bandcamp", "rateyourmusic", "whosampled",
     ):
         if tag in url_lower:
             return tag
@@ -317,39 +341,42 @@ def search_track_genre(
     artist: str = "",
     title: str = "",
     version: str = "",
-    max_queries: int = 3,
-    max_results_per_query: int = 3,
-    stop_after_beatport: bool = True,
+    filename: str = "",
+    max_queries: int = 6,
+    max_results_per_query: int = 2,
+    stop_after_beatport: bool = False,
 ) -> TrackSearchResults:
     """Search for a track's genre info using the given backend.
 
-    Executes ranked queries:
-      1. ``site:beatport.com`` — targeted EDM gold standard.
-      2. Broad "detective" query — catches DJCity, 1001Tracklists, Hypeddit,
-         SoundCloud, Wikipedia, YouTube compilations organically.
-      3. Remixer identity query (remixes only) — who is this producer?
-
-    Stops early if Beatport returns results (configurable).
+    Executes targeted site queries (v2 strategy):
+      1. ``site:beatport.com`` — EDM gold standard.
+      2. ``site:traxsource.com`` — house subgenres.
+      3. ``site:discogs.com`` — universal Style field.
+      4. ``site:last.fm`` — non-EDM user tags.
+      5. ``site:soundcloud.com`` — niche remixes/bootlegs (uses filename).
+      6. Remixer identity query (remixes only) — broad.
 
     Args:
         backend: Search backend instance.
         artist: Track artist.
         title: Track title.
         version: Version/remix info.
+        filename: Original filename (used for SoundCloud query).
         max_queries: Maximum number of search queries to execute.
         max_results_per_query: Max results per individual query.
         stop_after_beatport: If True and Beatport returns results, skip
-            remaining queries (saves time, Beatport is gold standard for EDM).
+            remaining queries.
 
     Returns:
-        TrackSearchResults with all collected snippets.
+        TrackSearchResults with deduplicated results.
     """
     t0 = time.time()
-    queries = _build_search_queries(artist, title, version)
+    queries = _build_search_queries(artist, title, version, filename=filename)
     all_results: List[SearchResult] = []
+    seen_urls: set = set()  # URL dedup across queries
     queries_made = 0
 
-    # Detect remix for early-exit logic (#12)
+    # Detect remix for early-exit logic
     is_remix = bool(
         re.search(
             r"\b(remix|bootleg|rework|refix|flip|mashup|edit)\b",
@@ -366,21 +393,20 @@ def search_track_genre(
         results = backend.search(query, max_results=max_results_per_query)
         queries_made += 1
 
-        # For targeted (site:beatport), tag with site name.
-        # For broad queries, detect actual source from URL.
-        # DJ-1 fix: fallback to "web" instead of tier name (detective/remixer)
-        # so prompt shows [WEB] not [DETECTIVE] or [REMIXER].
+        # Tag results with detected source from URL.
+        # For targeted site: queries, _detect_source will match the site.
+        # For broad (remixer) queries, detect from URL or fallback to "web".
         for r in results:
-            if site == "beatport":
-                r.source = "beatport"
-            else:
-                r.source = _detect_source(r.url) or "web"
-        all_results.extend(results)
+            r.source = _detect_source(r.url) or "web"
 
-        # Early exit: only if Beatport returned a SPECIFIC track match
-        # AND this is NOT a remix.  For remixes, always continue to Tier 3
-        # (remixer identity) — Beatport may have the track under the wrong
-        # genre and the remixer's style is the strongest signal (#12).
+        # Deduplicate by URL across all queries
+        for r in results:
+            url_key = r.url.rstrip("/").lower()
+            if url_key not in seen_urls:
+                seen_urls.add(url_key)
+                all_results.append(r)
+
+        # Early exit (disabled by default in v2 — we want all sites)
         if stop_after_beatport and site == "beatport" and results and not is_remix:
             if _is_beatport_specific_match(results, title):
                 _log.debug(
@@ -388,11 +414,6 @@ def search_track_genre(
                     len(results),
                 )
                 break
-            else:
-                _log.debug(
-                    "Beatport: only generic pages (%d results), continuing to detective",
-                    len(results),
-                )
 
     elapsed_ms = int((time.time() - t0) * 1000)
 

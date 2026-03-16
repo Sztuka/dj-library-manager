@@ -64,7 +64,9 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
 # nano+EI+WS  = filename + both signals
 # NO enrichment metadata (genres_musicbrainz, genres_lastfm, etc.) — the
 # winning variant will REPLACE enrich-online, so it must work without it.
-RUN1_VARIANTS = ["nano", "nano+EI", "nano+WS", "nano+EI+WS"]
+#
+# v2 = symmetric prompt framing (commit 376e510), replaces old run1/run2/run3
+V2_VARIANTS = ["nano", "nano+EI", "nano+WS", "nano+EI+WS"]
 
 
 # ── Track discovery ──────────────────────────────────────────────────────────
@@ -1281,14 +1283,16 @@ def run_ab_test(variants: List[str], resume: bool = False):
                     artist=meta.get("artist", ""),
                     title=meta.get("title", ""),
                     version=meta.get("version", ""),
-                    max_queries=3,
+                    filename=t["filename"],
                 )
                 elapsed = time.time() - t0
                 context = sr.to_prompt_context()
                 ws_cache[t["path"]] = context
                 n = len(sr.results)
-                bp = sum(1 for r in sr.results if r.source == "beatport")
-                print(f"✅ {elapsed:.1f}s → {n} results ({bp} beatport)")
+                from collections import Counter
+                src_counts = Counter(r.source for r in sr.results)
+                src_parts = ", ".join(f"{c} {s}" for s, c in src_counts.most_common())
+                print(f"✅ {elapsed:.1f}s → {n} results ({src_parts})")
                 ws_ok += 1
             except Exception as e:
                 elapsed = time.time() - t0
@@ -1489,8 +1493,8 @@ def main():
     parser = argparse.ArgumentParser(description="A/B test genre classification with Essentia")
     parser.add_argument("--scan", action="store_true", help="Just list discovered tracks")
     parser.add_argument("--essentia", action="store_true", help="Run Essentia analysis only (no API calls)")
-    parser.add_argument("--run", choices=["run1"],
-                        help="Run preset: run1 = nano, nano+EI, nano+WS, nano+EI+WS")
+    parser.add_argument("--run", choices=["v2"],
+                        help="Run preset: v2 = nano, nano+EI, nano+WS, nano+EI+WS (symmetric prompts)")
     parser.add_argument("--variants", nargs="+", default=None,
                         choices=ALL_VARIANTS, help="Which variants to test (overrides --run)")
     parser.add_argument("--resume", action="store_true", help="Skip already-tested tracks")
@@ -1503,10 +1507,10 @@ def main():
     else:
         if args.variants:
             variants = args.variants
-        elif args.run == "run1":
-            variants = RUN1_VARIANTS
+        elif args.run == "v2":
+            variants = V2_VARIANTS
         else:
-            variants = RUN1_VARIANTS  # default to the 4 key variants
+            variants = V2_VARIANTS  # default to the 4 key variants
         run_ab_test(variants, resume=args.resume)
 
 
