@@ -210,7 +210,7 @@ def _build_search_queries(
     # === Q2: Traxsource (house subgenres — Afro, Soulful, Jackin, Deep) ===
     if base_q:
         queries.append({
-            "query": f"{base_q} site:traxsource.com",
+            "query": f"{base_q_full} site:traxsource.com",
             "site": "traxsource",
             "purpose": "House subgenre from Traxsource catalog",
         })
