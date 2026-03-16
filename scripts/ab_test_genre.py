@@ -530,14 +530,18 @@ def _call_openai_text(api_key: str, messages: List[Dict[str, str]], model: str) 
 
 
 def _prepare_interpreter_input(features: Dict[str, Any], bpm: str = "", key: str = "") -> str:
-    """Extract curated ~20 features from Essentia output and format as text for interpreter."""
+    """Extract curated ~20 features from Essentia output and format as text for interpreter.
+
+    SA-3/DE-1 fix: BPM and Key are NOT passed to interpreter.
+    They are already in the classifier prompt as metadata fields and in the BPM guide.
+    Passing them here caused triple BPM signal (metadata + EI + BPM guide).
+    The interpreter should describe AUDIO CHARACTER from Essentia features only,
+    while BPM/Key reach the classifier through their own metadata lines.
+    """
     lines: List[str] = []
 
-    # BPM and key from rekordbox (passed separately, more reliable than Essentia)
-    if bpm:
-        lines.append(f"BPM: {bpm}")
-    if key:
-        lines.append(f"Key: {key}")
+    # BPM and key intentionally excluded — they reach the classifier separately
+    # as metadata fields. Including them here caused triple BPM signal overweighting.
 
     def fv(k: str, decimals: int = 2) -> Optional[str]:
         v = features.get(k)
@@ -928,11 +932,12 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         )
     elif audio_desc and audio_desc.startswith("Audio character (Essentia"):
         # EI format — LLM-interpreted sonic description (no genre names, objective)
+        # SK-1 fix: symmetric framing with WS — both use "inform the genre decision"
         audio_signal_line = (
-            "\n* AUDIO CHARACTER (Essentia → interpreted) — objective sonic description of what this "
-            "track SOUNDS LIKE, derived from computational audio analysis. Describes tempo feel, "
-            "rhythm character, energy level, brightness, texture and harmony WITHOUT naming genres. "
-            "Use this to confirm or challenge metadata-based genre signals."
+            "\n* AUDIO CHARACTER (Essentia → interpreted) — objective sonic description derived "
+            "from computational audio analysis: what this track SOUNDS LIKE (tempo feel, rhythm "
+            "character, energy, brightness, texture, harmony) WITHOUT naming genres. "
+            "Use this to inform the genre decision, especially to distinguish between similar subgenres."
         )
     elif audio_desc and not audio_desc.startswith("Audio analysis (Essentia"):
         # v1 format — aggressive framing
@@ -949,24 +954,36 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
 
     web_search_signal = ""
     if web_search_context and not web_search_context.startswith("(No web search"):
+        # SK-1 fix: symmetric framing with EI — both use "inform the genre decision"
+        # DJ-2 fix: Beatport "strong evidence" → "reliable indicator" + taxonomy caveat
         web_search_signal = (
             "\n* WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites. "
-            "Treat Beatport genre labels as strong evidence for electronic music. "
-            "Use Discogs, SoundCloud, DJ blogs, and Wikipedia to inform genre when other signals "
-            "are ambiguous or missing. Web results may be the ONLY external genre signal available."
+            "Genre labels from Beatport, Discogs, and other sources are a reliable indicator but may "
+            "reflect the source's own taxonomy (not ours). Use all web results to inform the genre decision."
         )
 
     system_prompt = (
         f"You are an expert DJ music classifier. Classify tracks into exactly ONE of these genres:\n"
         f"{genre_list}\n\n"
-        f"Use ALL available signals to determine the MOST SPECIFIC matching genre:\n"
+        # PE-2 fix: "ALL" → "the following" (truthful for every variant)
+        # TX-2 fix: "prefer the most specific subgenre" rule
+        f"Use the following signals to determine the MOST SPECIFIC matching genre "
+        f"(always prefer a specific subgenre over a broad parent, e.g. Tech House over House):\n"
         f"* REMIXER/EDITOR identity — strongest signal for remixes (their known scene/style)\n"
         f"* BPM — strong structural signal"
         f"{web_search_signal}"
         f"{audio_signal_line}"
         f"{remix_instruction}"
         f"{bpm_guide}\n\n"
-        f"Respond with JSON: {{\"genre\": \"...\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}"
+        # PE-5 fix: fallback rule for weak/missing signals
+        f"If signals are weak or conflicting, choose the broadest matching genre family "
+        f"and set confidence below 0.5.\n\n"
+        # PE-4 fix: confidence calibration guidance
+        # PE-3 fix: structured reasoning requirement
+        f"Respond with JSON: {{\"genre\": \"...\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}\n"
+        f"Confidence guide: 0.9+ only when multiple signals agree, 0.7-0.9 single strong signal, "
+        f"<0.7 uncertain or conflicting.\n"
+        f"In reasoning, briefly list each signal used and what it indicated."
     )
 
     user_prompt = f"Classify this track:\n\n{track_info}"

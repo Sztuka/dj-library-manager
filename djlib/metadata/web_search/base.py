@@ -368,11 +368,13 @@ def search_track_genre(
 
         # For targeted (site:beatport), tag with site name.
         # For broad queries, detect actual source from URL.
+        # DJ-1 fix: fallback to "web" instead of tier name (detective/remixer)
+        # so prompt shows [WEB] not [DETECTIVE] or [REMIXER].
         for r in results:
             if site == "beatport":
                 r.source = "beatport"
             else:
-                r.source = _detect_source(r.url) or site
+                r.source = _detect_source(r.url) or "web"
         all_results.extend(results)
 
         # Early exit: only if Beatport returned a SPECIFIC track match
