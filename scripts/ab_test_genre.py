@@ -72,25 +72,45 @@ V2_VARIANTS = ["nano", "nano+EI", "nano+WS", "nano+EI+WS"]
 # ── Track discovery ──────────────────────────────────────────────────────────
 
 def discover_tracks() -> List[Dict[str, str]]:
-    """Scan data/ab_test/<genre>/ for audio files.
+    """Discover tracks from gold_labels.json (single source of truth).
+
+    Scans data/ab_test/ recursively for audio files, then filters to only
+    those present in gold_labels.json.  Expected genre comes from gold labels,
+    NOT from folder names (folders are outdated / unsorted).
 
     Returns list of dicts with keys: path, expected_genre, filename.
     """
-    tracks = []
     if not AB_DIR.exists():
-        return tracks
+        return []
 
-    for genre_dir in sorted(AB_DIR.iterdir()):
-        if not genre_dir.is_dir() or genre_dir.name.startswith("."):
-            continue
-        expected_genre = genre_dir.name
-        for audio_file in sorted(genre_dir.iterdir()):
-            if audio_file.suffix.lower() in AUDIO_EXTENSIONS and not audio_file.name.startswith("."):
-                tracks.append({
-                    "path": str(audio_file),
-                    "expected_genre": expected_genre,
-                    "filename": audio_file.name,
-                })
+    gold_file = AB_DIR / "gold_labels.json"
+    if not gold_file.exists():
+        print("  ⚠️  No gold_labels.json — cannot discover tracks")
+        return []
+
+    gold = json.loads(gold_file.read_text(encoding="utf-8"))
+
+    # Build filename → path index (recursive scan)
+    file_index: Dict[str, Path] = {}
+    for p in sorted(AB_DIR.rglob("*")):
+        if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS and not p.name.startswith("."):
+            file_index[p.name] = p
+
+    tracks = []
+    missing = []
+    for filename, info in sorted(gold.items()):
+        if filename in file_index:
+            tracks.append({
+                "path": str(file_index[filename]),
+                "expected_genre": info["genre"],
+                "filename": filename,
+            })
+        else:
+            missing.append(filename)
+
+    if missing:
+        print(f"  ⚠️  {len(missing)} gold-labeled tracks not found on disk")
+
     return tracks
 
 
@@ -1130,7 +1150,8 @@ def run_ab_test(variants: List[str], resume: bool = False):
 
     tracks = discover_tracks()
     if not tracks:
-        print("❌ No tracks found in data/ab_test/<genre>/")
+        print("❌ No gold-labeled tracks found in data/ab_test/")
+        print("   Ensure gold_labels.json exists and audio files are present.")
         sys.exit(1)
 
     genre_labels = load_genre_labels()
