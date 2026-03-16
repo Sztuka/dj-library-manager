@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -57,6 +58,12 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+D400", "mini+D400", "full+D400"]
 
 # Default run preset: the 4 variants we care about
+# nano        = filename metadata (artist/title/version/bpm/key) only
+# nano+EI     = filename + Essentia interpreter (sonic description)
+# nano+WS     = filename + web search (SearXNG → Beatport, Discogs, etc.)
+# nano+EI+WS  = filename + both signals
+# NO enrichment metadata (genres_musicbrainz, genres_lastfm, etc.) — the
+# winning variant will REPLACE enrich-online, so it must work without it.
 RUN1_VARIANTS = ["nano", "nano+EI", "nano+WS", "nano+EI+WS"]
 
 
@@ -122,20 +129,59 @@ def extract_metadata_from_filename(filename: str) -> Dict[str, str]:
     }
 
 
-# ── Essentia analysis ───────────────────────────────────────────────────────
+# ── Audio metadata readers ───────────────────────────────────────────────────
+
+# Module-level Rekordbox index: stem → {bpm, key_camelot}. Built once, reused.
+_rekordbox_index: Optional[Dict[str, Dict[str, str]]] = None
+
+
+def _build_rekordbox_index() -> Dict[str, Dict[str, str]]:
+    """Build a lookup index from Rekordbox DB: filename stem → {bpm, key}.
+
+    Rekordbox stores BPM as integer × 100 (e.g. 12400 = 124.00 BPM).
+    This is the authoritative source for BPM/key — Rekordbox analyzes every
+    imported track but doesn't always write BPM back to audio file tags.
+    """
+    global _rekordbox_index
+    if _rekordbox_index is not None:
+        return _rekordbox_index
+
+    _rekordbox_index = {}
+    try:
+        from pyrekordbox import Rekordbox6Database
+        db = Rekordbox6Database()
+        for content in db.get_content():
+            path = content.FolderPath
+            if not path:
+                continue
+            fname = os.path.basename(path)
+            # Stem: strip [key bpm] tag and extension for fuzzy matching
+            stem = re.sub(r'\s*\[.*?\]\s*', '', os.path.splitext(fname)[0]).strip().lower()
+            bpm_raw = content.BPM
+            bpm_str = ""
+            if bpm_raw and bpm_raw > 0:
+                bpm_val = bpm_raw / 100.0
+                if 50 <= bpm_val <= 250:
+                    bpm_str = str(int(round(bpm_val)))
+            _rekordbox_index[stem] = {"bpm": bpm_str}
+        print(f"  📀 Rekordbox index: {len(_rekordbox_index)} tracks loaded")
+    except Exception as e:
+        print(f"  ⚠️  Rekordbox DB not available: {e}")
+        _rekordbox_index = {}
+    return _rekordbox_index
+
 
 def read_bpm_from_audio_tag(file_path: str) -> str:
     """Read BPM from audio file tags (ID3/Vorbis/MP4). Rekordbox writes these.
 
     Returns BPM as string (e.g. '125') or '' if not found.
-    Priority: tag BPM > filename BPM, because Rekordbox analysis is precise.
+    Priority: audio tag > Rekordbox DB > empty.
     """
     try:
         import mutagen
         audio = mutagen.File(file_path, easy=True)
         if audio and "bpm" in audio:
             raw = str(audio["bpm"][0]).strip()
-            # Validate: should be a number between 50 and 250
             try:
                 val = float(raw)
                 if 50 <= val <= 250:
@@ -156,7 +202,48 @@ def read_bpm_from_audio_tag(file_path: str) -> str:
                         pass
     except Exception:
         pass
+
+    # Fallback: Rekordbox DB (has BPM for tracks where tag wasn't written)
+    rb_index = _build_rekordbox_index()
+    if rb_index:
+        fname = os.path.basename(file_path)
+        stem = re.sub(r'\s*\[.*?\]\s*', '', os.path.splitext(fname)[0]).strip().lower()
+        entry = rb_index.get(stem, {})
+        if entry.get("bpm"):
+            return entry["bpm"]
+
     return ""
+
+def read_key_from_audio_tag(file_path: str) -> str:
+    """Read musical key from audio file tags. Rekordbox writes TKEY (ID3) / initialkey (Vorbis).
+
+    Returns key in Camelot notation (e.g. '9A', '3B') or '' if not found.
+    Priority: raw TKEY/initialkey tag > easy mode 'initialkey'.
+    """
+    try:
+        import mutagen
+        # Try raw tags first — Rekordbox writes TKEY (ID3) or initialkey (Vorbis/FLAC)
+        audio = mutagen.File(file_path)
+        if audio and hasattr(audio, "tags") and audio.tags:
+            for tag_name in audio.tags:
+                tag_str = str(tag_name).upper()
+                if tag_str in ("TKEY", "INITIALKEY"):
+                    raw = str(audio.tags[tag_name]).strip()
+                    # Strip list markers from Vorbis tags like "['12A']"
+                    if raw.startswith("[") and raw.endswith("]"):
+                        raw = raw.strip("[]").strip("' \"")
+                    if raw and raw != "--":
+                        return raw
+        # Fallback: easy mode
+        audio2 = mutagen.File(file_path, easy=True)
+        if audio2:
+            for k in ("initialkey", "key"):
+                if k in audio2 and audio2[k][0].strip():
+                    return audio2[k][0].strip()
+    except Exception:
+        pass
+    return ""
+
 
 def run_essentia_analysis(file_path: str, cache_only: bool = False) -> Optional[Dict[str, Any]]:
     """Run Essentia analysis on a file, using cache if available.
@@ -753,7 +840,15 @@ def load_genre_labels() -> List[str]:
 
 def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str = "",
                  web_search_context: str = "") -> str:
-    """Build genre classification prompt (mirrors server.py _build_genre_prompt)."""
+    """Build genre classification prompt for AB test.
+
+    IMPORTANT: In AB test mode, ctx contains ONLY filename-derived metadata
+    (artist, title, version, bpm, key) + folder hint. Enrichment fields
+    (genres_musicbrainz, genres_lastfm, genres_soundcloud, genres_beatport)
+    are INTENTIONALLY EXCLUDED — the winning variant will replace enrich-online.
+    The genres_* blocks below exist for compatibility with server.py prompt
+    structure but should never fire in AB test context.
+    """
     genre_list = ", ".join(genre_labels)
 
     parts = []
@@ -767,8 +862,10 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         parts.append(f"BPM: {ctx['bpm']}")
     if ctx.get("key"):
         parts.append(f"Key: {ctx['key']}")
-    if ctx.get("folder"):
-        parts.append(f"DJ's working folder (set context, NOT genre): {ctx['folder']}")
+    # NOTE: folder is NOT included in prompt — it leaked expected_genre (#11).
+    # Removed to ensure clean AB test measurement.
+    # Enrichment metadata — intentionally excluded in AB test.
+    # These blocks exist for server.py compatibility only.
     if ctx.get("genres_musicbrainz"):
         parts.append(f"MusicBrainz genres: {ctx['genres_musicbrainz']}")
     if ctx.get("genres_lastfm"):
@@ -782,7 +879,7 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         parts.append("")
         parts.append(audio_desc)
 
-    if web_search_context:
+    if web_search_context and not web_search_context.startswith("(No web search"):
         parts.append("")
         parts.append(f"Web search results:\n{web_search_context}")
 
@@ -851,11 +948,12 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         )
 
     web_search_signal = ""
-    if web_search_context:
+    if web_search_context and not web_search_context.startswith("(No web search"):
         web_search_signal = (
-            "\n* WEB SEARCH RESULTS — real-time search snippets from Beatport, Discogs, SoundCloud, "
-            "DJ blogs etc. Beatport genre is the gold standard for EDM tracks. "
-            "Use web results to confirm genre when metadata is ambiguous or missing."
+            "\n* WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites. "
+            "Treat Beatport genre labels as strong evidence for electronic music. "
+            "Use Discogs, SoundCloud, DJ blogs, and Wikipedia to inform genre when other signals "
+            "are ambiguous or missing. Web results may be the ONLY external genre signal available."
         )
 
     system_prompt = (
@@ -863,8 +961,7 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         f"{genre_list}\n\n"
         f"Use ALL available signals to determine the MOST SPECIFIC matching genre:\n"
         f"* REMIXER/EDITOR identity — strongest signal for remixes (their known scene/style)\n"
-        f"* BPM — strong structural signal\n"
-        f"* Metadata tags — from music databases (may be wrong for remixes)"
+        f"* BPM — strong structural signal"
         f"{web_search_signal}"
         f"{audio_signal_line}"
         f"{remix_instruction}"
@@ -1122,10 +1219,24 @@ def run_ab_test(variants: List[str], resume: bool = False):
 
     # Pre-run web search if needed
     ws_variants = [v for v in variants if "+WS" in v]
-    ws_cache: Dict[str, str] = {}  # track_key -> prompt_context
+    ws_cache: Dict[str, str] = {}  # track_path -> prompt_context
+    ws_cache_file = AB_DIR / "ws_cache.json"
+
+    # Load persistent WS cache (survives --resume)
+    if ws_variants and ws_cache_file.exists():
+        try:
+            ws_cache = json.loads(ws_cache_file.read_text(encoding="utf-8"))
+            print(f"  💾 WS cache loaded: {sum(1 for v in ws_cache.values() if v)} results from {ws_cache_file.name}")
+        except Exception:
+            ws_cache = {}
 
     if ws_variants:
-        print("🔍 Running web search (SearXNG)...\n")
+        # Only search tracks not already cached
+        tracks_to_search = [t for t in tracks if t["path"] not in ws_cache]
+        if not tracks_to_search:
+            print(f"🔍 Web search: all {len(tracks)} tracks cached, skipping.\n")
+        else:
+            print(f"🔍 Running web search (SearXNG) for {len(tracks_to_search)}/{len(tracks)} tracks...\n")
         try:
             searcher = create_searcher("searxng")
             if not searcher.is_available():
@@ -1136,7 +1247,7 @@ def run_ab_test(variants: List[str], resume: bool = False):
             searcher = None
 
         ws_ok = ws_fail = 0
-        for i, t in enumerate(tracks):
+        for i, t in enumerate(tracks_to_search):
             meta = extract_metadata_from_filename(t["filename"])
             tk = f"{meta.get('artist', '')} - {meta.get('title', '')}"
 
@@ -1145,7 +1256,7 @@ def run_ab_test(variants: List[str], resume: bool = False):
                 ws_fail += 1
                 continue
 
-            print(f"  [{i+1}/{len(tracks)}] {tk[:55]}...", end=" ", flush=True)
+            print(f"  [{i+1}/{len(tracks_to_search)}] {tk[:55]}...", end=" ", flush=True)
             t0 = time.time()
             try:
                 sr = search_track_genre(
@@ -1168,6 +1279,9 @@ def run_ab_test(variants: List[str], resume: bool = False):
                 ws_fail += 1
                 print(f"❌ {elapsed:.1f}s — {e}")
             time.sleep(1.0)  # Rate limit for SearXNG
+
+            # Save WS cache after each track so progress survives interrupts
+            ws_cache_file.write_text(json.dumps(ws_cache, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n   Web search: {ws_ok} OK, {ws_fail} failed\n")
 
     # Run tests
@@ -1204,12 +1318,27 @@ def run_ab_test(variants: List[str], resume: bool = False):
                 continue
 
             meta = extract_metadata_from_filename(t["filename"])
-            meta["folder"] = t["expected_genre"]  # folder = context hint
+            # NOTE: folder = expected_genre was removed (problem #11 — answer leakage).
+            # The genre folder name IS the expected answer; injecting it into the
+            # prompt gives the model a massive hint, contaminating all variants.
 
-            # Enrich BPM from audio tag (Rekordbox) — overrides filename BPM
+            # BPM and Key from audio tags (Rekordbox) — override filename values
+            # These are the authoritative source; filename tags are just fallback
             tag_bpm = read_bpm_from_audio_tag(t["path"])
             if tag_bpm:
                 meta["bpm"] = tag_bpm
+            tag_key = read_key_from_audio_tag(t["path"])
+            if tag_key:
+                meta["key"] = tag_key
+
+            # Safety: AB test must NOT use enrichment metadata (genres_*).
+            # The whole point is measuring classification from filename +
+            # signals (EI/WS/D400) WITHOUT pre-enriched genre tags.
+            # If these keys ever appear, something is wrong upstream.
+            assert not any(meta.get(k) for k in (
+                "genres_musicbrainz", "genres_lastfm",
+                "genres_soundcloud", "genres_beatport",
+            )), f"Enrichment metadata leaked into AB test meta: {meta}"
 
             if use_d400:
                 audio_desc = discogs_cache.get(t["path"], "")
