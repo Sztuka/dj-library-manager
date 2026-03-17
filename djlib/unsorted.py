@@ -19,6 +19,8 @@ class ColumnSpec:
 UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     # Read-only metadata (locked)
     ColumnSpec("track_id", hidden=True, width=22, locked=True),
+    ColumnSpec("rekordbox_id", hidden=True, width=16, locked=True),
+    ColumnSpec("traktor_id", hidden=True, width=16, locked=True),
     ColumnSpec("file_path", width=115, locked=True),  # Visible for reference
     ColumnSpec("file_hash", hidden=True, width=30, locked=True),
     ColumnSpec("fingerprint", hidden=True, width=26, locked=True),
@@ -71,6 +73,14 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("rating", width=10),  # Star rating 0-5 (syncs with Rekordbox/Traktor)
     # Computed final filename (locked)
     ColumnSpec("final_filename", width=100, locked=True),
+    # AI classification results (locked — set by batch_classify / api)
+    ColumnSpec("ai_artist", hidden=True, width=30, locked=True),
+    ColumnSpec("ai_title", hidden=True, width=45, locked=True),
+    ColumnSpec("ai_version", hidden=True, width=42, locked=True),
+    ColumnSpec("ai_genre", hidden=True, width=24, locked=True),
+    ColumnSpec("ai_confidence", hidden=True, width=10, locked=True),
+    ColumnSpec("ai_reasoning", hidden=True, width=60, locked=True),
+    ColumnSpec("ai_classify_date", hidden=True, width=18, locked=True),
     # Status column (editable)
     ColumnSpec("done", width=10),
 ]

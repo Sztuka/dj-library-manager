@@ -55,6 +55,9 @@ mimetypes.add_type("audio/wav", ".wav")
 _REPO = Path(__file__).resolve().parents[2]
 _CSV_LOCK = threading.Lock()
 
+# Library review CSV (temporary, for re-processing existing library tracks)
+LIBRARY_REVIEW_CSV = _REPO / "data" / "library_review.csv"
+
 
 def _static_version() -> str:
     """Return max mtime of static files as cache-buster query string."""
@@ -86,6 +89,13 @@ def _load_library_csv() -> List[Dict[str, str]]:
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         return [dict(row) for row in reader]
+
+
+def _load_library_review_csv() -> List[Dict[str, str]]:
+    """Load library_review.csv (same format as unsorted.csv) for re-review."""
+    if not LIBRARY_REVIEW_CSV.exists():
+        return []
+    return load_unsorted_rows(LIBRARY_REVIEW_CSV)
 
 
 def _load_processed_tracks() -> List[Dict[str, str]]:
@@ -179,6 +189,8 @@ def api_tracks():
         rows = load_unsorted_rows(UNSORTED_CSV)
     elif source == "library":
         rows = _load_library_csv()
+    elif source in ("library-review", "library-fix"):
+        rows = _load_library_review_csv()
     elif source == "processed":
         rows = _load_processed_tracks()
     else:
@@ -237,13 +249,17 @@ def api_update_track():
 
     tid = data.get("track_id") or data.get("file_hash")
     fields = data.get("fields", {})
+    source = data.get("source", "unsorted")
     if not tid:
         return jsonify({"error": "Missing track_id or file_hash"}), 400
     if not fields:
         return jsonify({"error": "No fields to update"}), 400
 
+    # Determine which CSV to update
+    csv_file = LIBRARY_REVIEW_CSV if source in ("library-review", "library-fix") else UNSORTED_CSV
+
     with _CSV_LOCK:
-        rows = load_unsorted_rows(UNSORTED_CSV)
+        rows = load_unsorted_rows(csv_file)
         updated = False
         for row in rows:
             if row.get("track_id") == tid or row.get("file_hash") == tid:
@@ -256,7 +272,7 @@ def api_update_track():
         if not updated:
             return jsonify({"error": f"Track not found: {tid}"}), 404
 
-        write_unsorted_rows(UNSORTED_CSV, rows, [])
+        write_unsorted_rows(csv_file, rows, [])
     return jsonify({"ok": True})
 
 
@@ -720,6 +736,80 @@ def api_identify_track():
         return jsonify(result)
     except Exception as e:
         _log.warning("OpenAI identify error: %s", e)
+        return jsonify({"error": f"AI request failed: {e}"}), 502
+
+
+# ── Unified AI Classify (identify + genre in one call) ───────────────────────
+
+_classify_cache: Dict[str, Dict[str, Any]] = {}
+
+
+@app.route("/api/ai-classify", methods=["POST"])
+def api_ai_classify():
+    """Unified AI classification: artist, title, version[], genre in one call.
+
+    Request body (JSON):
+        { "track_id": "..." }
+
+    Returns:
+        { "artist": "...", "title": "...", "version": ["Token1", "Token2"],
+          "genre": "Tech House", "confidence": 0.85, "reasoning": "..." }
+    """
+    api_key = get_openai_api_key()
+    if not api_key:
+        return jsonify({"error": "OpenAI API key not configured"}), 501
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    tid = data.get("track_id", "")
+    if not tid:
+        return jsonify({"error": "Missing track_id"}), 400
+
+    # Check cache
+    if tid in _classify_cache:
+        return jsonify(_classify_cache[tid])
+
+    # Determine source CSV (library-review or unsorted)
+    source = data.get("source", "unsorted")
+
+    # Load row from CSV
+    with _CSV_LOCK:
+        if source in ("library-review", "library-fix"):
+            rows = load_unsorted_rows(LIBRARY_REVIEW_CSV)
+        else:
+            rows = load_unsorted_rows(UNSORTED_CSV)
+
+    row = None
+    for r in rows:
+        if r.get("track_id") == tid:
+            row = r
+            break
+
+    if not row:
+        return jsonify({"error": f"Track not found: {tid}"}), 404
+
+    try:
+        from djlib.ai_classify import classify_track
+        # For library-review, exclude the file's ID3 genre tag which is often
+        # a bulk-applied generic value (e.g. "Afro House" for 75% of tracks).
+        # External sources (Beatport, SoundCloud, Last.fm) are always kept.
+        exclude_file_tag = source in ("library-review", "library-fix")
+        web_search = bool(data.get("web_search", False))
+        result = classify_track(
+            row,
+            api_key=api_key,
+            exclude_file_genre_tag=exclude_file_tag,
+            use_web_search=web_search,
+        )
+        if tid:
+            _classify_cache[tid] = result
+        # Strip internal _usage from API response
+        result_safe = {k: v for k, v in result.items() if not k.startswith("_")}
+        return jsonify(result_safe)
+    except Exception as e:
+        _log.warning("AI classify error: %s", e)
         return jsonify({"error": f"AI request failed: {e}"}), 502
 
 

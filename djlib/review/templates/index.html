@@ -13,6 +13,8 @@
         <h1>🎧 Review</h1>
         <select id="source-select">
           <option value="unsorted" selected>Unsorted</option>
+          <option value="library-review">Library Review</option>
+          <option value="library-fix">Library Fix</option>
           <option value="library">Library</option>
           <option value="processed">Processed</option>
         </select>
@@ -157,6 +159,9 @@
       <button data-action="identify-track" id="ctx-identify">
         🔎 Identify track (AI)
       </button>
+      <button data-action="ai-classify" id="ctx-ai-classify">
+        🧠 Classify all (AI)
+      </button>
       <button data-action="ai-chat" id="ctx-ai-chat">💬 AI Chat</button>
       <button data-action="scrape-url" id="ctx-scrape-url">📎 Paste URL</button>
       <div class="context-sep"></div>
@@ -240,6 +245,40 @@
       <button
         class="identify-banner-dismiss"
         id="identify-banner-dismiss"
+        title="Dismiss"
+      >
+        ✕
+      </button>
+    </div>
+    <!-- ── Unified classify banner ──────────────────────────────── -->
+    <div id="classify-banner" class="classify-banner hidden">
+      <span class="classify-banner-icon">🧠</span>
+      <span class="classify-banner-artist" id="classify-banner-artist"></span>
+      <span class="classify-banner-sep">—</span>
+      <span class="classify-banner-title" id="classify-banner-title"></span>
+      <span
+        class="classify-banner-version"
+        id="classify-banner-version"
+      ></span>
+      <span class="classify-banner-genre" id="classify-banner-genre"></span>
+      <span
+        class="classify-banner-confidence"
+        id="classify-banner-confidence"
+      ></span>
+      <span
+        class="classify-banner-reasoning"
+        id="classify-banner-reasoning"
+      ></span>
+      <button
+        class="classify-banner-accept"
+        id="classify-banner-accept"
+        title="Accept all (naming + genre)"
+      >
+        ✓ Accept all
+      </button>
+      <button
+        class="classify-banner-dismiss"
+        id="classify-banner-dismiss"
         title="Dismiss"
       >
         ✕

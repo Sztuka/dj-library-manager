@@ -4,129 +4,130 @@
 #
 # Each entry defines:
 #   label     – human-readable name (used in UI, CSV export, Rekordbox tags)
-#   category  – genre family (electronic, rock, pop, urban, caribbean, world,
-#               jazz, other). Used by genre_resolver to decide source trust.
-#   boost     – specificity multiplier (default 1.0). Subgenres get > 1.0 so
-#               they beat their parent genre in weighted scoring.
-#   synonyms  – all known aliases. Matching is CASE-INSENSITIVE and
-#               PUNCTUATION-NORMALIZED, so only ONE variant per normalized
-#               form is needed (e.g. "afro house" covers "Afro House" too).
+#   family    – genre family for hierarchical classification & family accuracy
+#              (House, Techno, Trance, Bass, Dance, Synth, Ambient, Pop, Rock,
+#               Hip-Hop, Caribbean, World, Jazz, Funk/Soul)
+#   category  – broad category for source trust heuristics
+#              (electronic, pop, rock, urban, caribbean, world, jazz, other)
+#   synonyms  – aliases for matching external API tags (Beatport, MusicBrainz,
+#               Last.fm, Discogs). CASE-INSENSITIVE + PUNCTUATION-NORMALIZED.
+#
+# Genre classification is done by LLM (GPT-5-nano) — synonyms exist only to
+# map external metadata tags to canonical genres, NOT for scoring/boosting.
 #
 # Rules:
-#   • NO case-only duplicates (both consumers normalize to lowercase)
-#   • NO cross-genre duplicates (each synonym maps to exactly one genre)
-#   • Prefer lowercase in synonyms for readability
-#   • Keep variants that differ in spacing/punctuation ("afro-house" vs
-#     "afrohouse") — they normalize differently in genre_canonical.py
+#   • NO case-only duplicates (consumers normalize to lowercase)
+#   • NO cross-genre duplicates (each synonym → exactly one genre)
+#   • Keep spacing/punctuation variants ("afro-house" vs "afrohouse")
+#   • Every genre MUST have a family field
 # ============================================================================
 
 # ── ELECTRONIC: HOUSE ───────────────────────────────────────────────────────
 
 AFRO_HOUSE:
   label: "Afro House"
+  family: House
   category: electronic
-  boost: 1.8
   synonyms:
     - "afro house"
-    - "afro tech"
-    - "afro tech house"
     - "afro-house"
     - "afrohouse"
+    - "afro tech"
+    - "afro tech house"
     - "organic house"
     - "tribal house"
     - "tribal afro"
-    - "tribal afro house"
     - "afro deep"
     - "afro deep house"
 
-TECH_HOUSE:
-  label: "Tech House"
-  category: electronic
-  boost: 1.5
-  synonyms:
-    - "tech house"
-    - "tech-house"
-    - "techhouse"
-    - "minimal tech house"
-    - "minimal tech-house"
-    - "minimal tech"
-
-HOUSE:
-  label: "House"
-  category: electronic
-  boost: 1.0
-  synonyms:
-    - "house"
-    - "club house"
-    - "club-house"
-    - "dance house"
-    - "vocal house"
-    - "piano house"
-    - "slap house"
-    - "tropical house"
-    - "us house"
-    - "bass house"
-    - "electro house"
-    - "future house"
-    - "funky house"
-    - "jackin house"
-    - "acid house"
-    - "chicago house"
-    - "minimal house"
-    - "g-house"
-
-PROGRESSIVE_HOUSE:
-  label: "Progressive House"
-  category: electronic
-  boost: 1.5
-  synonyms:
-    - "progressive house"
-    - "prog house"
-    - "prog-house"
-    - "proghouse"
-
 DEEP_HOUSE:
   label: "Deep House"
+  family: House
   category: electronic
-  boost: 1.8
   synonyms:
     - "deep house"
     - "deep-house"
     - "deephouse"
     - "deep tech house"
     - "deep tech"
-    - "chill house"
-    - "lounge house"
-    - "smooth house"
-
-SOULFUL_HOUSE:
-  label: "Soulful House"
-  category: electronic
-  boost: 1.8
-  synonyms:
     - "soulful house"
     - "soulful deep house"
+    - "chill house"
+    - "lounge house"
+    - "jazzy house"
 
-UK_GARAGE:
-  label: "UK Garage"
+HOUSE:
+  label: "House"
+  family: House
   category: electronic
-  boost: 1.8
   synonyms:
-    - "uk garage"
-    - "garage"
-    - "speed garage"
-    - "2-step"
-    - "2 step"
-    - "2step"
-    - "bassline"
-    - "grime"
+    - "house"
+    - "house music"
+    - "club house"
+    - "vocal house"
+    - "piano house"
+    - "tropical house"
+    - "us house"
+    - "acid house"
+    - "chicago house"
+    - "minimal house"
+    - "jackin house"
+    - "funky house"
+
+TECH_HOUSE:
+  label: "Tech House"
+  family: House
+  category: electronic
+  synonyms:
+    - "tech house"
+    - "tech-house"
+    - "techhouse"
+    - "minimal tech house"
+    - "minimal tech"
+
+DISCO_HOUSE:
+  label: "Disco House"
+  family: House
+  category: electronic
+  synonyms:
+    - "disco house"
+    - "nu disco"
+    - "nu-disco"
+    - "nudisco"
+    - "disco edits"
+    - "disco edit"
+    - "modern disco"
+    - "funky edit"
+
+ELECTRO_HOUSE:
+  label: "Electro House"
+  family: House
+  category: electronic
+  synonyms:
+    - "electro house"
+    - "bloghouse"
+    - "fidget house"
+    - "bass house"
+    - "slap house"
+    - "future house"
+    - "g-house"
+
+PROGRESSIVE_HOUSE:
+  label: "Progressive House"
+  family: House
+  category: electronic
+  synonyms:
+    - "progressive house"
+    - "prog house"
+    - "prog-house"
+    - "proghouse"
 
 # ── ELECTRONIC: TECHNO ─────────────────────────────────────────────────────
 
 MELODIC_TECHNO:
   label: "Melodic Techno"
+  family: Techno
   category: electronic
-  boost: 1.5
   synonyms:
     - "melodic techno"
     - "melodic-techno"
@@ -137,8 +138,8 @@ MELODIC_TECHNO:
 
 TECHNO:
   label: "Techno"
+  family: Techno
   category: electronic
-  boost: 1.0
   synonyms:
     - "techno"
     - "deep techno"
@@ -146,54 +147,30 @@ TECHNO:
     - "raw techno"
     - "peak time techno"
     - "peaktime techno"
-    - "hardgroove techno"
     - "detroit techno"
     - "acid techno"
-    - "industrial techno"
     - "dub techno"
     - "driving techno"
 
 HARD_TECHNO:
   label: "Hard Techno"
+  family: Techno
   category: electronic
-  boost: 1.8
   synonyms:
     - "hard techno"
     - "hard-techno"
     - "hardtechno"
     - "schranz"
     - "rave techno"
-    - "industrial hard techno"
-
-HARDCORE:
-  label: "Hardcore"
-  category: electronic
-  boost: 1.8
-  synonyms:
-    - "hardcore"
-    - "hardcore techno"
-    - "gabber"
-    - "gabba"
-    - "happy hardcore"
-    - "uk hardcore"
-
-HARDSTYLE:
-  label: "Hardstyle"
-  category: electronic
-  boost: 1.8
-  synonyms:
-    - "hardstyle"
-    - "hard dance"
+    - "industrial techno"
     - "hard trance"
-    - "reverse bass"
-    - "rawstyle"
 
 # ── ELECTRONIC: TRANCE ─────────────────────────────────────────────────────
 
 TRANCE:
   label: "Trance"
+  family: Trance
   category: electronic
-  boost: 1.5
   synonyms:
     - "trance"
     - "uplifting trance"
@@ -201,12 +178,11 @@ TRANCE:
     - "progressive trance"
     - "euphoric trance"
     - "classic trance"
-    - "anthem trance"
 
 PSYTRANCE:
   label: "Psytrance"
+  family: Trance
   category: electronic
-  boost: 1.8
   synonyms:
     - "psytrance"
     - "psy-trance"
@@ -215,23 +191,30 @@ PSYTRANCE:
     - "goa trance"
     - "full on"
     - "full-on"
-    - "fullon"
-    - "forest psy"
     - "dark psy"
-    - "darkpsy"
 
 # ── ELECTRONIC: BASS MUSIC ─────────────────────────────────────────────────
 
+BREAKBEAT:
+  label: "Breakbeat"
+  family: Bass
+  category: electronic
+  synonyms:
+    - "breakbeat"
+    - "breakbeats"
+    - "breaks"
+    - "big beat"
+    - "nu skool breaks"
+
 DNB:
   label: "Drum & Bass"
+  family: Bass
   category: electronic
-  boost: 1.5
   synonyms:
     - "drum & bass"
     - "drum and bass"
     - "dnb"
     - "d&b"
-    - "d n b"
     - "drum'n'bass"
     - "drum n bass"
     - "jungle"
@@ -239,104 +222,46 @@ DNB:
     - "liquid dnb"
     - "liquid drum and bass"
 
+UK_GARAGE:
+  label: "UK Garage"
+  family: Bass
+  category: electronic
+  synonyms:
+    - "uk garage"
+    - "garage"
+    - "speed garage"
+    - "2-step"
+    - "2 step"
+    - "2step"
+    - "bassline"
+
 DUBSTEP:
   label: "Dubstep"
+  family: Bass
   category: electronic
-  boost: 1.8
   synonyms:
     - "dubstep"
     - "brostep"
     - "riddim"
-    - "future bass"
     - "uk bass"
 
-BREAKBEAT:
-  label: "Breakbeat"
+TRAP:
+  label: "Trap"
+  family: Bass
   category: electronic
-  boost: 1.5
   synonyms:
-    - "breakbeat"
-    - "breakbeats"
-    - "breaks"
-    - "breaks mix"
-    - "nu skool breaks"
-    - "nuskool breaks"
-    - "big beat"
+    - "trap"
+    - "edm trap"
+    - "festival trap"
+    - "trap edm"
+    - "trap music"
 
-# ── ELECTRONIC: DISCO & DANCE ──────────────────────────────────────────────
-
-ELECTRO_SWING:
-  label: "Electro Swing"
-  category: electronic
-  boost: 1.8
-  synonyms:
-    - "electro swing"
-    - "electro-swing"
-    - "electroswing"
-    - "swing house"
-    - "swing electro"
-
-DISCO:
-  label: "Disco"
-  category: electronic
-  boost: 1.8
-  synonyms:
-    - "disco"
-    - "classic disco"
-    - "70s disco"
-    - "80s disco"
-    - "disco 70s"
-    - "disco 80s"
-
-NU_DISCO:
-  label: "Nu Disco"
-  category: electronic
-  boost: 1.8
-  synonyms:
-    - "nu disco"
-    - "nu-disco"
-    - "nudisco"
-    - "Nu Disco / Disco" # Beatport genre ID 50
-    - "disco house"
-    - "modern disco"
-    - "disco edit"
-    - "funky edit"
-
-ITALO_DISCO:
-  label: "Italo Disco"
-  category: electronic
-  boost: 2.0
-  synonyms:
-    - "italo disco"
-    - "italo-disco"
-    - "italodisco"
-    - "euro disco"
-    - "hi-nrg"
-    - "hi nrg"
-    - "eurobeat"
-
-INDIE_DANCE:
-  label: "Indie Dance"
-  category: electronic
-  boost: 1.8
-  synonyms:
-    - "indie dance"
-    - "indie dance / nu disco" # Beatport compound
-
-DANCE:
-  label: "Dance"
-  category: electronic
-  boost: 1.0
-  synonyms:
-    - "dance"
-    - "dance music"
-    - "club"
-    - "club music"
+# ── ELECTRONIC: DANCE & GENERAL ────────────────────────────────────────────
 
 EURODANCE:
   label: "Eurodance"
+  family: Dance
   category: electronic
-  boost: 2.0
   synonyms:
     - "eurodance"
     - "euro dance"
@@ -344,13 +269,25 @@ EURODANCE:
     - "90s dance"
     - "90s eurodance"
     - "hands up"
+    - "happy hardcore"
+    - "uk hardcore"
+
+IDM:
+  label: "IDM"
+  family: Ambient
+  category: electronic
+  synonyms:
+    - "idm"
+    - "intelligent dance music"
+    - "glitch"
+    - "experimental electronic"
 
 # ── ELECTRONIC: OTHER ──────────────────────────────────────────────────────
 
 SYNTHWAVE:
   label: "Synthwave"
+  family: Synth
   category: electronic
-  boost: 1.8
   synonyms:
     - "synthwave"
     - "retrowave"
@@ -360,30 +297,19 @@ SYNTHWAVE:
 
 SYNTHPOP:
   label: "Synthpop"
+  family: Synth
   category: electronic
-  boost: 1.8
   synonyms:
-    - "synth pop"
     - "synthpop"
+    - "synth pop"
     - "synth-pop"
     - "electropop"
     - "electro pop"
 
-ELECTRONICA:
-  label: "Electronica"
-  category: electronic
-  boost: 1.0
-  synonyms:
-    - "electronica"
-    - "electronic"
-    - "edm"
-    - "electro"
-    - "idm"
-
 AMBIENT:
   label: "Ambient"
+  family: Ambient
   category: electronic
-  boost: 1.5
   synonyms:
     - "ambient"
     - "downtempo"
@@ -392,14 +318,46 @@ AMBIENT:
     - "lo-fi"
     - "lofi"
 
-# ── POP ────────────────────────────────────────────────────────────────────
+INDIE_DANCE:
+  label: "Indie Dance"
+  family: House
+  category: electronic
+  synonyms:
+    - "indie dance"
+    - "indie dance / nu disco"
+
+ELECTRO_SWING:
+  label: "Electro Swing"
+  family: Dance
+  category: electronic
+  synonyms:
+    - "electro swing"
+    - "electro-swing"
+    - "electroswing"
+    - "swing house"
+
+TRIP_HOP:
+  label: "Trip Hop"
+  family: Ambient
+  category: electronic
+  synonyms:
+    - "trip hop"
+    - "trip-hop"
+    - "triphop"
+    - "bristol sound"
+    - "abstract hip hop"
+    - "abstract hip-hop"
+    - "downtempo beats"
+
+# ── POP / 80s ALTERNATIVE ─────────────────────────────────────────────────
 
 POP:
   label: "Pop"
+  family: Pop
   category: pop
-  boost: 1.0
   synonyms:
     - "pop"
+    - "pop music"
     - "dance pop"
     - "mainstream pop"
     - "chart pop"
@@ -408,8 +366,8 @@ POP:
 
 INDIE_POP:
   label: "Indie Pop"
+  family: Pop
   category: pop
-  boost: 1.8
   synonyms:
     - "indie pop"
     - "indiepop"
@@ -420,14 +378,20 @@ INDIE_POP:
     - "bedroom pop"
     - "art pop"
 
-NEW_WAVE:
-  label: "New Wave"
+POST_PUNK:
+  label: "Post-Punk"
+  family: Rock
   category: pop
-  boost: 1.8
   synonyms:
-    - "new wave"
     - "post-punk"
     - "post punk"
+
+NEW_WAVE:
+  label: "New Wave"
+  family: Pop
+  category: pop
+  synonyms:
+    - "new wave"
     - "new wave pop"
     - "new romantic"
     - "new romantics"
@@ -436,30 +400,22 @@ NEW_WAVE:
 
 ROCK:
   label: "Rock"
+  family: Rock
   category: rock
-  boost: 1.0
   synonyms:
     - "rock"
     - "rock music"
     - "pop rock"
     - "hard rock"
     - "classic rock"
-
-ALTERNATIVE_ROCK:
-  label: "Alternative Rock"
-  category: rock
-  boost: 1.5
-  synonyms:
-    - "alternative rock"
-    - "alt rock"
-    - "alt-rock"
-    - "modern rock"
-    - "college rock"
+    - "metal"
+    - "heavy metal"
+    - "nu metal"
 
 INDIE_ROCK:
   label: "Indie Rock"
+  family: Rock
   category: rock
-  boost: 1.5
   synonyms:
     - "indie rock"
     - "indie-rock"
@@ -467,8 +423,8 @@ INDIE_ROCK:
 
 ROCK_N_ROLL:
   label: "Rock 'n' Roll"
+  family: Rock
   category: rock
-  boost: 2.0
   synonyms:
     - "rock & roll"
     - "rock n roll"
@@ -477,25 +433,11 @@ ROCK_N_ROLL:
     - "rock and roll"
     - "rockabilly"
     - "50s rock"
-    - "50s rock and roll"
-
-METAL:
-  label: "Metal"
-  category: rock
-  boost: 1.8
-  synonyms:
-    - "metal"
-    - "heavy metal"
-    - "death metal"
-    - "black metal"
-    - "thrash metal"
-    - "nu metal"
-    - "metalcore"
 
 PUNK:
   label: "Punk"
+  family: Rock
   category: rock
-  boost: 1.8
   synonyms:
     - "punk"
     - "punk rock"
@@ -508,14 +450,13 @@ PUNK:
 
 HIP_HOP:
   label: "Hip-Hop"
+  family: Hip-Hop
   category: urban
-  boost: 1.5
   synonyms:
     - "hip hop"
     - "hip-hop"
     - "hiphop"
     - "rap"
-    - "trap"
     - "trap rap"
     - "drill"
     - "gangsta rap"
@@ -524,8 +465,8 @@ HIP_HOP:
 
 RNB:
   label: "R&B"
+  family: Hip-Hop
   category: urban
-  boost: 1.5
   synonyms:
     - "r&b"
     - "rnb"
@@ -534,73 +475,75 @@ RNB:
     - "rhythm and blues"
     - "contemporary r&b"
     - "slow jam"
-    - "slow jams"
 
 # ── CARIBBEAN / LATIN ──────────────────────────────────────────────────────
 
-LATIN:
-  label: "Latin"
-  category: caribbean
-  boost: 1.5
-  synonyms:
-    - "latin"
-    - "latin pop"
-    - "latino"
-    - "latino pop"
-    - "latin urban"
-    - "latino urban"
-    - "bachata"
-    - "salsa"
-    - "salsa cubana"
-    - "merengue"
-
-KUDURO:
-  label: "Kuduro"
-  category: caribbean
-  boost: 1.8
-  synonyms:
-    - "kuduro"
-    - "afro kuduro"
-
 REGGAETON:
   label: "Reggaeton"
+  family: Latin
   category: caribbean
-  boost: 1.8
   synonyms:
     - "reggaeton"
     - "reggaetón"
     - "dembow"
     - "moombahton"
 
+LATIN_POP:
+  label: "Latin Pop"
+  family: Latin
+  category: caribbean
+  synonyms:
+    - "latin pop"
+    - "latino pop"
+    - "bachata"
+    - "salsa"
+    - "merengue"
+
 REGGAE:
   label: "Reggae"
+  family: Caribbean
   category: caribbean
-  boost: 1.5
   synonyms:
     - "reggae"
     - "roots reggae"
     - "roots"
     - "dub"
-    - "ska"
     - "rocksteady"
 
 DANCEHALL:
   label: "Dancehall"
+  family: Caribbean
   category: caribbean
-  boost: 1.8
   synonyms:
     - "dancehall"
     - "bashment"
     - "ragga"
     - "dancehall reggae"
-    - "jamaican dancehall"
+
+SKA:
+  label: "Ska"
+  family: Caribbean
+  category: caribbean
+  synonyms:
+    - "ska"
+    - "ska punk"
+    - "two-tone"
+    - "2 tone"
+
+KUDURO:
+  label: "Kuduro"
+  family: Caribbean
+  category: caribbean
+  synonyms:
+    - "kuduro"
+    - "afro kuduro"
 
 # ── WORLD / REGIONAL ──────────────────────────────────────────────────────
 
 AFROBEATS:
   label: "Afrobeats"
+  family: World
   category: world
-  boost: 1.8
   synonyms:
     - "afrobeats"
     - "afrobeat"
@@ -609,34 +552,29 @@ AFROBEATS:
     - "afro pop"
     - "afropop"
     - "naija"
-    - "naija pop"
-    - "naija afrobeats"
 
 BALKAN:
   label: "Balkan"
+  family: World
   category: world
-  boost: 1.8
   synonyms:
     - "balkan"
     - "balkan beats"
     - "balkan music"
-    - "balkan party"
     - "balkan brass"
+    - "gypsy brass"
 
-# ── JAZZ / SWING ──────────────────────────────────────────────────────────
+# ── JAZZ ──────────────────────────────────────────────────────────────────
 
 JAZZ:
   label: "Jazz"
+  family: Jazz
   category: jazz
-  boost: 1.5
   synonyms:
     - "jazz"
     - "swing"
     - "big band"
     - "big-band"
-    - "bigband"
-    - "jazz swing"
-    - "vocal swing"
     - "bebop"
     - "cool jazz"
     - "jazz fusion"
@@ -645,22 +583,35 @@ JAZZ:
 
 # ── FUNK / SOUL / BLUES ───────────────────────────────────────────────────
 
+DISCO:
+  label: "Disco"
+  family: Funk/Soul
+  category: other
+  synonyms:
+    - "disco"
+    - "classic disco"
+    - "70s disco"
+    - "80s disco"
+    - "italo disco"
+    - "italo-disco"
+    - "euro disco"
+    - "hi-nrg"
+    - "eurobeat"
+
 FUNK:
   label: "Funk"
+  family: Funk/Soul
   category: other
-  boost: 1.5
   synonyms:
     - "funk"
     - "funky"
-    - "funky music"
     - "p-funk"
     - "g-funk"
-    - "funky soul"
 
 SOUL:
   label: "Soul"
+  family: Funk/Soul
   category: other
-  boost: 1.5
   synonyms:
     - "soul"
     - "neo-soul"
@@ -670,8 +621,8 @@ SOUL:
 
 BLUES:
   label: "Blues"
+  family: Funk/Soul
   category: other
-  boost: 1.5
   synonyms:
     - "blues"
     - "electric blues"

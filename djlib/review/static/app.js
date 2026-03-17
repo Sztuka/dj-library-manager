@@ -29,6 +29,11 @@
   let sortKey = null;
   let sortDir = 1; // 1 = ascending, -1 = descending
 
+  // Helper: is the current source editable?
+  function isEditableSource() {
+    return currentSource === "unsorted" || currentSource === "library-review" || currentSource === "library-fix";
+  }
+
   // Auto-play on navigation
   let autoPlay = false;
 
@@ -117,6 +122,27 @@
   const identifyBannerDismiss = document.getElementById(
     "identify-banner-dismiss",
   );
+  const classifyBanner = document.getElementById("classify-banner");
+  const classifyBannerArtist = document.getElementById(
+    "classify-banner-artist",
+  );
+  const classifyBannerTitle = document.getElementById("classify-banner-title");
+  const classifyBannerVersion = document.getElementById(
+    "classify-banner-version",
+  );
+  const classifyBannerGenre = document.getElementById("classify-banner-genre");
+  const classifyBannerConfidence = document.getElementById(
+    "classify-banner-confidence",
+  );
+  const classifyBannerReasoning = document.getElementById(
+    "classify-banner-reasoning",
+  );
+  const classifyBannerAccept = document.getElementById(
+    "classify-banner-accept",
+  );
+  const classifyBannerDismiss = document.getElementById(
+    "classify-banner-dismiss",
+  );
   const aiChatPanel = document.getElementById("ai-chat-panel");
   const aiChatTitle = document.getElementById("ai-chat-title");
   const aiChatMessages = document.getElementById("ai-chat-messages");
@@ -162,6 +188,8 @@
   let enrichBannerTrack = null;
   let identifyPending = false;
   let identifyBannerTrack = null;
+  let classifyPending = false;
+  let classifyBannerTrack = null;
   let chatPending = false;
   let chatTrack = null; // track the chat panel is open for
   let scrapePending = false;
@@ -232,6 +260,43 @@
         type: "in-dj-badge",
       },
     ],
+    "library-review": [
+      { key: "_index", label: "#", width: "36px" },
+      { key: "artist", label: "Artist", width: "14%", type: "editable" },
+      { key: "title", label: "Title", width: "15%", type: "editable" },
+      { key: "version_info", label: "Version", width: "10%", type: "editable" },
+      { key: "genre", label: "Genre", width: "10%", type: "genre-select" },
+      {
+        key: "year",
+        label: "Year",
+        width: "48px",
+        type: "editable",
+        cls: "col-bpm",
+      },
+      { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
+      { key: "key_camelot", label: "Key", width: "40px", cls: "col-key" },
+      { key: "rating", label: "Rating", width: "72px", type: "rating" },
+      { key: "rekordbox_id", label: "RB", width: "36px", cls: "col-bpm" },
+      { key: "traktor_id", label: "TK", width: "36px", cls: "col-bpm" },
+      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+    ],
+    "library-fix": [
+      { key: "_index", label: "#", width: "32px" },
+      { key: "artist", label: "Artist", width: "11%", type: "editable" },
+      { key: "title", label: "Title", width: "12%", type: "editable" },
+      { key: "version_info", label: "Version", width: "8%", type: "editable" },
+      { key: "genre", label: "Genre", width: "9%", type: "genre-select" },
+      { key: "year", label: "Year", width: "40px", type: "editable", cls: "col-bpm" },
+      { key: "bpm", label: "BPM", width: "40px", cls: "col-bpm" },
+      { key: "key_camelot", label: "Key", width: "36px", cls: "col-key" },
+      { key: "ai_artist", label: "AI Artist", width: "11%", cls: "col-ai" },
+      { key: "ai_title", label: "AI Title", width: "12%", cls: "col-ai" },
+      { key: "ai_version", label: "AI Ver", width: "8%", cls: "col-ai" },
+      { key: "ai_genre", label: "AI Genre", width: "8%", cls: "col-ai" },
+      { key: "ai_confidence", label: "Conf", width: "40px", cls: "col-ai col-bpm" },
+      { key: "status", label: "Status", width: "60px", type: "status-badge" },
+      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+    ],
   };
 
   // -- Helpers ------------------------------------------------
@@ -296,7 +361,7 @@
   }
 
   function setRatingForCurrent(stars) {
-    if (currentSource !== "unsorted") return;
+    if (!isEditableSource()) return;
     if (currentIndex < 0 || currentIndex >= filteredTracks.length) return;
     var track = filteredTracks[currentIndex];
     var current = parseInt(track.rating) || 0;
@@ -808,7 +873,7 @@
         } else if (col.type === "rating") {
           td.classList.add("col-rating");
           td.innerHTML = ratingToStars(track[col.key]);
-          if (currentSource === "unsorted") {
+          if (isEditableSource()) {
             td.classList.add("col-rating-editable");
             td.addEventListener(
               "click",
@@ -1092,6 +1157,20 @@
           escHtml(track.genre_suggest) +
           "</span>",
       );
+    // AI batch classify results (from library review or batch scripts)
+    if (track.ai_genre) {
+      var aiLabel = 'AI: ' + escHtml(track.ai_genre);
+      if (track.ai_confidence) aiLabel += ' (' + Math.round(track.ai_confidence * 100) + '%)';
+      parts.push(
+        '<span class="gs gs-ai clickable" data-genre="' +
+          escHtml(track.ai_genre).replace(/"/g, '&quot;') +
+          '" data-ai-artist="' + escHtml(track.ai_artist || '').replace(/"/g, '&quot;') +
+          '" data-ai-title="' + escHtml(track.ai_title || '').replace(/"/g, '&quot;') +
+          '" data-ai-version="' + escHtml(track.ai_version || '').replace(/"/g, '&quot;') +
+          '" title="' + escHtml(track.ai_reasoning || '').replace(/"/g, '&quot;') +
+          '">' + aiLabel + '</span>',
+      );
+    }
     genreSources.innerHTML = parts.join("");
 
     // Make genre suggestion clickable to apply it
@@ -1102,16 +1181,24 @@
           applyGenreSuggestionFromBadge(el);
         });
       });
+    // Make AI batch suggestion clickable to apply all AI fields
+    genreSources
+      .querySelectorAll(".gs-ai.clickable")
+      .forEach(function (el) {
+        el.addEventListener("click", function () {
+          applyAiBatchSuggestion(el);
+        });
+      });
   }
 
   function applyGenreSuggestionFromBadge(el) {
     const g = el.dataset.genre;
-    if (!g || currentSource !== "unsorted" || currentIndex < 0) return;
+    if (!g || !isEditableSource() || currentIndex < 0) return;
     const t = filteredTracks[currentIndex];
     t.genre = g;
     saveTrackField(t, "genre", g);
     showToast("Genre: " + g, "");
-    const cols = COLUMNS.unsorted;
+    const cols = COLUMNS[currentSource] || COLUMNS.unsorted;
     const genreColIdx = cols.findIndex(function (c) {
       return c.key === "genre";
     });
@@ -1122,8 +1209,57 @@
     }
   }
 
+  function applyAiBatchSuggestion(el) {
+    if (!isEditableSource() || currentIndex < 0) return;
+    var t = filteredTracks[currentIndex];
+    var genre = el.dataset.genre;
+    var artist = el.dataset.aiArtist;
+    var title = el.dataset.aiTitle;
+    var version = el.dataset.aiVersion;
+    var fields = [];
+    if (genre && genre !== t.genre) {
+      t.genre = genre;
+      saveTrackField(t, 'genre', genre);
+      fields.push('genre');
+    }
+    if (artist && artist !== t.artist) {
+      t.artist = artist;
+      saveTrackField(t, 'artist', artist);
+      fields.push('artist');
+    }
+    if (title && title !== t.title) {
+      t.title = title;
+      saveTrackField(t, 'title', title);
+      fields.push('title');
+    }
+    if (version && version !== t.version_info) {
+      t.version_info = version;
+      saveTrackField(t, 'version_info', version);
+      fields.push('version');
+    }
+    if (fields.length) {
+      showToast('AI applied: ' + fields.join(', '), '');
+      // Refresh row cells
+      var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
+      var row = tableBody.children[currentIndex];
+      if (row) {
+        cols.forEach(function(col, ci) {
+          if (col.key === 'genre') {
+            var sel = row.children[ci].querySelector('select');
+            if (sel) sel.value = genre || '';
+          } else if (['artist', 'title', 'version_info'].indexOf(col.key) >= 0) {
+            row.children[ci].textContent = t[col.key] || '';
+            row.children[ci].title = t[col.key] || '';
+          }
+        });
+      }
+    } else {
+      showToast('AI: no changes needed', '');
+    }
+  }
+
   function applyGenreSuggestion() {
-    if (currentIndex < 0 || currentSource !== "unsorted") return;
+    if (currentIndex < 0 || !isEditableSource()) return;
     const track = filteredTracks[currentIndex];
     const g = track.genre_suggest;
     if (!g) {
@@ -1133,7 +1269,7 @@
     track.genre = g;
     saveTrackField(track, "genre", g);
     showToast("Genre: " + g, "");
-    const cols = COLUMNS.unsorted;
+    const cols = COLUMNS[currentSource] || COLUMNS.unsorted;
     const genreColIdx = cols.findIndex(function (c) {
       return c.key === "genre";
     });
@@ -1304,6 +1440,9 @@
         break;
       case "identify-track":
         requestAiIdentify(contextTrack);
+        break;
+      case "ai-classify":
+        requestAiClassify(contextTrack);
         break;
       case "ai-chat":
         openAiChat(contextTrack);
@@ -1960,6 +2099,141 @@
     hideIdentifyBanner();
   });
 
+  // -- Unified AI Classify (naming + genre in one call) -------
+
+  function requestAiClassify(track) {
+    if (!track || classifyPending) return;
+    if (!aiAvailable) {
+      showToast(
+        "AI not configured (add openai_api_key to config.local.yml)",
+        "",
+      );
+      return;
+    }
+
+    classifyPending = true;
+    classifyBannerTrack = track;
+
+    // Show loading state
+    classifyBanner.classList.remove("hidden");
+    classifyBanner.classList.add("classify-loading");
+    classifyBannerArtist.textContent = "Classifying…";
+    classifyBannerTitle.textContent = "";
+    classifyBannerVersion.textContent = "";
+    classifyBannerGenre.textContent = "";
+    classifyBannerConfidence.textContent = "";
+    classifyBannerReasoning.textContent = "";
+    classifyBannerAccept.style.display = "none";
+    classifyBannerDismiss.style.display = "inline-block";
+
+    fetch("/api/ai-classify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: trackId(track), source: currentSource }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (data) {
+        classifyPending = false;
+        classifyBanner.classList.remove("classify-loading");
+
+        if (data.error) {
+          showToast("Classify error: " + data.error, "");
+          hideClassifyBanner();
+          return;
+        }
+
+        classifyBannerArtist.textContent = data.artist || "?";
+        classifyBannerTitle.textContent = data.title || "?";
+
+        // Version is an array — display as (Token1) (Token2)
+        var versionArr = data.version || [];
+        if (typeof versionArr === "string") versionArr = versionArr ? [versionArr] : [];
+        var versionDisplay = versionArr
+          .map(function (v) {
+            return "(" + v + ")";
+          })
+          .join(" ");
+        classifyBannerVersion.textContent = versionDisplay;
+
+        classifyBannerGenre.textContent = data.genre || "";
+        var conf = data.confidence
+          ? Math.round(data.confidence * 100) + "%"
+          : "";
+        classifyBannerConfidence.textContent = conf;
+        classifyBannerReasoning.textContent = data.reasoning || "";
+        classifyBannerReasoning.title = data.reasoning || "";
+
+        if (data.genre_warning) {
+          classifyBannerReasoning.textContent += " ⚠ " + data.genre_warning;
+        }
+
+        // Store data for Accept
+        classifyBannerAccept.dataset.artist = data.artist || "";
+        classifyBannerAccept.dataset.title = data.title || "";
+        // Store version as comma-separated for CSV (each token separate)
+        classifyBannerAccept.dataset.version = versionArr.join(", ");
+        classifyBannerAccept.dataset.genre = data.genre || "";
+        classifyBannerAccept.style.display = "inline-block";
+      })
+      .catch(function (err) {
+        classifyPending = false;
+        classifyBanner.classList.remove("classify-loading");
+        showToast("Classify request failed", "");
+        hideClassifyBanner();
+      });
+  }
+
+  function hideClassifyBanner() {
+    classifyBanner.classList.add("hidden");
+    classifyBanner.classList.remove("classify-loading");
+    classifyBannerTrack = null;
+  }
+
+  // Accept classify result — saves all fields at once
+  classifyBannerAccept.addEventListener("click", function () {
+    if (!classifyBannerTrack) return;
+
+    var newArtist = classifyBannerAccept.dataset.artist || "";
+    var newTitle = classifyBannerAccept.dataset.title || "";
+    var newVersion = classifyBannerAccept.dataset.version || "";
+    var newGenre = classifyBannerAccept.dataset.genre || "";
+
+    if (newArtist) {
+      classifyBannerTrack.artist = newArtist;
+      saveTrackField(classifyBannerTrack, "artist", newArtist);
+    }
+    if (newTitle) {
+      classifyBannerTrack.title = newTitle;
+      saveTrackField(classifyBannerTrack, "title", newTitle);
+    }
+    if (newVersion !== undefined) {
+      classifyBannerTrack.version_info = newVersion;
+      saveTrackField(classifyBannerTrack, "version_info", newVersion);
+    }
+    if (newGenre) {
+      classifyBannerTrack.genre = newGenre;
+      saveTrackField(classifyBannerTrack, "genre", newGenre);
+    }
+
+    renderTable();
+    var idx = filteredTracks.indexOf(classifyBannerTrack);
+    if (idx >= 0) selectRow(idx);
+
+    var ver = newVersion ? " " + newVersion.split(", ").map(function(v) { return "(" + v + ")"; }).join(" ") : "";
+    showToast(
+      newArtist + " \u2014 " + newTitle + ver + " [" + newGenre + "]",
+      "",
+    );
+    hideClassifyBanner();
+  });
+
+  // Dismiss classify banner
+  classifyBannerDismiss.addEventListener("click", function () {
+    hideClassifyBanner();
+  });
+
   // -- AI Chat ------------------------------------------------
 
   function openAiChat(track) {
@@ -2528,7 +2802,7 @@
 
   // -- Save (debounced, merging multiple field changes) -------
   function saveTrackField(track, key, value) {
-    if (currentSource !== "unsorted") return;
+    if (currentSource !== "unsorted" && currentSource !== "library-review" && currentSource !== "library-fix") return;
     const id = trackId(track);
     if (!id) return;
 
@@ -2544,7 +2818,7 @@
       fetch("/api/tracks/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: id, fields: fields }),
+        body: JSON.stringify({ track_id: id, fields: fields, source: currentSource }),
       }).catch(function (e) {
         console.error("Save failed:", e);
       });
@@ -2580,7 +2854,7 @@
       fetch("/api/tracks/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: id, fields: { [k]: v } }),
+        body: JSON.stringify({ track_id: id, fields: { [k]: v }, source: currentSource }),
       }).catch(function (e) {
         console.error("Undo save failed:", e);
       });
@@ -2598,7 +2872,7 @@
 
   // -- Status / actions ---------------------------------------
   function setStatus(status) {
-    if (currentSource !== "unsorted") return;
+    if (!isEditableSource()) return;
 
     const targets = [];
     if (selectedSet.size > 0) {
@@ -2671,7 +2945,7 @@
   }
 
   function toggleDone() {
-    if (currentIndex < 0 || currentSource !== "unsorted") return;
+    if (currentIndex < 0 || !isEditableSource()) return;
     const track = filteredTracks[currentIndex];
     const newVal = track.done === "TRUE" ? "FALSE" : "TRUE";
     track.done = newVal;
