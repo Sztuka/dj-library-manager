@@ -54,7 +54,7 @@ TF_MODELS_DIR = PROJECT_ROOT / "models" / "essentia-tf"
 
 ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+E2", "mini+E2", "full+E2",
-                "nano+EI",
+                "nano+EI", "nano+EI3",
                 "nano+WS", "nano+EI+WS",
                 "nano+D400", "mini+D400", "full+D400"]
 
@@ -676,6 +676,63 @@ def interpret_audio_features(
         return ""
 
 
+def interpret_audio_features_v3(
+    features: Dict[str, Any],
+    bpm: str,
+    key: str,
+    api_key: str,
+    model: str = "gpt-5-nano",
+) -> str:
+    """Use LLM to interpret raw Essentia features into 5 diagnostic answers (v3).
+
+    v3 uses diagnostic questions instead of abstract descriptors:
+    - Q1: Kick/drum pattern type
+    - Q2: Production style
+    - Q3: Frequency character
+    - Q4: Texture and atmosphere
+    - Q5: Harmonic content
+
+    Returns formatted text with 5 diagnostic answers.
+    Returns empty string on failure.
+    """
+    feature_input = _prepare_interpreter_input(features, bpm, key)
+    if not feature_input:
+        return ""
+
+    # Load v3 interpreter prompt template
+    prompt_path = AB_DIR / "prompts" / "interpreter_essentia_v3.md"
+    if not prompt_path.exists():
+        print(f"  ⚠️  Interpreter v3 prompt not found: {prompt_path}")
+        return ""
+    prompt_template = prompt_path.read_text(encoding="utf-8")
+
+    # Load audio features reference sheet and inject
+    ref_path = AB_DIR / "audio_features.md"
+    if not ref_path.exists():
+        print(f"  ⚠️  Audio features reference not found: {ref_path}")
+        return ""
+    reference = ref_path.read_text(encoding="utf-8")
+    system_prompt = prompt_template.replace("{audio_features_reference}", reference)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Diagnose these audio features:\n\n{feature_input}"},
+    ]
+
+    try:
+        text = _call_openai_text(api_key, messages, model)
+        # Validate we got at least 3/5 diagnostic answers
+        expected_keys = ["Kick/drums:", "Production:", "Frequency:", "Texture:", "Harmony:"]
+        found = sum(1 for k in expected_keys if k in text)
+        if found < 3:
+            print(f"  ⚠️  Interpreter v3 returned only {found}/5 answers")
+        # Wrap with v3-specific prefix for build_prompt() detection
+        return "Audio diagnostic (Essentia → interpreted v3):\n" + text.strip()
+    except Exception as e:
+        print(f"  ❌ Interpreter v3 API error: {e}")
+        return ""
+
+
 # ── Discogs400 deep learning analysis ───────────────────────────────────────
 
 # Module-level singletons for TF models (loaded once, reused across tracks)
@@ -965,6 +1022,16 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
             "When the audio analysis and metadata agree, be confident. "
             "When they differ, consider that remixes transform the sound — trust the audio genre for the remix's actual style."
         )
+    elif audio_desc and audio_desc.startswith("Audio diagnostic (Essentia"):
+        # EI v3 format — diagnostic questions (kick pattern, production, frequency, texture, harmony)
+        audio_signal_line = (
+            "\n* AUDIO DIAGNOSTIC (Essentia → interpreted v3) — 5 diagnostic answers about what "
+            "this track SOUNDS LIKE, derived from computational audio analysis. Describes the "
+            "kick/drum pattern, production style, frequency character, texture, and harmonic content "
+            "WITHOUT naming genres. Use these concrete sonic characteristics to inform the genre "
+            "decision, especially to distinguish between similar subgenres (e.g., the kick pattern "
+            "and frequency character can separate House subtypes)."
+        )
     elif audio_desc and audio_desc.startswith("Audio character (Essentia"):
         # EI format — LLM-interpreted sonic description (no genre names, objective)
         # SK-1 fix: symmetric framing with WS — both use "inform the genre decision"
@@ -1214,11 +1281,15 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
     essentia_v2_variants = [v for v in variants if "+E2" in v]
     essentia_cache_v2: Dict[str, str] = {}  # path -> audio_description v2
 
-    essentia_interp_variants = [v for v in variants if "+EI" in v]
-    essentia_interp_cache: Dict[str, str] = {}  # path -> interpreted description
+    essentia_interp_variants = [v for v in variants if "+EI" in v and "+EI3" not in v]
+    essentia_interp_cache: Dict[str, str] = {}  # path -> interpreted description (v1)
+
+    essentia_interp3_variants = [v for v in variants if "+EI3" in v]
+    essentia_interp3_cache: Dict[str, str] = {}  # path -> interpreted description (v3 diagnostic)
+
     essentia_raw_cache: Dict[str, Dict[str, Any]] = {}  # path -> raw features (for interpreter)
 
-    needs_essentia = essentia_variants or essentia_v2_variants or essentia_interp_variants
+    needs_essentia = essentia_variants or essentia_v2_variants or essentia_interp_variants or essentia_interp3_variants
 
     if needs_essentia:
         print("🔬 Loading cached Essentia audio features...\n")
@@ -1231,6 +1302,8 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 if essentia_v2_variants:
                     essentia_cache_v2[t["path"]] = describe_audio_features_v2(features)
                 if essentia_interp_variants:
+                    essentia_raw_cache[t["path"]] = features
+                if essentia_interp3_variants:
                     essentia_raw_cache[t["path"]] = features
                 essentia_ok += 1
             else:
@@ -1273,6 +1346,40 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 print(f"❌ {elapsed:.1f}s")
             time.sleep(0.3)  # Rate limit
         print(f"\n   Interpreter: {interp_ok} OK, {interp_fail} failed\n")
+
+    # Pre-run Essentia interpreter v3 (diagnostic questions) if needed
+    if essentia_interp3_variants and essentia_raw_cache:
+        print("🧠 Running Essentia interpreter v3 (diagnostic questions)...\n")
+        interp3_ok = interp3_fail = 0
+        for i, t in enumerate(tracks):
+            features = essentia_raw_cache.get(t["path"])
+            if not features:
+                essentia_interp3_cache[t["path"]] = ""
+                interp3_fail += 1
+                print(f"  [{i+1}/{len(tracks)}] {t['filename'][:55]}... ❌ no features")
+                continue
+
+            meta = extract_metadata_from_filename(t["filename"])
+            tag_bpm = read_bpm_from_audio_tag(t["path"])
+            bpm = tag_bpm or meta.get("bpm", "")
+            key = features.get("key_camelot", "")
+
+            print(f"  [{i+1}/{len(tracks)}] {t['filename'][:55]}...", end=" ", flush=True)
+            t0 = time.time()
+            desc = interpret_audio_features_v3(features, bpm, key, api_key)
+            elapsed = time.time() - t0
+
+            if desc:
+                essentia_interp3_cache[t["path"]] = desc
+                interp3_ok += 1
+                first_line = desc.split("\n")[1] if "\n" in desc else desc[:60]
+                print(f"✅ {elapsed:.1f}s → {first_line[:60]}")
+            else:
+                essentia_interp3_cache[t["path"]] = ""
+                interp3_fail += 1
+                print(f"❌ {elapsed:.1f}s")
+            time.sleep(0.3)  # Rate limit
+        print(f"\n   Interpreter v3: {interp3_ok} OK, {interp3_fail} failed\n")
 
     # Pre-run Discogs400 deep learning analysis if needed
     discogs_variants = [v for v in variants if "+D400" in v]
@@ -1402,15 +1509,18 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 continue
 
             use_d400 = "+D400" in variant
-            use_essentia_interp = "+EI" in variant
+            use_essentia_interp3 = "+EI3" in variant
+            use_essentia_interp = "+EI" in variant and not use_essentia_interp3
             use_essentia_v2 = "+E2" in variant
-            use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp
+            use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp and not use_essentia_interp3
             use_ws = "+WS" in variant
-            model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+            model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI3", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
             model_name = MODEL_TIERS[model_key]
 
             if use_d400:
                 audio_desc = discogs_cache.get(t["path"], "")
+            elif use_essentia_interp3:
+                audio_desc = essentia_interp3_cache.get(t["path"], "")
             elif use_essentia_interp:
                 audio_desc = essentia_interp_cache.get(t["path"], "")
             elif use_essentia_v2:
@@ -1528,7 +1638,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI3", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)
