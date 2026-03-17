@@ -23,6 +23,7 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -929,7 +930,7 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         )
 
     bpm_guide = (
-        "\n\nBPM genre ranges (approximate, ranges overlap — use together with other signals):\n"
+        "\n\nBPM genre ranges (approximate — ONLY for electronic/dance productions, NOT for rock/pop/hip-hop/etc.):\n"
         "70-100: Hip-Hop, R&B, Reggaeton, Dancehall\n"
         "100-115: UK Garage, Afrobeats\n"
         "115-126: Deep House\n"
@@ -938,7 +939,19 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         "124-132: Melodic Techno, Progressive House\n"
         "128-140: Techno, Hard Techno, Trance\n"
         "140-150: Psytrance\n"
-        "150-180: Drum & Bass"
+        "150-180: Drum & Bass\n"
+        "\n"
+        "WARNING: BPM is UNRELIABLE for non-electronic genres. A rock song at 153 BPM is still Rock, "
+        "NOT Drum & Bass. When the artist is clearly non-electronic, IGNORE the BPM ranges above.\n"
+        "BPM values >140 may be double-time detection errors (actual BPM = value/2). "
+        "Consider this for hip-hop, reggaeton, rock, pop, and other non-fast genres.\n"
+        "\n"
+        "House subgenre hints (when BPM 118-130 and genre family is House):\n"
+        "- Deep House: melodic, warm, often vocal, jazzy/soulful chords, slower groove\n"
+        "- Tech House: groovy, minimal, repetitive, percussive, functional DJ tool\n"
+        "- Afro House: African percussion patterns, tribal rhythms, organic textures\n"
+        "- Disco House: disco samples, funky basslines, filtered disco loops\n"
+        "- House (generic): only when no subgenre signal is strong enough"
     )
 
     audio_signal_line = ""
@@ -978,25 +991,46 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
     if web_search_context and not web_search_context.startswith("(No web search"):
         # SK-1 fix: symmetric framing with EI — both use "inform the genre decision"
         # DJ-2 fix: Beatport "strong evidence" → "reliable indicator" + taxonomy caveat
+        # v3 fix: remix leak warning — WS may find remixes of the original track
+        remix_leak_warning = ""
+        if not is_remix:
+            remix_leak_warning = (
+                " IMPORTANT: This track is NOT a remix. If web results mention remixes or "
+                "alternative versions, classify based on the ORIGINAL track's genre, not the remix's."
+            )
         web_search_signal = (
-            "\n* WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites. "
+            "\n3. WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites. "
             "Genre labels from Beatport, Discogs, and other sources are a reliable indicator but may "
             "reflect the source's own taxonomy (not ours). Use all web results to inform the genre decision."
+            f"{remix_leak_warning}\n"
         )
+
+    # BPM signal number depends on whether WS is present
+    bpm_signal_num = "4" if web_search_signal else "3"
 
     system_prompt = (
         f"You are an expert DJ music classifier. Classify tracks into exactly ONE of these genres:\n"
         f"{genre_list}\n\n"
+        # v3: explicit signal priority hierarchy
         # PE-2 fix: "ALL" → "the following" (truthful for every variant)
         # TX-2 fix: "prefer the most specific subgenre" rule
-        f"Use the following signals to determine the MOST SPECIFIC matching genre "
+        f"Use the following signals IN PRIORITY ORDER to determine the MOST SPECIFIC matching genre "
         f"(always prefer a specific subgenre over a broad parent, e.g. Tech House over House):\n"
-        f"* REMIXER/EDITOR identity — strongest signal for remixes (their known scene/style)\n"
-        f"* BPM — strong structural signal"
+        f"\n"
+        f"1. ARTIST/TITLE KNOWLEDGE — your world knowledge of the artist's known genre is the "
+        f"STRONGEST signal. If you recognize the artist, their genre almost always determines "
+        f"the classification. A track by a known rock band is Rock regardless of BPM.\n"
+        f"2. REMIXER/EDITOR identity — for remixes, the remixer's scene/style overrides the original artist's genre.\n"
         f"{web_search_signal}"
+        f"{bpm_signal_num}. BPM — supplementary range indicator, mainly useful for ELECTRONIC genres only."
         f"{audio_signal_line}"
         f"{remix_instruction}"
         f"{bpm_guide}\n\n"
+        # v3: non-electronic awareness
+        f"CRITICAL: Many tracks are non-electronic (Rock, Pop, Hip-Hop, R&B, Soul, Funk, "
+        f"Reggae, Punk, Indie Pop, Synthpop, etc.). For these genres, artist identity is the "
+        f"primary signal. Do NOT let BPM override artist knowledge — a hip-hop track at 170 BPM "
+        f"is still Hip-Hop (BPM detector may have measured double-time).\n\n"
         # PE-5 fix: fallback rule for weak/missing signals
         f"If signals are weak or conflicting, choose the broadest matching genre family "
         f"and set confidence below 0.5.\n\n"
@@ -1004,7 +1038,7 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         # PE-3 fix: structured reasoning requirement
         f"Respond with JSON: {{\"genre\": \"...\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}\n"
         f"Confidence guide: 0.9+ only when multiple signals agree, 0.7-0.9 single strong signal, "
-        f"<0.7 uncertain or conflicting.\n"
+        f"<0.7 uncertain or conflicting. Confidence MUST be below 0.5 if classification relies solely on BPM.\n"
         f"In reasoning, briefly list each signal used and what it indicated."
     )
 
@@ -1141,8 +1175,14 @@ def run_essentia_only():
     print(f"Essentia: {ok} OK, {fail} failed, {ok+fail} total")
 
 
-def run_ab_test(variants: List[str], resume: bool = False):
-    """Run the full A/B test."""
+def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16):
+    """Run the full A/B test with parallel OpenAI API calls.
+
+    Args:
+        variants: list of variant names to test
+        resume: skip already-tested track+variant pairs
+        concurrency: max parallel API calls (default 16 ≈ 4 tracks × 4 variants)
+    """
     api_key = get_openai_api_key()
     if not api_key:
         print("❌ No OpenAI API key. Add openai_api_key to config.local.yml")
@@ -1326,61 +1366,48 @@ def run_ab_test(variants: List[str], resume: bool = False):
             ws_cache_file.write_text(json.dumps(ws_cache, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n   Web search: {ws_ok} OK, {ws_fail} failed\n")
 
-    # Run tests
+    # ── Build all jobs ────────────────────────────────────────────────────
+    # Pre-compute per-track metadata once (same across all variants)
+    track_meta_cache: Dict[str, Dict[str, str]] = {}  # path -> meta dict
+    for t in tracks:
+        meta = extract_metadata_from_filename(t["filename"])
+        tag_bpm = read_bpm_from_audio_tag(t["path"])
+        if tag_bpm:
+            meta["bpm"] = tag_bpm
+        tag_key = read_key_from_audio_tag(t["path"])
+        if tag_key:
+            meta["key"] = tag_key
+        # Safety: AB test must NOT use enrichment metadata (genres_*).
+        assert not any(meta.get(k) for k in (
+            "genres_musicbrainz", "genres_lastfm",
+            "genres_soundcloud", "genres_beatport",
+        )), f"Enrichment metadata leaked into AB test meta: {meta}"
+        track_meta_cache[t["path"]] = meta
+
+    # Build job list: (track, variant, prompt, model) — skip cached if resume
     all_results: List[Dict[str, Any]] = []
     total_calls = 0
     total_tokens = 0
+    jobs: List[Dict[str, Any]] = []
 
-    for variant in variants:
-        use_d400 = "+D400" in variant
-        use_essentia_interp = "+EI" in variant
-        use_essentia_v2 = "+E2" in variant
-        use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp
-        use_ws = "+WS" in variant
-        model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
-        model_name = MODEL_TIERS[model_key]
-
-        print(f"\n{'─'*70}")
-        print(f"  Variant: {variant} ({model_name})")
-        print(f"{'─'*70}\n")
-
-        correct = 0
-        variant_tokens = 0
-
-        for t in tracks:
+    for t in tracks:
+        meta = track_meta_cache[t["path"]]
+        for variant in variants:
             track_key = f"{t['filename']}:{variant}"
 
             # Skip if resume and already tested
             if resume and track_key in results.get("tracks", {}):
                 cached = results["tracks"][track_key]
-                if cached.get("genre") == t["expected_genre"]:
-                    correct += 1
                 all_results.append(cached)
-                print(f"  ⏭ {t['filename'][:50]} (cached)")
                 continue
 
-            meta = extract_metadata_from_filename(t["filename"])
-            # NOTE: folder = expected_genre was removed (problem #11 — answer leakage).
-            # The genre folder name IS the expected answer; injecting it into the
-            # prompt gives the model a massive hint, contaminating all variants.
-
-            # BPM and Key from audio tags (Rekordbox) — override filename values
-            # These are the authoritative source; filename tags are just fallback
-            tag_bpm = read_bpm_from_audio_tag(t["path"])
-            if tag_bpm:
-                meta["bpm"] = tag_bpm
-            tag_key = read_key_from_audio_tag(t["path"])
-            if tag_key:
-                meta["key"] = tag_key
-
-            # Safety: AB test must NOT use enrichment metadata (genres_*).
-            # The whole point is measuring classification from filename +
-            # signals (EI/WS/D400) WITHOUT pre-enriched genre tags.
-            # If these keys ever appear, something is wrong upstream.
-            assert not any(meta.get(k) for k in (
-                "genres_musicbrainz", "genres_lastfm",
-                "genres_soundcloud", "genres_beatport",
-            )), f"Enrichment metadata leaked into AB test meta: {meta}"
+            use_d400 = "+D400" in variant
+            use_essentia_interp = "+EI" in variant
+            use_essentia_v2 = "+E2" in variant
+            use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp
+            use_ws = "+WS" in variant
+            model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+            model_name = MODEL_TIERS[model_key]
 
             if use_d400:
                 audio_desc = discogs_cache.get(t["path"], "")
@@ -1396,53 +1423,83 @@ def run_ab_test(variants: List[str], resume: bool = False):
             ws_context = ws_cache.get(t["path"], "") if use_ws else ""
             prompt = build_prompt(meta, genre_labels, audio_desc, ws_context)
 
-            try:
-                result = call_openai(api_key, prompt, model_name)
-                total_calls += 1
-            except Exception as e:
-                print(f"  ❌ API error: {e}")
-                result = {"genre": "ERROR", "confidence": 0, "reasoning": str(e)}
-
-            predicted = result.get("genre", "?")
-            expected = t["expected_genre"]
-            is_correct = predicted == expected
-
-            if is_correct:
-                correct += 1
-
-            icon = "✅" if is_correct else "❌"
-            print(f"  {icon} {t['filename'][:50]}")
-            print(f"     → {predicted:25s} (exp: {expected})")
-            if not is_correct:
-                reasoning = result.get("reasoning", "")[:100]
-                print(f"     💭 {reasoning}")
-
-            # Store result
-            entry = {
-                "filename": t["filename"],
-                "expected_genre": expected,
-                "predicted_genre": predicted,
-                "correct": is_correct,
-                "confidence": result.get("confidence", 0),
-                "reasoning": result.get("reasoning", ""),
+            jobs.append({
+                "track": t,
                 "variant": variant,
-                "model": model_name,
-                "elapsed": result.get("_elapsed", 0),
-                "input_tokens": result.get("_input_tokens", 0),
-                "output_tokens": result.get("_output_tokens", 0),
-            }
-            all_results.append(entry)
-            results["tracks"][track_key] = entry
+                "model_name": model_name,
+                "prompt": prompt,
+                "track_key": track_key,
+            })
 
-            variant_tokens += result.get("_input_tokens", 0) + result.get("_output_tokens", 0)
-            total_tokens += result.get("_input_tokens", 0) + result.get("_output_tokens", 0)
+    cached_count = len(all_results)
+    print(f"  💾 {cached_count} cached, {len(jobs)} to process (concurrency={concurrency})")
 
-            # Rate limit: small delay between calls
-            time.sleep(0.3)
+    # ── Execute API calls in parallel ────────────────────────────────────
+    def _process_job(job: Dict[str, Any]) -> Dict[str, Any]:
+        """Call OpenAI for a single (track, variant) job. Thread-safe."""
+        try:
+            result = call_openai(api_key, job["prompt"], job["model_name"])
+        except Exception as e:
+            result = {"genre": "ERROR", "confidence": 0, "reasoning": str(e)}
 
-        accuracy = correct / len(tracks) * 100 if tracks else 0
-        print(f"\n  📊 {variant}: {correct}/{len(tracks)} correct ({accuracy:.0f}%)")
-        print(f"     Tokens: {variant_tokens:,}")
+        predicted = result.get("genre", "?")
+        expected = job["track"]["expected_genre"]
+        is_correct = predicted == expected
+
+        return {
+            "filename": job["track"]["filename"],
+            "expected_genre": expected,
+            "predicted_genre": predicted,
+            "correct": is_correct,
+            "confidence": result.get("confidence", 0),
+            "reasoning": result.get("reasoning", ""),
+            "variant": job["variant"],
+            "model": job["model_name"],
+            "elapsed": result.get("_elapsed", 0),
+            "input_tokens": result.get("_input_tokens", 0),
+            "output_tokens": result.get("_output_tokens", 0),
+            "_track_key": job["track_key"],
+        }
+
+    if jobs:
+        t_start = time.time()
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            futures = {pool.submit(_process_job, job): job for job in jobs}
+            done_count = 0
+            for future in as_completed(futures):
+                done_count += 1
+                entry = future.result()
+                track_key = entry.pop("_track_key")
+                all_results.append(entry)
+                results["tracks"][track_key] = entry
+                total_calls += 1
+                total_tokens += entry["input_tokens"] + entry["output_tokens"]
+
+                icon = "✅" if entry["correct"] else "❌"
+                print(f"  [{done_count}/{len(jobs)}] {icon} {entry['variant']:12s} | "
+                      f"{entry['filename'][:40]:40s} → {entry['predicted_genre']}")
+                if not entry["correct"]:
+                    reasoning = entry.get("reasoning", "")[:80]
+                    print(f"{'':20s}💭 {reasoning}")
+
+                # Save results periodically (every 16 completions)
+                if done_count % 16 == 0:
+                    save_results(results)
+
+        elapsed_total = time.time() - t_start
+        rps = total_calls / elapsed_total if elapsed_total > 0 else 0
+        print(f"\n  ⚡ {total_calls} API calls in {elapsed_total:.1f}s ({rps:.1f} req/s)")
+
+    save_results(results)
+
+    # Per-variant accuracy summary (computed from all_results including cached)
+    for variant in variants:
+        variant_results = [r for r in all_results if r.get("variant") == variant]
+        correct = sum(1 for r in variant_results if r.get("correct"))
+        total = len(variant_results)
+        accuracy = correct / total * 100 if total else 0
+        vtokens = sum(r.get("input_tokens", 0) + r.get("output_tokens", 0) for r in variant_results)
+        print(f"  📊 {variant:12s}: {correct}/{total} correct ({accuracy:.0f}%)  tokens: {vtokens:,}")
 
     # Save results
     run_meta["total_api_calls"] = total_calls
@@ -1519,6 +1576,8 @@ def main():
     parser.add_argument("--variants", nargs="+", default=None,
                         choices=ALL_VARIANTS, help="Which variants to test (overrides --run)")
     parser.add_argument("--resume", action="store_true", help="Skip already-tested tracks")
+    parser.add_argument("--concurrency", type=int, default=16,
+                        help="Max parallel OpenAI API calls (default: 16)")
     args = parser.parse_args()
 
     if args.scan:
@@ -1532,7 +1591,7 @@ def main():
             variants = V2_VARIANTS
         else:
             variants = V2_VARIANTS  # default to the 4 key variants
-        run_ab_test(variants, resume=args.resume)
+        run_ab_test(variants, resume=args.resume, concurrency=args.concurrency)
 
 
 if __name__ == "__main__":
