@@ -114,8 +114,9 @@ class TestDownweightFactor:
 
 class TestSpecificityBoost:
     def test_subgenre_boosted(self):
-        # Afro House has boost 1.8 in genres.yml
-        assert _specificity_boost("afro house") > 1.0
+        # With new taxonomy (no boost field), all genres default to 1.0
+        # boost field was removed — LLM classification doesn't use it
+        assert _specificity_boost("afro house") == pytest.approx(1.0)
 
     def test_parent_genre_not_boosted(self):
         # HOUSE has boost 1.0 (default)
