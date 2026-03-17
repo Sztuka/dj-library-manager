@@ -56,7 +56,8 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+E2", "mini+E2", "full+E2",
                 "nano+EI",
                 "nano+WS", "nano+EI+WS",
-                "nano+D400", "mini+D400", "full+D400"]
+                "nano+D400", "mini+D400", "full+D400",
+                "nano+CLAP", "nano+CLAP+WS"]
 
 # Default run preset: the 4 variants we care about
 # nano        = filename metadata (artist/title/version/bpm/key) only
@@ -856,6 +857,103 @@ def describe_discogs400_features(analysis: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+# ── CLAP zero-shot audio analysis ────────────────────────────────────────────
+
+# Module-level CLAP model singleton
+_clap_model = None
+_clap_processor = None
+
+
+def _load_clap_model():
+    """Load CLAP model (singleton). Downloads ~2GB on first use."""
+    global _clap_model
+    if _clap_model is not None:
+        return _clap_model
+    try:
+        from msclap import CLAP
+        _clap_model = CLAP(version="2023", use_cuda=False)
+        print("  🔊 CLAP model loaded (2023 version)")
+        return _clap_model
+    except ImportError:
+        print("  ⚠️  msclap not installed. Run: pip install msclap")
+        return None
+    except Exception as e:
+        print(f"  ⚠️  CLAP model load failed: {e}")
+        return None
+
+
+def _load_clap_genre_descriptions() -> Dict[str, str]:
+    """Load genre → sonic description mapping for CLAP text embeddings."""
+    desc_file = AB_DIR / "clap_genre_descriptions.json"
+    if not desc_file.exists():
+        print(f"  ⚠️  CLAP genre descriptions not found: {desc_file}")
+        return {}
+    return json.loads(desc_file.read_text(encoding="utf-8"))
+
+
+def run_clap_analysis(file_path: str, genre_descriptions: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    """Run CLAP zero-shot analysis: audio embedding vs genre text embeddings.
+
+    Returns dict with:
+        similarities: list of (genre_label, score) sorted by score desc (top 15)
+        top1_genre: str — highest-scoring genre
+        top1_score: float
+    """
+    clap = _load_clap_model()
+    if clap is None:
+        return None
+
+    try:
+        # Get audio embedding
+        audio_emb = clap.get_audio_embeddings([file_path])
+
+        # Get text embeddings for all genre descriptions
+        genre_labels = list(genre_descriptions.keys())
+        genre_texts = [genre_descriptions[g] for g in genre_labels]
+        text_emb = clap.get_text_embeddings(genre_texts)
+
+        # Cosine similarity (embeddings are already L2-normalized by msclap)
+        import torch
+        similarities = torch.nn.functional.cosine_similarity(
+            audio_emb.unsqueeze(1),  # (1, 1, D)
+            text_emb.unsqueeze(0),    # (1, N, D)
+            dim=-1,
+        ).squeeze(0)  # (N,)
+
+        # Sort by score descending
+        scores = [(genre_labels[i], float(similarities[i])) for i in range(len(genre_labels))]
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        return {
+            "similarities": scores[:15],
+            "top1_genre": scores[0][0],
+            "top1_score": scores[0][1],
+        }
+    except Exception as e:
+        print(f"  ⚠️  CLAP analysis error: {e}")
+        return None
+
+
+def describe_clap_features(analysis: Dict[str, Any]) -> str:
+    """Format CLAP analysis as text for GPT prompt.
+
+    Shows top-10 genre similarities with scores. Prefix for build_prompt() detection.
+    """
+    sims = analysis.get("similarities", [])
+    if not sims:
+        return ""
+
+    lines = []
+    for genre, score in sims[:10]:
+        bar = "█" * int(score * 20)  # visual bar 0-20 chars
+        lines.append(f"    {genre:25s} {score:.3f} {bar}")
+
+    return (
+        "Audio similarity analysis (CLAP zero-shot — audio matched against genre descriptions):\n"
+        + "\n".join(lines)
+    )
+
+
 # ── Prompt builder ───────────────────────────────────────────────────────────
 
 def load_genre_labels() -> List[str]:
@@ -964,6 +1062,15 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
             "Use this to disambiguate subgenres (e.g., House vs Deep House vs Afro House vs Tech House). "
             "When the audio analysis and metadata agree, be confident. "
             "When they differ, consider that remixes transform the sound — trust the audio genre for the remix's actual style."
+        )
+    elif audio_desc and audio_desc.startswith("Audio similarity analysis (CLAP"):
+        # CLAP format — zero-shot audio↔text similarity
+        audio_signal_line = (
+            "\n* AUDIO SIMILARITY (CLAP zero-shot) — the actual audio waveform was matched against "
+            "sonic descriptions of each genre using a neural audio-language model. Higher scores mean "
+            "the audio SOUNDS MORE LIKE that genre. Use the top matches to inform genre classification, "
+            "especially to disambiguate subgenres. CLAP scores reflect sonic similarity, not metadata. "
+            "When CLAP top matches agree with artist/title signals, be very confident."
         )
     elif audio_desc and audio_desc.startswith("Audio character (Essentia"):
         # EI format — LLM-interpreted sonic description (no genre names, objective)
@@ -1297,6 +1404,54 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 d400_fail += 1
         print(f"\n   Discogs400: {d400_ok} OK, {d400_fail} failed\n")
 
+    # Pre-run CLAP zero-shot analysis if needed
+    clap_variants = [v for v in variants if "+CLAP" in v]
+    clap_cache: Dict[str, str] = {}  # path -> formatted description
+    clap_cache_file = AB_DIR / "clap_cache.json"
+
+    # Load persistent CLAP cache
+    if clap_variants and clap_cache_file.exists():
+        try:
+            clap_cache = json.loads(clap_cache_file.read_text(encoding="utf-8"))
+            cached_n = sum(1 for v in clap_cache.values() if v)
+            print(f"  💾 CLAP cache loaded: {cached_n} results from {clap_cache_file.name}")
+        except Exception:
+            clap_cache = {}
+
+    if clap_variants:
+        genre_descriptions = _load_clap_genre_descriptions()
+        if not genre_descriptions:
+            print("  ⚠️  No CLAP genre descriptions — CLAP variants will have empty context")
+        else:
+            tracks_to_analyze = [t for t in tracks if t["path"] not in clap_cache]
+            if not tracks_to_analyze:
+                print(f"🔊 CLAP: all {len(tracks)} tracks cached, skipping.\n")
+            else:
+                print(f"🔊 Running CLAP zero-shot analysis for {len(tracks_to_analyze)}/{len(tracks)} tracks...\n")
+                clap_ok = clap_fail = 0
+                for i, t in enumerate(tracks_to_analyze):
+                    print(f"  [{i+1}/{len(tracks_to_analyze)}] {t['filename'][:55]}...", end=" ", flush=True)
+                    t0 = time.time()
+                    analysis = run_clap_analysis(t["path"], genre_descriptions)
+                    elapsed = time.time() - t0
+                    if analysis:
+                        clap_cache[t["path"]] = describe_clap_features(analysis)
+                        top1 = analysis["top1_genre"]
+                        top1_score = analysis["top1_score"]
+                        print(f"✅ {elapsed:.1f}s → {top1} ({top1_score:.3f})")
+                        clap_ok += 1
+                    else:
+                        clap_cache[t["path"]] = ""
+                        print(f"❌ {elapsed:.1f}s")
+                        clap_fail += 1
+
+                    # Save cache after each track (progress-safe)
+                    clap_cache_file.write_text(
+                        json.dumps(clap_cache, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                print(f"\n   CLAP: {clap_ok} OK, {clap_fail} failed\n")
+
     # Pre-run web search if needed
     ws_variants = [v for v in variants if "+WS" in v]
     ws_cache: Dict[str, str] = {}  # track_path -> prompt_context
@@ -1402,15 +1557,18 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 continue
 
             use_d400 = "+D400" in variant
+            use_clap = "+CLAP" in variant
             use_essentia_interp = "+EI" in variant
             use_essentia_v2 = "+E2" in variant
-            use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp
+            use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp and not use_clap
             use_ws = "+WS" in variant
-            model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+            model_key = variant.replace("+D400", "").replace("+CLAP", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
             model_name = MODEL_TIERS[model_key]
 
             if use_d400:
                 audio_desc = discogs_cache.get(t["path"], "")
+            elif use_clap:
+                audio_desc = clap_cache.get(t["path"], "")
             elif use_essentia_interp:
                 audio_desc = essentia_interp_cache.get(t["path"], "")
             elif use_essentia_v2:
@@ -1528,7 +1686,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+CLAP", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)
