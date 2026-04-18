@@ -19,3 +19,5 @@ flask>=3.0        # review UI server (djlib review)
 playwright        # headless browser for Beatport/SoundCloud token refresh
 keyring           # secure credential storage (Beatport email/password)
 traktor-nml-utils @ git+https://github.com/wolkenarchitekt/traktor-nml-utils.git  # bezpieczny zapis/parsowanie Traktor collection.nml (3.3.0 dla Traktor 3.11+)
+google-genai      # Gemini Audio multimodal analysis (AB test variant nano+GA)
+pydub             # audio clip extraction for Gemini (ffmpeg wrapper)

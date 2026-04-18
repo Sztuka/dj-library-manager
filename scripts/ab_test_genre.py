@@ -56,7 +56,8 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+E2", "mini+E2", "full+E2",
                 "nano+EI",
                 "nano+WS", "nano+EI+WS",
-                "nano+D400", "mini+D400", "full+D400"]
+                "nano+D400", "mini+D400", "full+D400",
+                "nano+GA", "nano+GA+WS"]
 
 # Default run preset: the 4 variants we care about
 # nano        = filename metadata (artist/title/version/bpm/key) only
@@ -856,6 +857,192 @@ def describe_discogs400_features(analysis: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+# ── Gemini Audio analysis ────────────────────────────────────────────────────
+
+_gemini_client = None
+
+# System prompt for Gemini audio description (DESCRIBE, not classify)
+GEMINI_AUDIO_SYSTEM_PROMPT = """You are an expert audio analyst. Listen to this music clip and describe ONLY the sonic characteristics — what you HEAR.
+
+RULES:
+1. Describe the SOUND, not the genre. NEVER mention genre names, artist names, or music scenes.
+2. Focus on these 5 aspects:
+   - Bass: type, weight, movement (e.g. "deep sub-bass with slow filter sweep", "punchy mid-bass stabs")
+   - Drums: kick pattern, hi-hat style, percussion character (e.g. "four-on-floor kick, open hi-hats on upbeats")
+   - Melody/harmony: chords, synths, vocal character (e.g. "minor key pad chords, no melody, pitched vocal chops")
+   - Energy/dynamics: intensity, build-ups, drops (e.g. "constant high energy, heavily compressed")
+   - Production: texture, effects, sample aesthetic (e.g. "clean digital production, heavy sidechain compression")
+3. Be specific and concrete. "Warm filtered bassline" is better than "nice bass".
+4. Keep total response under 100 words.
+5. Use the format shown below.
+
+OUTPUT FORMAT:
+Bass: [description]
+Drums: [description]
+Melody: [description]
+Energy: [description]
+Production: [description]"""
+
+
+def _get_gemini_client():
+    """Get or create Gemini API client (singleton)."""
+    global _gemini_client
+    if _gemini_client is not None:
+        return _gemini_client
+    try:
+        from google import genai
+        # API key from environment or config
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            # Try loading from config.local.yml
+            config_path = PROJECT_ROOT / "config.local.yml"
+            if config_path.exists():
+                import yaml
+                cfg = yaml.safe_load(config_path.read_text())
+                api_key = cfg.get("gemini_api_key", "")
+        if not api_key:
+            print("  ⚠️  No Gemini API key. Set GEMINI_API_KEY env var or add gemini_api_key to config.local.yml")
+            return None
+        _gemini_client = genai.Client(api_key=api_key)
+        print("  🎙️  Gemini client initialized")
+        return _gemini_client
+    except ImportError:
+        print("  ⚠️  google-genai not installed. Run: pip install google-genai")
+        return None
+    except Exception as e:
+        print(f"  ⚠️  Gemini client init failed: {e}")
+        return None
+
+
+def _extract_audio_clip(file_path: str, duration_s: int = 30) -> Optional[bytes]:
+    """Extract a middle clip from audio file as WAV bytes for Gemini.
+
+    Takes the middle `duration_s` seconds of the track.
+    Returns raw bytes of a WAV file, or None on error.
+    """
+    try:
+        import mutagen
+        audio_info = mutagen.File(file_path)
+        total_length = audio_info.info.length if audio_info and audio_info.info else 0
+
+        # Use pydub for reliable audio extraction + conversion
+        from pydub import AudioSegment
+        audio = AudioSegment.from_file(file_path)
+
+        # Take middle section
+        mid_ms = len(audio) // 2
+        start_ms = max(0, mid_ms - (duration_s * 1000 // 2))
+        end_ms = start_ms + (duration_s * 1000)
+        clip = audio[start_ms:end_ms]
+
+        # Convert to mono 16kHz WAV for smaller payload
+        clip = clip.set_channels(1).set_frame_rate(16000)
+
+        import io
+        buf = io.BytesIO()
+        clip.export(buf, format="wav")
+        return buf.getvalue()
+    except ImportError:
+        # Fallback: try ffmpeg directly
+        try:
+            import subprocess
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_path = tmp.name
+            # Get duration
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            total_s = float(probe.stdout.strip()) if probe.stdout.strip() else 0
+            start_s = max(0, (total_s / 2) - (duration_s / 2))
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", file_path, "-ss", str(start_s),
+                 "-t", str(duration_s), "-ac", "1", "-ar", "16000", tmp_path],
+                capture_output=True, timeout=30,
+            )
+            wav_bytes = Path(tmp_path).read_bytes()
+            os.unlink(tmp_path)
+            return wav_bytes
+        except Exception as e:
+            print(f"  ⚠️  Audio clip extraction failed (ffmpeg): {e}")
+            return None
+    except Exception as e:
+        print(f"  ⚠️  Audio clip extraction failed: {e}")
+        return None
+
+
+def run_gemini_audio_analysis(file_path: str) -> Optional[str]:
+    """Send audio clip to Gemini and get sonic description.
+
+    Returns formatted description string, or None on failure.
+    Rate-limited to ~15 RPM (free tier).
+    """
+    client = _get_gemini_client()
+    if client is None:
+        return None
+
+    wav_bytes = _extract_audio_clip(file_path, duration_s=30)
+    if wav_bytes is None:
+        return None
+
+    try:
+        import base64
+        from google.genai import types
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Content(
+                    parts=[
+                        types.Part(
+                            inline_data=types.Blob(
+                                mime_type="audio/wav",
+                                data=wav_bytes,
+                            )
+                        ),
+                        types.Part(text="Describe what you hear in this audio clip."),
+                    ]
+                )
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=GEMINI_AUDIO_SYSTEM_PROMPT,
+                temperature=0,
+                max_output_tokens=512,
+                # Disable thinking: 2.5-flash uses thinking tokens by default which
+                # consume the entire output budget before generating visible text.
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+
+        text = response.text.strip() if response.text else ""
+        if not text:
+            return None
+
+        # Strip duplicate label artifacts (e.g. "Bass: Bass: ..." → "Bass: ...")
+        import re as _re
+        text = _re.sub(r'\b(Bass|Drums|Melody|Energy|Production):\s*\1:\s*', r'\1: ', text)
+
+        # Validate we got at least 3/5 categories
+        expected = ["Bass:", "Drums:", "Melody:", "Energy:", "Production:"]
+        found = sum(1 for k in expected if k in text)
+        if found < 3:
+            print(f"  ⚠️  Gemini returned only {found}/5 categories")
+
+        return text
+    except Exception as e:
+        print(f"  ❌ Gemini API error: {e}")
+        return None
+
+
+def describe_gemini_audio(description: str) -> str:
+    """Wrap Gemini audio description with prefix for build_prompt() detection."""
+    if not description:
+        return ""
+    return "Audio perception (Gemini — AI listened to the actual audio):\n" + description
+
+
 # ── Prompt builder ───────────────────────────────────────────────────────────
 
 def load_genre_labels() -> List[str]:
@@ -964,6 +1151,16 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
             "Use this to disambiguate subgenres (e.g., House vs Deep House vs Afro House vs Tech House). "
             "When the audio analysis and metadata agree, be confident. "
             "When they differ, consider that remixes transform the sound — trust the audio genre for the remix's actual style."
+        )
+    elif audio_desc and audio_desc.startswith("Audio perception (Gemini"):
+        # GA format — Gemini AI listened to actual audio and described what it heard
+        audio_signal_line = (
+            "\n* AUDIO PERCEPTION (Gemini) — an AI model LISTENED to the actual audio recording and "
+            "described what it heard: bass type, drum patterns, melody character, energy, and production "
+            "style. This is the most detailed sonic perception available — it identifies bass types "
+            "(sub-bass, mid-bass, acoustic), hi-hat patterns (open, closed, shuffled), and production "
+            "aesthetics that distinguish subgenres. Use this to inform the genre decision, especially "
+            "to disambiguate similar subgenres within the same BPM range."
         )
     elif audio_desc and audio_desc.startswith("Audio character (Essentia"):
         # EI format — LLM-interpreted sonic description (no genre names, objective)
@@ -1297,6 +1494,52 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 d400_fail += 1
         print(f"\n   Discogs400: {d400_ok} OK, {d400_fail} failed\n")
 
+    # Pre-run Gemini Audio analysis if needed
+    ga_variants = [v for v in variants if "+GA" in v]
+    ga_cache: Dict[str, str] = {}  # path -> formatted description
+    ga_cache_file = AB_DIR / "gemini_audio_cache.json"
+
+    # Load persistent GA cache
+    if ga_variants and ga_cache_file.exists():
+        try:
+            ga_cache = json.loads(ga_cache_file.read_text(encoding="utf-8"))
+            cached_n = sum(1 for v in ga_cache.values() if v)
+            print(f"  💾 Gemini Audio cache loaded: {cached_n} results from {ga_cache_file.name}")
+        except Exception:
+            ga_cache = {}
+
+    if ga_variants:
+        tracks_to_analyze = [t for t in tracks if t["path"] not in ga_cache]
+        if not tracks_to_analyze:
+            print(f"🎙️  Gemini Audio: all {len(tracks)} tracks cached, skipping.\n")
+        else:
+            print(f"🎙️  Running Gemini Audio analysis for {len(tracks_to_analyze)}/{len(tracks)} tracks...\n")
+            ga_ok = ga_fail = 0
+            for i, t in enumerate(tracks_to_analyze):
+                print(f"  [{i+1}/{len(tracks_to_analyze)}] {t['filename'][:55]}...", end=" ", flush=True)
+                t0 = time.time()
+                description = run_gemini_audio_analysis(t["path"])
+                elapsed = time.time() - t0
+                if description:
+                    ga_cache[t["path"]] = describe_gemini_audio(description)
+                    first_line = description.split("\n")[0][:60]
+                    print(f"✅ {elapsed:.1f}s → {first_line}")
+                    ga_ok += 1
+                else:
+                    ga_cache[t["path"]] = ""
+                    print(f"❌ {elapsed:.1f}s")
+                    ga_fail += 1
+
+                # Save cache after each track (progress-safe)
+                ga_cache_file.write_text(
+                    json.dumps(ga_cache, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+                # Rate limit: Gemini free tier = 15 RPM → sleep 4s between calls
+                time.sleep(4.0)
+            print(f"\n   Gemini Audio: {ga_ok} OK, {ga_fail} failed\n")
+
     # Pre-run web search if needed
     ws_variants = [v for v in variants if "+WS" in v]
     ws_cache: Dict[str, str] = {}  # track_path -> prompt_context
@@ -1402,15 +1645,18 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 continue
 
             use_d400 = "+D400" in variant
+            use_ga = "+GA" in variant
             use_essentia_interp = "+EI" in variant
             use_essentia_v2 = "+E2" in variant
-            use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp
+            use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp and not use_ga
             use_ws = "+WS" in variant
-            model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+            model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
             model_name = MODEL_TIERS[model_key]
 
             if use_d400:
                 audio_desc = discogs_cache.get(t["path"], "")
+            elif use_ga:
+                audio_desc = ga_cache.get(t["path"], "")
             elif use_essentia_interp:
                 audio_desc = essentia_interp_cache.get(t["path"], "")
             elif use_essentia_v2:
@@ -1528,7 +1774,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)

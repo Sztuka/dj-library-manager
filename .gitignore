@@ -25,9 +25,13 @@ __pycache__/
 # ===== Project/local files =====
 library.csv
 config.local.yml
+# Local env variants: .dev / .prod / .backup
+config.local.yml.*
 config.local.json
 taxonomy.local.yml
 .env
+# Backup files (e.g. genres.yml.bak)
+*.bak
 
 # ===== Data / artifacts =====
 data/
@@ -58,5 +62,9 @@ htmlcov/
 
 # ===== Runtime logs and cache =====
 LOGS/
+LOGS-test/
 djlib_http_cache.sqlite
 djlib_http_cache/
+
+# ===== ML models (too large for git) =====
+models/essentia-tf/
