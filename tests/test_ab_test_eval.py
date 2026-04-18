@@ -100,7 +100,6 @@ def test_build_prompt_system_has_fallback_unknown():
 def test_build_prompt_no_audio_no_signal_line():
     """Without audio_desc, no audio-specific signal section."""
     system, _ = _parse(build_prompt(SAMPLE_CTX, SAMPLE_GENRES))
-    assert "AUDIO PERCEPTION" not in system
     assert "AUDIO CHARACTER" not in system
     assert "AUDIO ANALYSIS (Discogs400" not in system
 
@@ -115,10 +114,14 @@ def test_build_prompt_d400_routing():
 
 
 def test_build_prompt_gemini_routing():
-    """Audio desc with Gemini prefix → AUDIO PERCEPTION framing."""
-    ga = "Audio perception (Gemini — AI listened to the actual audio):\nBass: Heavy sub."
+    """Audio desc with Gemini prefix → AUDIO CHARACTER framing (symmetric with EI).
+
+    GA uses the same 'AUDIO CHARACTER' label as EI — the only experimental
+    variable is which categories are described (bass/drums/... vs tempo/rhythm/...).
+    """
+    ga = "Audio character (Gemini → interpreted):\nBass: Heavy sub."
     system, user = _parse(build_prompt(SAMPLE_CTX, SAMPLE_GENRES, audio_desc=ga))
-    assert "AUDIO PERCEPTION" in system
+    assert "AUDIO CHARACTER" in system
     assert "Gemini" in system
     assert "Heavy sub" in user
 
@@ -131,12 +134,28 @@ def test_build_prompt_essentia_interp_routing():
     assert "Essentia" in system
 
 
-def test_build_prompt_routing_mutually_exclusive():
-    """Each audio-desc prefix should select exactly one framing, not multiple."""
-    ga = "Audio perception (Gemini — AI listened to the actual audio):\nBass: Heavy."
+def test_build_prompt_ga_and_ei_use_same_label():
+    """Symmetry guard: both GA and EI must appear under 'AUDIO CHARACTER'.
+
+    If someone restores asymmetric labels (e.g. 'AUDIO PERCEPTION' only for GA),
+    the AB test result becomes uninterpretable. This test blocks that regression.
+    """
+    ei = "Audio character (Essentia → interpreted):\nTempo: Fast."
+    ga = "Audio character (Gemini → interpreted):\nBass: Heavy."
+    system_ei, _ = _parse(build_prompt(SAMPLE_CTX, SAMPLE_GENRES, audio_desc=ei))
     system_ga, _ = _parse(build_prompt(SAMPLE_CTX, SAMPLE_GENRES, audio_desc=ga))
-    assert "AUDIO PERCEPTION" in system_ga
-    assert "AUDIO CHARACTER" not in system_ga
+    assert "AUDIO CHARACTER" in system_ei
+    assert "AUDIO CHARACTER" in system_ga
+    # Neither should re-introduce the old editorial label
+    assert "AUDIO PERCEPTION" not in system_ga
+    assert "AUDIO PERCEPTION" not in system_ei
+
+
+def test_build_prompt_routing_mutually_exclusive():
+    """D400 and Gemini/Essentia framings must not collide in the same prompt."""
+    ga = "Audio character (Gemini → interpreted):\nBass: Heavy."
+    system_ga, _ = _parse(build_prompt(SAMPLE_CTX, SAMPLE_GENRES, audio_desc=ga))
+    assert "AUDIO CHARACTER" in system_ga
     assert "AUDIO ANALYSIS (Discogs400" not in system_ga
 
 
@@ -208,11 +227,11 @@ def test_build_prompt_remix_rule_absent_for_original():
 
 
 def test_build_prompt_gemini_plus_ws_both_present():
-    """GA+WS: both audio-perception framing and web-search framing appear."""
-    ga = "Audio perception (Gemini — AI listened to the actual audio):\nBass: Sub."
+    """GA+WS: both audio-character framing and web-search framing appear."""
+    ga = "Audio character (Gemini → interpreted):\nBass: Sub."
     ws = "Beatport: found"
     system, user = _parse(build_prompt(SAMPLE_CTX, SAMPLE_GENRES, audio_desc=ga, web_search_context=ws))
-    assert "AUDIO PERCEPTION" in system
+    assert "AUDIO CHARACTER" in system
     assert "WEB SEARCH" in system
     assert "Bass: Sub" in user
     assert "Beatport" in user
