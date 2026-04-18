@@ -1037,10 +1037,16 @@ def run_gemini_audio_analysis(file_path: str) -> Optional[str]:
 
 
 def describe_gemini_audio(description: str) -> str:
-    """Wrap Gemini audio description with prefix for build_prompt() detection."""
+    """Wrap Gemini audio description with prefix for build_prompt() detection.
+
+    Prefix is kept structurally symmetric with the Essentia Interpreter (EI)
+    prefix so build_prompt's routing can distinguish them, but neither prefix
+    should editorially bias nano's classification. Parenthetical says only
+    which signal produced the description, nothing about quality.
+    """
     if not description:
         return ""
-    return "Audio perception (Gemini — AI listened to the actual audio):\n" + description
+    return "Audio character (Gemini → interpreted):\n" + description
 
 
 # ── Prompt builder ───────────────────────────────────────────────────────────
@@ -1152,23 +1158,24 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
             "When the audio analysis and metadata agree, be confident. "
             "When they differ, consider that remixes transform the sound — trust the audio genre for the remix's actual style."
         )
-    elif audio_desc and audio_desc.startswith("Audio perception (Gemini"):
-        # GA format — Gemini AI listened to actual audio and described what it heard
+    elif audio_desc and audio_desc.startswith("Audio character (Gemini"):
+        # GA format — Gemini-based sonic description (bass/drums/melody/energy/production)
+        # Symmetric framing with EI: same verb ("Use this to inform..."), same structure,
+        # no quality claims ("most detailed", "LISTENED"). Categories differ because that's
+        # the experimental variable; the framing must not.
         audio_signal_line = (
-            "\n* AUDIO PERCEPTION (Gemini) — an AI model LISTENED to the actual audio recording and "
-            "described what it heard: bass type, drum patterns, melody character, energy, and production "
-            "style. This is the most detailed sonic perception available — it identifies bass types "
-            "(sub-bass, mid-bass, acoustic), hi-hat patterns (open, closed, shuffled), and production "
-            "aesthetics that distinguish subgenres. Use this to inform the genre decision, especially "
-            "to disambiguate similar subgenres within the same BPM range."
+            "\n* AUDIO CHARACTER (Gemini → interpreted) — sonic description of what this track "
+            "SOUNDS LIKE (bass, drums, melody, energy, production) WITHOUT naming genres. "
+            "Use this to inform the genre decision, especially to distinguish between similar subgenres."
         )
     elif audio_desc and audio_desc.startswith("Audio character (Essentia"):
         # EI format — LLM-interpreted sonic description (no genre names, objective)
-        # SK-1 fix: symmetric framing with WS — both use "inform the genre decision"
+        # Symmetric framing with GA: same verb ("Use this to inform..."), same structure,
+        # no quality claims. Categories differ because that's the experimental variable.
         audio_signal_line = (
-            "\n* AUDIO CHARACTER (Essentia → interpreted) — objective sonic description derived "
-            "from computational audio analysis: what this track SOUNDS LIKE (tempo feel, rhythm "
-            "character, energy, brightness, texture, harmony) WITHOUT naming genres. "
+            "\n* AUDIO CHARACTER (Essentia → interpreted) — sonic description of what this track "
+            "SOUNDS LIKE (tempo feel, rhythm character, energy, brightness, texture, harmony) WITHOUT "
+            "naming genres. "
             "Use this to inform the genre decision, especially to distinguish between similar subgenres."
         )
     elif audio_desc and not audio_desc.startswith("Audio analysis (Essentia"):
