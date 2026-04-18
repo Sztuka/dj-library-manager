@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/pytest*)",
+      "Bash(.venv/bin/python*)",
+      "Bash(.venv/bin/pip*)",
+      "Bash(.venv/bin/black*)",
+      "Bash(.venv/bin/ruff*)",
+      "Bash(git add:*)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git checkout:*)",
+      "Bash(git commit:*)",
+      "Bash(git merge:*)",
+      "Bash(git stash*)",
+      "Bash(git restore*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(python3:*)",
+      "Bash(brew list*)",
+      "Bash(which:*)",
+      "Bash(cat:*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /*)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)"
+    ]
+  }
+}
