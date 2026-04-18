@@ -111,3 +111,53 @@ config.local.yml    # Local overrides (gitignored)
 - **DJ software IDs** (rekordbox_id, traktor_id) are critical — never lose them during operations
 - **File operations must be safe** — hash-check before overwrite, never create silent `(2)` copies
 - **HTTP cache** exists at `djlib_http_cache/` — can be cleared with `rm -f djlib_http_cache*`
+
+## Code Implementation Rules
+
+- **Never add frontend frameworks** — vanilla JS only. No React, Vue, jQuery, or build tools
+- **Never add ORM or database** — CSV files are the database. pandas for heavy operations
+- **New API endpoints** follow pattern: `@app.route("/api/<resource>")` returning JSON
+- **New UI columns** — add to `COLUMNS.<tab>` in app.js, add CSS for new badge types in style.css
+- **New CLI commands** — add to `cli.py` with argparse, follow existing `cmd_<name>` pattern
+- **Config changes** — add defaults to `config.yml`, document in ARCHITECTURE.md
+- **Genre changes** — update `genres.yml` (maintain alphabetical order within categories)
+
+## Data Safety
+
+- **library.csv** is overwritten by `sync-dj-libraries`. Don't assume fields persist between syncs unless they come from DJ software
+- **LOGS/moves-*.csv** is append-only history — the only reliable record of processed tracks
+- **track_id** (UUID5) is the stable identifier across all systems. Never regenerate for existing tracks
+- **File operations** must check for existing files before moving. Never create `(2)` copies silently
+- **Always test with real data paths** in mind — paths contain spaces (`~/Music Unsorted/`), Unicode characters (é, á), and special chars (&, commas)
+
+## File Naming
+
+- Python modules: `snake_case.py`
+- Test files: `test_<module>.py`
+- CSS classes: `kebab-case` (`.badge-dest`, `.stat-processed-total`)
+- JS functions: `camelCase` (`destBadgeHtml()`, `updateStats()`)
+- CSV fields: `snake_case` (`track_id`, `key_camelot`)
+- Git branches: `feature/<name>`, `fix/<name>`, `refactor/<name>`, `chore/<name>`
+
+## Multi-Persona Design Workflow
+
+For non-trivial features, consult the specialized subagents in `.claude/agents/` before writing code. Each represents a distinct perspective:
+
+**General engineering team** (invokable for any feature):
+
+- **Julia** — creative idea generator, opens the solution space
+- **Zosia** — CTO / systems architect, guards data integrity and simplicity
+- **Adam** — product designer, guards UX and Review UI patterns
+- **Kasia** — product owner, guards scope and opportunity cost
+- **Łukasz** — technical writer, keeps docs in sync with code
+- **Marek** — destructive QA, stress-tests with dirty data and edge cases
+
+**Domain specialists** (for genre classification work):
+
+- **ML Researcher** — AB test design, baselines, confusion matrices
+- **Taxonomy Expert** — genres.yml, genre family disputes, scene accuracy
+- **DJ Domain Expert** — real-world DJ usage and crate culture
+- **Data Engineer** — pipeline design, caching, external signal integration
+- **Prompt Engineer** — LLM prompt design and AB test symmetry
+
+Typical flow: **Julia** (brainstorm) → **Zosia/Adam/Kasia** (filter for feasibility, UX, scope) → implement → **Marek** (destructive test) → **Łukasz** (document) → commit.
