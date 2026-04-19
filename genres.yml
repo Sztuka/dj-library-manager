@@ -4,9 +4,14 @@
 #
 # Each entry defines:
 #   label     – human-readable name (used in UI, CSV export, Rekordbox tags)
-#   family    – genre family for hierarchical classification & family accuracy
-#              (House, Techno, Trance, Bass, Dance, Synth, Ambient, Pop, Rock,
-#               Hip-Hop, Caribbean, World, Jazz, Funk/Soul)
+#   family    – primary genre family (House, Techno, Trance, Bass, Dance, Synth,
+#               Ambient, Pop, Rock, Hip-Hop, Caribbean, Latin, World, Jazz,
+#               Funk/Soul). Used in UI as default family label.
+#   also_in   – OPTIONAL list of secondary families for genres that genuinely
+#               straddle multiple scenes (e.g. Indie Pop → [Rock], R&B →
+#               [Funk/Soul]). Family-accuracy matches if the set of
+#               {family} ∪ also_in of the predicted genre intersects the set
+#               of {family} ∪ also_in of the expected genre.
 #   category  – broad category for source trust heuristics
 #              (electronic, pop, rock, urban, caribbean, world, jazz, other)
 #   synonyms  – aliases for matching external API tags (Beatport, MusicBrainz,
@@ -225,6 +230,7 @@ DNB:
 UK_GARAGE:
   label: "UK Garage"
   family: Bass
+  also_in: [House]
   category: electronic
   synonyms:
     - "uk garage"
@@ -248,6 +254,7 @@ DUBSTEP:
 TRAP:
   label: "Trap"
   family: Bass
+  also_in: [Hip-Hop]
   category: electronic
   synonyms:
     - "trap"
@@ -275,6 +282,7 @@ EURODANCE:
 IDM:
   label: "IDM"
   family: Ambient
+  also_in: [Bass]
   category: electronic
   synonyms:
     - "idm"
@@ -298,6 +306,7 @@ SYNTHWAVE:
 SYNTHPOP:
   label: "Synthpop"
   family: Synth
+  also_in: [Pop]
   category: electronic
   synonyms:
     - "synthpop"
@@ -329,6 +338,7 @@ INDIE_DANCE:
 ELECTRO_SWING:
   label: "Electro Swing"
   family: Dance
+  also_in: [Jazz]
   category: electronic
   synonyms:
     - "electro swing"
@@ -339,6 +349,7 @@ ELECTRO_SWING:
 TRIP_HOP:
   label: "Trip Hop"
   family: Ambient
+  also_in: [Hip-Hop]
   category: electronic
   synonyms:
     - "trip hop"
@@ -367,6 +378,7 @@ POP:
 INDIE_POP:
   label: "Indie Pop"
   family: Pop
+  also_in: [Rock]
   category: pop
   synonyms:
     - "indie pop"
@@ -381,7 +393,7 @@ INDIE_POP:
 POST_PUNK:
   label: "Post-Punk"
   family: Rock
-  category: pop
+  category: rock
   synonyms:
     - "post-punk"
     - "post punk"
@@ -389,6 +401,7 @@ POST_PUNK:
 NEW_WAVE:
   label: "New Wave"
   family: Pop
+  also_in: [Rock]
   category: pop
   synonyms:
     - "new wave"
@@ -415,6 +428,7 @@ ROCK:
 INDIE_ROCK:
   label: "Indie Rock"
   family: Rock
+  also_in: [Pop]
   category: rock
   synonyms:
     - "indie rock"
@@ -466,6 +480,7 @@ HIP_HOP:
 RNB:
   label: "R&B"
   family: Hip-Hop
+  also_in: [Funk/Soul]
   category: urban
   synonyms:
     - "r&b"
@@ -481,6 +496,7 @@ RNB:
 REGGAETON:
   label: "Reggaeton"
   family: Latin
+  also_in: [Caribbean]
   category: caribbean
   synonyms:
     - "reggaeton"
@@ -513,6 +529,7 @@ REGGAE:
 DANCEHALL:
   label: "Dancehall"
   family: Caribbean
+  also_in: [Hip-Hop]
   category: caribbean
   synonyms:
     - "dancehall"
@@ -533,6 +550,7 @@ SKA:
 KUDURO:
   label: "Kuduro"
   family: Caribbean
+  also_in: [World]
   category: caribbean
   synonyms:
     - "kuduro"
@@ -543,6 +561,7 @@ KUDURO:
 AFROBEATS:
   label: "Afrobeats"
   family: World
+  also_in: [Pop]
   category: world
   synonyms:
     - "afrobeats"
@@ -586,6 +605,7 @@ JAZZ:
 DISCO:
   label: "Disco"
   family: Funk/Soul
+  also_in: [Dance]
   category: other
   synonyms:
     - "disco"
