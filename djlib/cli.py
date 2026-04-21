@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, csv, time, os, json, shutil, unicodedata
+import argparse, csv, re, time, os, json, shutil, unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -634,27 +634,45 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             
-            from djlib.metadata.genre_resolver import resolve as resolve_genres, ALL_SOURCES
-            print(f"   🎵 Resolving genres for: {a} - {t}")
-            enabled_sources = set(ALL_SOURCES)
-            if getattr(args, "skip_soundcloud", False):
-                enabled_sources.discard("soundcloud")
-            if getattr(args, "skip_beatport", False):
-                enabled_sources.discard("beatport")
-            # Pass tag_genre for weak fallback signal
-            original_tag_genre = (r.get("tag_genre_original") or "").strip()
-            genre_res = resolve_genres(
-                a,
-                t,
-                version=v,
-                duration_s=dur_s,
-                sources=enabled_sources,
-                tag_genre=original_tag_genre,
-            )
-            print(f"      Result: main={genre_res.main if genre_res else None}, conf={genre_res.confidence if genre_res else None}")
+            from djlib.metadata.genre_classifier import classify_genre, ClassifierError
+            print(f"   🎵 Classifying genre (nano+WS+LF) for: {a} - {t}")
+            bpm_str = (r.get("bpm") or r.get("tag_bpm_original") or "").strip()
+            key_str = (r.get("key_camelot") or r.get("tag_key_original") or "").strip()
+            filename_hint = Path(r.get("file_path", "")).name if r.get("file_path") else ""
+            try:
+                cls = classify_genre(
+                    artist=a, title=t, version=v,
+                    bpm=bpm_str, key=key_str, filename=filename_hint,
+                )
+            except ClassifierError as e:
+                print(f"      ❌ Classification failed (after retry): {e}")
+                r["ai_genre"] = ""
+                r["ai_confidence"] = ""
+                r["ai_reasoning"] = f"ERROR: {str(e)[:200]}"
+                r["ai_classify_date"] = _now_iso()
+                genre_res = None
+            else:
+                r["ai_genre"] = cls["genre"]
+                r["ai_confidence"] = f"{cls['confidence']:.2f}"
+                r["ai_reasoning"] = cls["reasoning"][:500]
+                r["ai_classify_date"] = _now_iso()
+                if cls.get("lastfm_tags"):
+                    lf_top = [name.strip() for name in re.split(r',\s*', cls["lastfm_tags"]) if name.strip()][:5]
+                    r["genres_lastfm"] = ", ".join(s.split(" (")[0] for s in lf_top)
+                    lfm_set += 1
+                # Shim to keep the downstream code (expects genre_res with .main/.confidence) working
+                class _GRes:
+                    def __init__(self, g, c):
+                        self.main = g
+                        self.subs = []
+                        self.confidence = c
+                        self.breakdown = []
+                genre_res = _GRes(cls["genre"], cls["confidence"])
+                print(f"      Result: {cls['genre']} (conf={cls['confidence']:.2f})")
+
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
-                # Ustaw 3 gatunki: main + subs
-                genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
+                # Ustaw gatunek (main z klasyfikatora — subs puste w nowym modelu)
+                genres = [genre_res.main] + genre_res.subs[:2]
                 genre_str = ", ".join(genres)
                 current_genre = (r.get("genre_suggest") or "").strip()
                 # Treat noise-only genres as empty (e.g., "puerto rico, merge" from Last.fm artist tags)
@@ -665,10 +683,13 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 if force_genres or not current_genre or is_noise_only or genre_res.confidence > 0.08:
                     r["genre_suggest"] = genre_str
                     any_change = True
-                    # Update meta_source to reflect all sources used
+                    # Update meta_source: classifier has no breakdown → use its source label.
                     sources = [s.source for s in genre_res.breakdown]
                     if sources:
                         r["meta_source"] = f"{r.get('meta_source', '')}+genres({','.join(sources)})".strip("+")
+                    else:
+                        tag = "ai_classifier(nano+WS+LF)"
+                        r["meta_source"] = f"{r.get('meta_source', '')}+{tag}".strip("+")
 
                 # Zapisz surowe listy tagów per źródło do dodatkowych kolumn
                 try:

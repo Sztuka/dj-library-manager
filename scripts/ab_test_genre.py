@@ -65,6 +65,7 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+WS+LF+FP", "nano+WS+LF+FPC",
                 "nano+WS+LF+T2", "nano+WS+LF+FPC+T2",
                 "nano+WS+LF+V3", "nano+WS+LF+FPC+V3",
+                "OLD",
                 "nano+D400", "mini+D400", "full+D400",
                 "nano+GA", "nano+GA+WS",
                 "nano+EI+GA+WS"]
@@ -2054,6 +2055,64 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             )
         print(f"\n   MusicBrainz: {mb_ok} OK, {mb_fail} empty/failed\n")
 
+    # Pre-run production genre resolver (OLD variant) — Beatport + LF + MB + SC
+    # Cached to old_resolver_cache.json so re-runs are instant.
+    old_variants = [v for v in variants if v == "OLD"]
+    old_cache: Dict[str, Dict[str, Any]] = {}
+    old_cache_file = AB_DIR / "old_resolver_cache.json"
+
+    if old_variants and old_cache_file.exists():
+        try:
+            old_cache = json.loads(old_cache_file.read_text(encoding="utf-8"))
+            hits = sum(1 for v in old_cache.values() if v and v.get("genre"))
+            print(f"  💾 OLD resolver cache loaded: {hits} results from {old_cache_file.name}")
+        except Exception:
+            old_cache = {}
+
+    if old_variants:
+        from djlib.metadata.genre_resolver import resolve as _old_resolve, ALL_SOURCES as _OLD_ALL
+        tracks_to_old = [t for t in tracks if t["path"] not in old_cache or not old_cache.get(t["path"])]
+        if tracks_to_old:
+            print(f"\n🎛️  Running production resolver on {len(tracks_to_old)} tracks (sequential — Beatport/LF/MB/SC)...")
+            old_ok = 0
+            old_fail = 0
+            for i, t in enumerate(tracks_to_old):
+                meta = extract_metadata_from_filename(t["filename"])
+                print(f"  [{i+1}/{len(tracks_to_old)}] {t['filename'][:55]}...", end=" ", flush=True)
+                t0 = time.time()
+                try:
+                    res = _old_resolve(
+                        artist=meta.get("artist", ""),
+                        title=meta.get("title", ""),
+                        version=meta.get("version", ""),
+                        duration_s=None,
+                        sources=_OLD_ALL,
+                        tag_genre="",
+                    )
+                    if res and res.main:
+                        old_cache[t["path"]] = {
+                            "genre": res.main,
+                            "subs": list(res.subs),
+                            "confidence": float(res.confidence),
+                            "sources": [s.source for s in res.breakdown],
+                        }
+                        print(f"✅ {time.time()-t0:.1f}s → {res.main}")
+                        old_ok += 1
+                    else:
+                        old_cache[t["path"]] = {"genre": "", "subs": [], "confidence": 0.0, "sources": []}
+                        print(f"∅ {time.time()-t0:.1f}s → no resolution")
+                        old_fail += 1
+                except Exception as e:
+                    old_cache[t["path"]] = {"genre": "", "subs": [], "confidence": 0.0, "sources": [], "error": str(e)[:200]}
+                    old_fail += 1
+                    print(f"❌ {time.time()-t0:.1f}s — {e}")
+
+                old_cache_file.write_text(
+                    json.dumps(old_cache, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            print(f"\n   OLD resolver: {old_ok} OK, {old_fail} empty/failed\n")
+
     # Pre-run AcoustID audio fingerprint (FP variants)
     fp_variants = [v for v in variants if "+FP" in v]
     fp_cache: Dict[str, Dict[str, str]] = {}
@@ -2143,6 +2202,20 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             if resume and track_key in results.get("tracks", {}):
                 cached = results["tracks"][track_key]
                 all_results.append(cached)
+                continue
+
+            # +OLD: bypass LLM entirely — use production genre_resolver
+            # (Beatport + Last.fm + MusicBrainz + SoundCloud weighted voting).
+            # Baseline for "does LLM actually beat what we already have?"
+            if variant == "OLD":
+                jobs.append({
+                    "track": t,
+                    "variant": variant,
+                    "model_name": "genre_resolver",
+                    "use_old": True,
+                    "meta": meta,
+                    "track_key": track_key,
+                })
                 continue
 
             use_d400 = "+D400" in variant
@@ -2302,6 +2375,24 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         result: Dict[str, Any]
 
         try:
+            if job.get("use_old"):
+                od = old_cache.get(job["track"]["path"]) or {}
+                predicted = od.get("genre", "") or "UNRESOLVED"
+                expected = job["track"]["expected_genre"]
+                return {
+                    "filename": job["track"]["filename"],
+                    "expected_genre": expected,
+                    "predicted_genre": predicted,
+                    "correct": predicted == expected,
+                    "confidence": od.get("confidence", 0.0),
+                    "reasoning": f"resolver sources: {','.join(od.get('sources', []))} subs: {','.join(od.get('subs', []))}",
+                    "variant": job["variant"],
+                    "model": "genre_resolver",
+                    "elapsed": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "_track_key": job["track_key"],
+                }
             if job["use_v3"]:
                 for _ in range(3):
                     r, fr, ti, to, te = _classify_once(job)
@@ -2430,6 +2521,9 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
     # Cost estimate
     print(f"\n  Cost estimate for 5000 tracks:")
     for variant in variants:
+        if variant == "OLD":
+            print(f"  {variant:12s} : resolver (no LLM) → $0 OpenAI cost, but Beatport scraping + cache cost")
+            continue
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
