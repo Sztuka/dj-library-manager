@@ -64,6 +64,7 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+WS+LF+MBL", "nano+WS+LF+MBL+FP",
                 "nano+WS+LF+FP", "nano+WS+LF+FPC",
                 "nano+WS+LF+T2", "nano+WS+LF+FPC+T2",
+                "nano+WS+LF+V3", "nano+WS+LF+FPC+V3",
                 "nano+D400", "mini+D400", "full+D400",
                 "nano+GA", "nano+GA+WS",
                 "nano+EI+GA+WS"]
@@ -2158,7 +2159,8 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             use_fpc = "+FPC" in variant
             use_fp = "+FP" in variant and not use_fpc
             use_t2 = "+T2" in variant
-            model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+T2", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+            use_v3 = "+V3" in variant  # majority vote: 3 runs, pick mode
+            model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+T2", "").replace("+V3", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
             model_name = MODEL_TIERS[model_key]
 
             if use_d400:
@@ -2233,6 +2235,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                 "prompt": prompt,
                 "family_prompt": family_prompt,
                 "use_t2": use_t2,
+                "use_v3": use_v3,
                 "meta": meta,
                 "audio_desc": audio_desc,
                 "ws_context": ws_context,
@@ -2248,52 +2251,97 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
     print(f"  💾 {cached_count} cached, {len(jobs)} to process (concurrency={concurrency})")
 
     # ── Execute API calls in parallel ────────────────────────────────────
-    def _process_job(job: Dict[str, Any]) -> Dict[str, Any]:
-        """Call OpenAI for a single (track, variant) job. Thread-safe.
+    def _classify_once(job: Dict[str, Any]):
+        """Single classification pass: one call (baseline) or two (T2).
 
-        For +T2 variants, performs two sequential calls: family, then subgenre
-        within the selected family. Falls back to full label list if step 1
-        returns an unknown family.
+        Returns (result_dict, family_result_dict, in_tokens, out_tokens, elapsed).
         """
         family_result: Dict[str, Any] = {}
         total_in = 0
         total_out = 0
         total_elapsed = 0.0
 
+        if job["use_t2"]:
+            family_result = call_openai(api_key, job["family_prompt"], job["model_name"])
+            total_in += family_result.get("_input_tokens", 0)
+            total_out += family_result.get("_output_tokens", 0)
+            total_elapsed += family_result.get("_elapsed", 0)
+            picked_family = family_result.get("family", "")
+            fam_to_g = _family_to_genres()
+            subgenres = fam_to_g.get(picked_family, []) or genre_labels
+            subgenre_prompt = build_prompt(
+                job["meta"], subgenres, job["audio_desc"], job["ws_context"],
+                web_search_structured=job["use_wsx"],
+                lastfm_tags=job["lf_tags"],
+                confusion_hints=job["use_p56"],
+                mb_tags=job["mb_tags_str"],
+                fp_match=job["fp_match_str"],
+            )
+            result = call_openai(api_key, subgenre_prompt, job["model_name"])
+        else:
+            result = call_openai(api_key, job["prompt"], job["model_name"])
+        total_in += result.get("_input_tokens", 0)
+        total_out += result.get("_output_tokens", 0)
+        total_elapsed += result.get("_elapsed", 0)
+        return result, family_result, total_in, total_out, total_elapsed
+
+    def _process_job(job: Dict[str, Any]) -> Dict[str, Any]:
+        """Classify one (track, variant) job. Thread-safe.
+
+        +T2 → two sequential calls (family then subgenre).
+        +V3 → 3 independent runs with majority vote on the final genre.
+              Tie-breaker: sum of confidences per candidate; if still tied,
+              first run's pick wins.
+        Combined +T2+V3 runs 3× the T2 pipeline = 6 calls/track.
+        """
+        family_result: Dict[str, Any] = {}
+        vote_runs: List[Dict[str, Any]] = []
+        total_in = 0
+        total_out = 0
+        total_elapsed = 0.0
+        result: Dict[str, Any]
+
         try:
-            if job["use_t2"]:
-                # Step 1: family
-                family_result = call_openai(api_key, job["family_prompt"], job["model_name"])
-                total_in += family_result.get("_input_tokens", 0)
-                total_out += family_result.get("_output_tokens", 0)
-                total_elapsed += family_result.get("_elapsed", 0)
-                picked_family = family_result.get("family", "")
-                fam_to_g = _family_to_genres()
-                subgenres = fam_to_g.get(picked_family, [])
-                if not subgenres:
-                    # Unknown family — fall back to full list (preserves accuracy)
-                    subgenres = genre_labels
-                # Step 2: subgenre within family
-                subgenre_prompt = build_prompt(
-                    job["meta"], subgenres, job["audio_desc"], job["ws_context"],
-                    web_search_structured=job["use_wsx"],
-                    lastfm_tags=job["lf_tags"],
-                    confusion_hints=job["use_p56"],
-                    mb_tags=job["mb_tags_str"],
-                    fp_match=job["fp_match_str"],
-                )
-                result = call_openai(api_key, subgenre_prompt, job["model_name"])
+            if job["use_v3"]:
+                for _ in range(3):
+                    r, fr, ti, to, te = _classify_once(job)
+                    vote_runs.append(r)
+                    if not family_result:
+                        family_result = fr  # keep first run's family pick for logging
+                    total_in += ti
+                    total_out += to
+                    total_elapsed += te
+
+                from collections import Counter
+                votes = Counter(r.get("genre", "?") for r in vote_runs)
+                top_count = votes.most_common(1)[0][1]
+                winners = [g for g, c in votes.items() if c == top_count]
+
+                if len(winners) == 1:
+                    winning_genre = winners[0]
+                else:
+                    # Tie: pick candidate with highest total confidence across runs
+                    conf_sums = {
+                        g: sum(r.get("confidence", 0) for r in vote_runs if r.get("genre") == g)
+                        for g in winners
+                    }
+                    winning_genre = max(conf_sums, key=conf_sums.get)
+
+                # Pick first run that voted for winner (keeps reasoning, confidence)
+                result = next(r for r in vote_runs if r.get("genre") == winning_genre)
+                result = dict(result)
+                result["_vote_count"] = votes[winning_genre]
+                result["_all_votes"] = dict(votes)
             else:
-                result = call_openai(api_key, job["prompt"], job["model_name"])
-            total_in += result.get("_input_tokens", 0)
-            total_out += result.get("_output_tokens", 0)
-            total_elapsed += result.get("_elapsed", 0)
+                result, family_result, total_in, total_out, total_elapsed = _classify_once(job)
         except Exception as e:
             result = {"genre": "ERROR", "confidence": 0, "reasoning": str(e)}
 
         predicted = result.get("genre", "?")
         expected = job["track"]["expected_genre"]
         is_correct = predicted == expected
+
+        multi_call = job["use_t2"] or job["use_v3"]
 
         out: Dict[str, Any] = {
             "filename": job["track"]["filename"],
@@ -2304,15 +2352,18 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             "reasoning": result.get("reasoning", ""),
             "variant": job["variant"],
             "model": job["model_name"],
-            "elapsed": round(total_elapsed, 2) if job["use_t2"] else result.get("_elapsed", 0),
-            "input_tokens": total_in if job["use_t2"] else result.get("_input_tokens", 0),
-            "output_tokens": total_out if job["use_t2"] else result.get("_output_tokens", 0),
+            "elapsed": round(total_elapsed, 2) if multi_call else result.get("_elapsed", 0),
+            "input_tokens": total_in if multi_call else result.get("_input_tokens", 0),
+            "output_tokens": total_out if multi_call else result.get("_output_tokens", 0),
             "_track_key": job["track_key"],
         }
         if job["use_t2"]:
             out["picked_family"] = family_result.get("family", "")
             out["family_confidence"] = family_result.get("confidence", 0)
             out["family_reasoning"] = family_result.get("reasoning", "")[:200]
+        if job["use_v3"]:
+            out["vote_count"] = result.get("_vote_count", 1)
+            out["all_votes"] = result.get("_all_votes", {})
         return out
 
     if jobs:
@@ -2382,7 +2433,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+T2", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+T2", "").replace("+V3", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)
