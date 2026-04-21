@@ -24,6 +24,7 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -56,8 +57,15 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+E2", "mini+E2", "full+E2",
                 "nano+EI",
                 "nano+WS", "nano+EI+WS",
+                "nano+WSX", "nano+EI+WSX",
+                "nano+LF", "nano+WS+LF", "mini+WS+LF", "full+WS+LF",
+                "nano+WS+LF+P56",
+                "nano+WS+LF+MB",
+                "nano+WS+LF+MBL", "nano+WS+LF+MBL+FP",
+                "nano+WS+LF+FP", "nano+WS+LF+FPC",
                 "nano+D400", "mini+D400", "full+D400",
-                "nano+GA", "nano+GA+WS"]
+                "nano+GA", "nano+GA+WS",
+                "nano+EI+GA+WS"]
 
 # Default run preset: the 4 variants we care about
 # nano        = filename metadata (artist/title/version/bpm/key) only
@@ -151,6 +159,27 @@ def extract_metadata_from_filename(filename: str) -> Dict[str, str]:
         "bpm": bpm,
         "key": key,
     }
+
+
+def filename_is_orphan(meta: Dict[str, str]) -> bool:
+    """True when filename parser couldn't produce a clean artist/title split.
+
+    Triggers fingerprint fallback: the filename gives no usable author signal,
+    so AcoustID identification becomes authoritative rather than additive.
+    """
+    artist = (meta.get("artist") or "").strip()
+    title = (meta.get("title") or "").strip()
+    if not artist or not title:
+        return True
+    if artist == title:
+        return True
+    # Leading track-number pattern like "01 ", "01. ", "01_"
+    if re.match(r'^\d{1,3}[\s\.\-_]', artist):
+        return True
+    # Generic/placeholder artists
+    if artist.lower() in {"va", "various", "various artists", "unknown", "unknown artist"}:
+        return True
+    return False
 
 
 # ── Audio metadata readers ───────────────────────────────────────────────────
@@ -1049,6 +1078,87 @@ def describe_gemini_audio(description: str) -> str:
     return "Audio character (Gemini → interpreted):\n" + description
 
 
+# ── Web Search structured extraction (WSX variant) ───────────────────────────
+
+def extract_ws_entities(
+    api_key: str,
+    ws_raw: str,
+    artist_hint: str,
+    title_hint: str,
+    model: str = "gpt-5-nano",
+) -> str:
+    """Extract structured entities from raw WS snippets via a small LLM pass.
+
+    Rationale: raw SearXNG output often puts the relevant result at position 5+
+    after generic phrase-matching noise (e.g. query "Country House" returns
+    house-music labels before the actual Blur track). A cheap extraction pass
+    isolates track-specific facts and flags noise, so the downstream classifier
+    does not need to scan full result list and decide what pertains.
+
+    Returns prose block ready to inject into classifier prompt. Empty string
+    if ws_raw is absent.
+    """
+    if not ws_raw or ws_raw.startswith("(No web search"):
+        return ""
+
+    system = (
+        "You extract structured metadata from raw web search results for a specific "
+        "music track query. Return JSON with these exact fields:\n"
+        "  track_match: boolean — true if ANY result clearly identifies the queried track "
+        "(artist name + track title both match, not just phrase co-occurrence)\n"
+        "  track_match_source: string — URL or source name where the track was confirmed, or \"\"\n"
+        "  identified_artist: string — artist name as confirmed by sources, or \"\"\n"
+        "  identified_title: string — title as confirmed by sources, or \"\"\n"
+        "  release_year: integer or null\n"
+        "  labels: array of strings — record labels mentioned in relation to THIS track\n"
+        "  genre_hints: array of strings — genre tags/descriptors from sources "
+        "(e.g. [\"Britpop\", \"Alternative Rock\"] or [\"Tech House\", \"Minimal\"])\n"
+        "  is_remix_version: boolean — true if results describe a remix/edit version of the track\n"
+        "  noise_note: string — brief note about unrelated results that happen to match the query phrase, "
+        "e.g. \"several results for house labels with 'country' in name — generic phrase matches, not the track\"\n\n"
+        "Be STRICT: only mark track_match=true when an artist + title clearly corresponds to the query. "
+        "Do NOT conflate query-phrase substring matches with track identification."
+    )
+    user = (
+        f"Query: {artist_hint} - {title_hint}\n\n"
+        f"Raw web search results:\n{ws_raw}"
+    )
+
+    resp = call_openai(
+        api_key,
+        json.dumps([
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]),
+        model,
+    )
+
+    lines = ["Web search evidence (structured extraction):"]
+    if resp.get("track_match"):
+        src = resp.get("track_match_source", "")
+        lines.append("- Track confirmed in results: yes" + (f" (source: {src})" if src else ""))
+        if resp.get("identified_artist"):
+            lines.append(f"- Confirmed artist: {resp['identified_artist']}")
+        if resp.get("identified_title"):
+            lines.append(f"- Confirmed title: {resp['identified_title']}")
+        if resp.get("release_year"):
+            lines.append(f"- Release year: {resp['release_year']}")
+        if resp.get("labels"):
+            lines.append(f"- Labels: {', '.join(resp['labels'])}")
+        if resp.get("genre_hints"):
+            lines.append(f"- Genre hints: {', '.join(resp['genre_hints'])}")
+        if resp.get("is_remix_version"):
+            lines.append(f"- Results describe remix/edit, not original")
+    else:
+        lines.append("- Track NOT confirmed in search results")
+        if resp.get("genre_hints"):
+            lines.append(f"- Ambient genre signals (may not apply): {', '.join(resp['genre_hints'])}")
+    if resp.get("noise_note"):
+        lines.append(f"- Noise warning: {resp['noise_note']}")
+
+    return "\n".join(lines)
+
+
 # ── Prompt builder ───────────────────────────────────────────────────────────
 
 def load_genre_labels() -> List[str]:
@@ -1058,8 +1168,50 @@ def load_genre_labels() -> List[str]:
     return [v["label"] for v in data.values() if isinstance(v, dict) and "label" in v]
 
 
+@lru_cache(maxsize=1)
+def _synonym_to_label_map() -> Dict[str, str]:
+    """Build {synonym_lower: canonical_label} map from genres.yml, used by MB-lite filter."""
+    with open(PROJECT_ROOT / "genres.yml") as f:
+        data = yaml.safe_load(f)
+    m: Dict[str, str] = {}
+    for v in data.values():
+        if not isinstance(v, dict):
+            continue
+        label = v.get("label")
+        if not label:
+            continue
+        m[label.lower().strip()] = label
+        for syn in v.get("synonyms") or []:
+            m[syn.lower().strip()] = label
+    return m
+
+
+def filter_mb_tags_to_taxonomy(raw_tags_csv: str) -> str:
+    """Keep only MB tags whose canonical form maps to a label in genres.yml.
+
+    Input:  "alternative r&b, synth-pop, 2020s, canadian, electropop"
+    Output: "Synthpop"  (only labels present in genres.yml, deduped, order preserved)
+    """
+    if not raw_tags_csv:
+        return ""
+    syn_map = _synonym_to_label_map()
+    seen: set = set()
+    out: List[str] = []
+    for raw in raw_tags_csv.split(","):
+        t = raw.strip().lower()
+        if not t:
+            continue
+        label = syn_map.get(t)
+        if label and label not in seen:
+            seen.add(label)
+            out.append(label)
+    return ", ".join(out)
+
+
 def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str = "",
-                 web_search_context: str = "") -> str:
+                 web_search_context: str = "", web_search_structured: bool = False,
+                 lastfm_tags: str = "", confusion_hints: bool = False,
+                 mb_tags: str = "", fp_match: str = "") -> str:
     """Build genre classification prompt for AB test.
 
     IMPORTANT: In AB test mode, ctx contains ONLY filename-derived metadata
@@ -1072,6 +1224,9 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
     genre_list = ", ".join(genre_labels)
 
     parts = []
+    if fp_match:
+        # FP identified the track — use as strong signal, placed BEFORE filename fields
+        parts.append(f"Audio fingerprint identification (AcoustID→MusicBrainz, authoritative):\n{fp_match}")
     if ctx.get("artist"):
         parts.append(f"Artist: {ctx['artist']}")
     if ctx.get("title"):
@@ -1101,7 +1256,21 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
 
     if web_search_context and not web_search_context.startswith("(No web search"):
         parts.append("")
-        parts.append(f"Web search results:\n{web_search_context}")
+        if web_search_structured:
+            parts.append(web_search_context)
+        else:
+            parts.append(f"Web search results:\n{web_search_context}")
+
+    if lastfm_tags:
+        parts.append("")
+        parts.append(f"Last.fm community tags (sorted by count, may include non-genre descriptors):\n{lastfm_tags}")
+
+    if mb_tags:
+        parts.append("")
+        # If mb_tags contains only canonical labels from genres.yml it was filtered (MB-lite);
+        # otherwise it's raw MB output. Heuristic: presence of comma + space is common to both,
+        # so we just describe as "MusicBrainz genre signals".
+        parts.append(f"MusicBrainz genre signals:\n{mb_tags}")
 
     track_info = "\n".join(parts)
 
@@ -1148,6 +1317,9 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
     )
 
     audio_signal_line = ""
+    has_gemini_desc = bool(audio_desc) and "Audio character (Gemini" in audio_desc
+    has_essentia_i_desc = bool(audio_desc) and "Audio character (Essentia" in audio_desc
+
     if audio_desc and audio_desc.startswith("Audio genre analysis (Discogs400"):
         # D400 format — deep learning audio analysis
         audio_signal_line = (
@@ -1158,26 +1330,23 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
             "When the audio analysis and metadata agree, be confident. "
             "When they differ, consider that remixes transform the sound — trust the audio genre for the remix's actual style."
         )
-    elif audio_desc and audio_desc.startswith("Audio character (Gemini"):
-        # GA format — Gemini-based sonic description (bass/drums/melody/energy/production)
-        # Symmetric framing with EI: same verb ("Use this to inform..."), same structure,
-        # no quality claims ("most detailed", "LISTENED"). Categories differ because that's
-        # the experimental variable; the framing must not.
-        audio_signal_line = (
-            "\n* AUDIO CHARACTER (Gemini → interpreted) — sonic description of what this track "
-            "SOUNDS LIKE (bass, drums, melody, energy, production) WITHOUT naming genres. "
-            "Use this to inform the genre decision, especially to distinguish between similar subgenres."
-        )
-    elif audio_desc and audio_desc.startswith("Audio character (Essentia"):
-        # EI format — LLM-interpreted sonic description (no genre names, objective)
-        # Symmetric framing with GA: same verb ("Use this to inform..."), same structure,
-        # no quality claims. Categories differ because that's the experimental variable.
-        audio_signal_line = (
-            "\n* AUDIO CHARACTER (Essentia → interpreted) — sonic description of what this track "
-            "SOUNDS LIKE (tempo feel, rhythm character, energy, brightness, texture, harmony) WITHOUT "
-            "naming genres. "
-            "Use this to inform the genre decision, especially to distinguish between similar subgenres."
-        )
+    elif has_gemini_desc or has_essentia_i_desc:
+        # GA and/or EI — emit one line per present signal. Symmetric framing:
+        # same verb ("Use this to inform..."), same structure, no quality claims.
+        # Categories differ because that's the experimental variable.
+        if has_gemini_desc:
+            audio_signal_line += (
+                "\n* AUDIO CHARACTER (Gemini → interpreted) — sonic description of what this track "
+                "SOUNDS LIKE (bass, drums, melody, energy, production) WITHOUT naming genres. "
+                "Use this to inform the genre decision, especially to distinguish between similar subgenres."
+            )
+        if has_essentia_i_desc:
+            audio_signal_line += (
+                "\n* AUDIO CHARACTER (Essentia → interpreted) — sonic description of what this track "
+                "SOUNDS LIKE (tempo feel, rhythm character, energy, brightness, texture, harmony) WITHOUT "
+                "naming genres. "
+                "Use this to inform the genre decision, especially to distinguish between similar subgenres."
+            )
     elif audio_desc and not audio_desc.startswith("Audio analysis (Essentia"):
         # v1 format — aggressive framing
         audio_signal_line = (
@@ -1212,6 +1381,30 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
     # BPM signal number depends on whether WS is present
     bpm_signal_num = "4" if web_search_signal else "3"
 
+    confusion_block = ""
+    if confusion_hints:
+        confusion_block = (
+            "\n\nCOMMON CONFUSIONS — disambiguation cues:\n"
+            "- Afro House vs House/Tech House: Afro House has organic/tribal percussion (congas, "
+            "djembe, marimba), African or Latin vocal chants, long atmospheric builds; BPM 116-128. "
+            "If you see producers like Keinemusik, &ME, Rampa, Black Coffee, Enoo Napa, Kususa, "
+            "Caiiro, Da Capo, Themba → Afro House.\n"
+            "- Progressive House vs House: Progressive has long melodic buildups, emotive synth "
+            "leads, arpeggios, 125-130 BPM. Known artists: Yotto, Lane 8, Pryda, Eric Prydz, "
+            "Anjunadeep roster.\n"
+            "- Synthpop vs Pop: Synthpop has prominent analog synth leads, 80s-style gated reverb, "
+            "retro-futurist aesthetic. The Weeknd's Blinding Lights, Dua Lipa's Future Nostalgia, "
+            "M83 → Synthpop.\n"
+            "- R&B vs Hip-Hop: R&B has sung vocals as the primary element; Hip-Hop is rap-led. "
+            "If the hook is sung and melodic, it's R&B (even with rap features).\n"
+            "- Dancehall vs Reggae: Dancehall is faster (90-110 BPM), uses digital riddims, "
+            "toasting/deejaying; Reggae is slower (60-90 BPM), organic instrumentation, sung vocals.\n"
+            "- Disco vs Disco House: Disco is the 70s-80s original style (live strings, live "
+            "bass); Disco House is 4-on-the-floor house with disco samples/loops.\n"
+            "- Electro Swing: vintage swing/jazz samples fused with house/electro beat. "
+            "Parov Stelar, Caravan Palace, Yolanda Be Cool → Electro Swing, not Disco House."
+        )
+
     system_prompt = (
         f"You are an expert DJ music classifier. Classify tracks into exactly ONE of these genres:\n"
         f"{genre_list}\n\n"
@@ -1229,7 +1422,8 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
         f"{bpm_signal_num}. BPM — supplementary range indicator, mainly useful for ELECTRONIC genres only."
         f"{audio_signal_line}"
         f"{remix_instruction}"
-        f"{bpm_guide}\n\n"
+        f"{bpm_guide}"
+        f"{confusion_block}\n\n"
         # v3: non-electronic awareness
         f"CRITICAL: Many tracks are non-electronic (Rock, Pop, Hip-Hop, R&B, Soul, Funk, "
         f"Reggae, Punk, Indie Pop, Synthpop, etc.). For these genres, artist identity is the "
@@ -1274,7 +1468,7 @@ def call_openai(api_key: str, prompt_json: str, model: str) -> Dict[str, Any]:
             "text": {"format": {"type": "json_object"}},
             "max_output_tokens": 4096,
         },
-        timeout=60,
+        timeout=120,
     )
     elapsed = time.time() - t0
     resp.raise_for_status()
@@ -1616,6 +1810,224 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             ws_cache_file.write_text(json.dumps(ws_cache, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n   Web search: {ws_ok} OK, {ws_fail} failed\n")
 
+    # Pre-run WS structured extraction (WSX variant)
+    wsx_variants = [v for v in variants if "+WSX" in v]
+    ws_struct_cache: Dict[str, str] = {}
+    ws_struct_cache_file = AB_DIR / "ws_struct_cache.json"
+
+    if wsx_variants and ws_struct_cache_file.exists():
+        try:
+            ws_struct_cache = json.loads(ws_struct_cache_file.read_text(encoding="utf-8"))
+            print(f"  💾 WSX cache loaded: {sum(1 for v in ws_struct_cache.values() if v)} results from {ws_struct_cache_file.name}")
+        except Exception:
+            ws_struct_cache = {}
+
+    if wsx_variants:
+        tracks_to_extract = [t for t in tracks if t["path"] not in ws_struct_cache]
+        if not tracks_to_extract:
+            print(f"🔬 WSX extraction: all {len(tracks)} tracks cached, skipping.\n")
+        else:
+            print(f"🔬 Running WS structured extraction for {len(tracks_to_extract)}/{len(tracks)} tracks...\n")
+
+        wsx_ok = wsx_fail = 0
+        for i, t in enumerate(tracks_to_extract):
+            meta = extract_metadata_from_filename(t["filename"])
+            tk = f"{meta.get('artist', '')} - {meta.get('title', '')}"
+            ws_raw = ws_cache.get(t["path"], "")
+
+            print(f"  [{i+1}/{len(tracks_to_extract)}] {tk[:55]}...", end=" ", flush=True)
+            t0 = time.time()
+            try:
+                block = extract_ws_entities(
+                    api_key,
+                    ws_raw,
+                    artist_hint=meta.get("artist", ""),
+                    title_hint=meta.get("title", ""),
+                )
+                ws_struct_cache[t["path"]] = block
+                elapsed = time.time() - t0
+                print(f"✅ {elapsed:.1f}s → {len(block)} chars")
+                wsx_ok += 1
+            except Exception as e:
+                elapsed = time.time() - t0
+                ws_struct_cache[t["path"]] = ""
+                wsx_fail += 1
+                print(f"❌ {elapsed:.1f}s — {e}")
+
+            ws_struct_cache_file.write_text(
+                json.dumps(ws_struct_cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        print(f"\n   WSX extraction: {wsx_ok} OK, {wsx_fail} failed\n")
+
+    # Pre-run Last.fm tag fetch (LF variants)
+    lf_variants = [v for v in variants if "+LF" in v]
+    lf_cache: Dict[str, str] = {}
+    lf_cache_file = AB_DIR / "lastfm_cache.json"
+
+    if lf_variants and lf_cache_file.exists():
+        try:
+            lf_cache = json.loads(lf_cache_file.read_text(encoding="utf-8"))
+            print(f"  💾 Last.fm cache loaded: {sum(1 for v in lf_cache.values() if v)} results from {lf_cache_file.name}")
+        except Exception:
+            lf_cache = {}
+
+    if lf_variants:
+        from djlib.metadata import lastfm as _lf
+        tracks_to_fetch = [t for t in tracks if t["path"] not in lf_cache]
+        if not tracks_to_fetch:
+            print(f"📻 Last.fm: all {len(tracks)} tracks cached, skipping.\n")
+        else:
+            print(f"📻 Fetching Last.fm tags for {len(tracks_to_fetch)}/{len(tracks)} tracks...\n")
+
+        lf_ok = lf_fail = 0
+        for i, t in enumerate(tracks_to_fetch):
+            meta = extract_metadata_from_filename(t["filename"])
+            artist = meta.get("artist", "")
+            title = meta.get("title", "")
+            tk = f"{artist} - {title}"
+            print(f"  [{i+1}/{len(tracks_to_fetch)}] {tk[:55]}...", end=" ", flush=True)
+            t0 = time.time()
+            try:
+                tags = _lf.top_tags(artist, title, min_count=10, max_tags=10)
+                elapsed = time.time() - t0
+                if tags:
+                    block = ", ".join(f"{name} ({cnt})" for name, cnt in tags)
+                    lf_cache[t["path"]] = block
+                    print(f"✅ {elapsed:.1f}s → {len(tags)} tags")
+                    lf_ok += 1
+                else:
+                    lf_cache[t["path"]] = ""
+                    print(f"∅ {elapsed:.1f}s → no tags")
+                    lf_fail += 1
+            except Exception as e:
+                lf_cache[t["path"]] = ""
+                lf_fail += 1
+                print(f"❌ {time.time()-t0:.1f}s — {e}")
+            time.sleep(0.25)  # gentle on Last.fm API
+
+            lf_cache_file.write_text(
+                json.dumps(lf_cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        print(f"\n   Last.fm: {lf_ok} OK, {lf_fail} empty/failed\n")
+
+    # Pre-run MusicBrainz tag fetch (MB or MBL variants — both use same raw cache)
+    mb_variants = [v for v in variants if ("+MB" in v) or ("+MBL" in v)]
+    mb_cache: Dict[str, str] = {}
+    mb_cache_file = AB_DIR / "mb_cache.json"
+
+    if mb_variants and mb_cache_file.exists():
+        try:
+            mb_cache = json.loads(mb_cache_file.read_text(encoding="utf-8"))
+            print(f"  💾 MusicBrainz cache loaded: {sum(1 for v in mb_cache.values() if v)} results from {mb_cache_file.name}")
+        except Exception:
+            mb_cache = {}
+
+    if mb_variants:
+        from djlib.metadata import mb_client as _mb
+        tracks_to_fetch = [t for t in tracks if t["path"] not in mb_cache]
+        if not tracks_to_fetch:
+            print(f"🎛️  MusicBrainz: all {len(tracks)} tracks cached, skipping.\n")
+        else:
+            print(f"🎛️  Fetching MusicBrainz tags for {len(tracks_to_fetch)}/{len(tracks)} tracks (rate limit 1 req/s)...\n")
+
+        mb_ok = mb_fail = 0
+        for i, t in enumerate(tracks_to_fetch):
+            meta = extract_metadata_from_filename(t["filename"])
+            artist = meta.get("artist", "")
+            title = meta.get("title", "")
+            tk = f"{artist} - {title}"
+            print(f"  [{i+1}/{len(tracks_to_fetch)}] {tk[:55]}...", end=" ", flush=True)
+            t0 = time.time()
+            try:
+                match = _mb.search_recording(artist, title)
+                if not match or match.score < 80:
+                    mb_cache[t["path"]] = ""
+                    print(f"∅ {time.time()-t0:.1f}s → no confident match")
+                    mb_fail += 1
+                else:
+                    genres = _mb.get_recording_genres(
+                        match.recording_id,
+                        release_group_id=match.release_group_id,
+                        artist_id=match.artist_id,
+                    )
+                    if genres:
+                        block = ", ".join(genres[:12])
+                        mb_cache[t["path"]] = block
+                        print(f"✅ {time.time()-t0:.1f}s → {len(genres)} tags (score={match.score})")
+                        mb_ok += 1
+                    else:
+                        mb_cache[t["path"]] = ""
+                        print(f"∅ {time.time()-t0:.1f}s → matched but no tags")
+                        mb_fail += 1
+            except Exception as e:
+                mb_cache[t["path"]] = ""
+                mb_fail += 1
+                print(f"❌ {time.time()-t0:.1f}s — {e}")
+
+            mb_cache_file.write_text(
+                json.dumps(mb_cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        print(f"\n   MusicBrainz: {mb_ok} OK, {mb_fail} empty/failed\n")
+
+    # Pre-run AcoustID audio fingerprint (FP variants)
+    fp_variants = [v for v in variants if "+FP" in v]
+    fp_cache: Dict[str, Dict[str, str]] = {}
+    fp_cache_file = AB_DIR / "fp_cache.json"
+
+    if fp_variants and fp_cache_file.exists():
+        try:
+            fp_cache = json.loads(fp_cache_file.read_text(encoding="utf-8"))
+            hits = sum(1 for v in fp_cache.values() if v and v.get("artist"))
+            print(f"  💾 Fingerprint cache loaded: {hits} matches from {fp_cache_file.name}")
+        except Exception:
+            fp_cache = {}
+
+    if fp_variants:
+        from djlib.fingerprint import fingerprint_info
+        from djlib.enrich import lookup_acoustid
+        tracks_to_fp = [t for t in tracks if t["path"] not in fp_cache]
+        if not tracks_to_fp:
+            print(f"🔬 AcoustID: all {len(tracks)} tracks cached, skipping.\n")
+        else:
+            print(f"🔬 Running AcoustID fingerprint + MB lookup for {len(tracks_to_fp)}/{len(tracks)} tracks...\n")
+
+        fp_ok = fp_fail = 0
+        for i, t in enumerate(tracks_to_fp):
+            print(f"  [{i+1}/{len(tracks_to_fp)}] {t['filename'][:55]}...", end=" ", flush=True)
+            t0 = time.time()
+            try:
+                dur, fp = fingerprint_info(Path(t["path"]))
+                res = lookup_acoustid(fp, dur)
+                if res and res.get("artist_suggest") and res.get("title_suggest"):
+                    fp_cache[t["path"]] = {
+                        "artist": res.get("artist_suggest", ""),
+                        "title": res.get("title_suggest", ""),
+                        "year": res.get("year_suggest", ""),
+                        "album": res.get("album_suggest", "") or res.get("original_album_title", ""),
+                        "recording_mbid": res.get("recording_mbid", ""),
+                        "genre": res.get("genre_suggest", ""),
+                    }
+                    print(f"✅ {time.time()-t0:.1f}s → {res.get('artist_suggest')[:25]} - {res.get('title_suggest')[:25]}")
+                    fp_ok += 1
+                else:
+                    fp_cache[t["path"]] = {}
+                    print(f"∅ {time.time()-t0:.1f}s → no AcoustID match")
+                    fp_fail += 1
+            except Exception as e:
+                fp_cache[t["path"]] = {}
+                fp_fail += 1
+                print(f"❌ {time.time()-t0:.1f}s — {e}")
+
+            fp_cache_file.write_text(
+                json.dumps(fp_cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        print(f"\n   AcoustID: {fp_ok} OK, {fp_fail} no-match\n")
+
+
     # ── Build all jobs ────────────────────────────────────────────────────
     # Pre-compute per-track metadata once (same across all variants)
     track_meta_cache: Dict[str, Dict[str, str]] = {}  # path -> meta dict
@@ -1656,16 +2068,30 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             use_essentia_interp = "+EI" in variant
             use_essentia_v2 = "+E2" in variant
             use_essentia = "+E" in variant and not use_essentia_v2 and not use_d400 and not use_essentia_interp and not use_ga
-            use_ws = "+WS" in variant
-            model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+            use_wsx = "+WSX" in variant
+            use_ws = "+WS" in variant and not use_wsx
+            use_lf = "+LF" in variant
+            use_p56 = "+P56" in variant
+            use_mbl = "+MBL" in variant
+            use_mb = "+MB" in variant and not use_mbl  # raw MB vs filtered MB-lite
+            use_fpc = "+FPC" in variant
+            use_fp = "+FP" in variant and not use_fpc
+            model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
             model_name = MODEL_TIERS[model_key]
 
             if use_d400:
                 audio_desc = discogs_cache.get(t["path"], "")
-            elif use_ga:
-                audio_desc = ga_cache.get(t["path"], "")
-            elif use_essentia_interp:
-                audio_desc = essentia_interp_cache.get(t["path"], "")
+            elif use_ga or use_essentia_interp:
+                desc_parts = []
+                if use_ga:
+                    ga_d = ga_cache.get(t["path"], "")
+                    if ga_d:
+                        desc_parts.append(ga_d)
+                if use_essentia_interp:
+                    ei_d = essentia_interp_cache.get(t["path"], "")
+                    if ei_d:
+                        desc_parts.append(ei_d)
+                audio_desc = "\n\n".join(desc_parts)
             elif use_essentia_v2:
                 audio_desc = essentia_cache_v2.get(t["path"], "")
             elif use_essentia:
@@ -1673,8 +2099,40 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             else:
                 audio_desc = ""
 
-            ws_context = ws_cache.get(t["path"], "") if use_ws else ""
-            prompt = build_prompt(meta, genre_labels, audio_desc, ws_context)
+            if use_wsx:
+                ws_context = ws_struct_cache.get(t["path"], "")
+            elif use_ws:
+                ws_context = ws_cache.get(t["path"], "")
+            else:
+                ws_context = ""
+            lf_tags = lf_cache.get(t["path"], "") if use_lf else ""
+            mb_raw = mb_cache.get(t["path"], "") if (use_mb or use_mbl) else ""
+            if use_mbl:
+                mb_tags_str = filter_mb_tags_to_taxonomy(mb_raw)
+            elif use_mb:
+                mb_tags_str = mb_raw
+            else:
+                mb_tags_str = ""
+
+            fp_match_str = ""
+            if use_fp or (use_fpc and filename_is_orphan(meta)):
+                fp_d = fp_cache.get(t["path"]) or {}
+                if fp_d and fp_d.get("artist") and fp_d.get("title"):
+                    bits = [f"{fp_d['artist']} - {fp_d['title']}"]
+                    if fp_d.get("year"):
+                        bits.append(f"({fp_d['year']})")
+                    if fp_d.get("album"):
+                        bits.append(f"from album \"{fp_d['album']}\"")
+                    fp_match_str = " ".join(bits)
+                    if fp_d.get("genre"):
+                        fp_match_str += f" — AcoustID genre hint: {fp_d['genre']}"
+
+            prompt = build_prompt(meta, genre_labels, audio_desc, ws_context,
+                                  web_search_structured=use_wsx,
+                                  lastfm_tags=lf_tags,
+                                  confusion_hints=use_p56,
+                                  mb_tags=mb_tags_str,
+                                  fp_match=fp_match_str)
 
             jobs.append({
                 "track": t,
@@ -1781,7 +2239,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WS", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)
