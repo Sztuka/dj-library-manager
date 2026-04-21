@@ -63,6 +63,7 @@ ALL_VARIANTS = ["nano", "nano+E", "mini", "mini+E", "full", "full+E",
                 "nano+WS+LF+MB",
                 "nano+WS+LF+MBL", "nano+WS+LF+MBL+FP",
                 "nano+WS+LF+FP", "nano+WS+LF+FPC",
+                "nano+WS+LF+T2", "nano+WS+LF+FPC+T2",
                 "nano+D400", "mini+D400", "full+D400",
                 "nano+GA", "nano+GA+WS",
                 "nano+EI+GA+WS"]
@@ -1186,6 +1187,37 @@ def _synonym_to_label_map() -> Dict[str, str]:
     return m
 
 
+@lru_cache(maxsize=1)
+def _family_to_genres() -> Dict[str, List[str]]:
+    """Map family name → list of genre labels belonging to it (incl. also_in)."""
+    with open(PROJECT_ROOT / "genres.yml") as f:
+        data = yaml.safe_load(f)
+    out: Dict[str, List[str]] = {}
+    for v in data.values():
+        if not isinstance(v, dict):
+            continue
+        label = v.get("label")
+        fam = v.get("family")
+        if not label or not fam:
+            continue
+        out.setdefault(fam, []).append(label)
+        for af in (v.get("also_in") or []):
+            out.setdefault(af, []).append(label)
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+
+@lru_cache(maxsize=1)
+def _label_to_family() -> Dict[str, str]:
+    """Map genre label → primary family (for reporting)."""
+    with open(PROJECT_ROOT / "genres.yml") as f:
+        data = yaml.safe_load(f)
+    out: Dict[str, str] = {}
+    for v in data.values():
+        if isinstance(v, dict) and v.get("label") and v.get("family"):
+            out[v["label"]] = v["family"]
+    return out
+
+
 def filter_mb_tags_to_taxonomy(raw_tags_csv: str) -> str:
     """Keep only MB tags whose canonical form maps to a label in genres.yml.
 
@@ -1441,6 +1473,55 @@ def build_prompt(ctx: Dict[str, str], genre_labels: List[str], audio_desc: str =
     )
 
     user_prompt = f"Classify this track:\n\n{track_info}"
+
+    return json.dumps([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ])
+
+
+def build_family_prompt(ctx: Dict[str, str], families: List[str],
+                         web_search_context: str = "", lastfm_tags: str = "",
+                         fp_match: str = "") -> str:
+    """Step 1 of two-step: classify track into a broad FAMILY only.
+
+    Uses the same signal blocks as build_prompt (artist/title, WS, LF, FP),
+    but asks for a single family label. Step 2 then classifies the subgenre
+    within that family using a reduced label list.
+    """
+    family_list = ", ".join(families)
+
+    parts = []
+    if fp_match:
+        parts.append(f"Audio fingerprint identification (AcoustID→MusicBrainz, authoritative):\n{fp_match}")
+    if ctx.get("artist"):
+        parts.append(f"Artist: {ctx['artist']}")
+    if ctx.get("title"):
+        parts.append(f"Title: {ctx['title']}")
+    if ctx.get("version"):
+        parts.append(f"Version/Remix: {ctx['version']}")
+    if ctx.get("bpm"):
+        parts.append(f"BPM: {ctx['bpm']}")
+    if ctx.get("key"):
+        parts.append(f"Key: {ctx['key']}")
+    if web_search_context and not web_search_context.startswith("(No web search"):
+        parts.append("")
+        parts.append(f"Web search context:\n{web_search_context}")
+    if lastfm_tags:
+        parts.append("")
+        parts.append(f"Last.fm community tags (sorted by count, may include non-genre descriptors):\n{lastfm_tags}")
+
+    track_info = "\n".join(parts)
+
+    system_prompt = (
+        f"You classify music tracks into broad FAMILIES (scenes), not specific subgenres. "
+        f"Pick exactly ONE family from:\n{family_list}\n\n"
+        f"Use (in priority order): artist/title world knowledge, remixer identity for remixes, "
+        f"web search evidence, Last.fm tags, BPM as weak signal. A remixer's scene overrides the "
+        f"original artist's family for remix tracks.\n\n"
+        f"Respond with JSON: {{\"family\": \"...\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}"
+    )
+    user_prompt = f"Identify this track's family:\n\n{track_info}"
 
     return json.dumps([
         {"role": "system", "content": system_prompt},
@@ -2076,7 +2157,8 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             use_mb = "+MB" in variant and not use_mbl  # raw MB vs filtered MB-lite
             use_fpc = "+FPC" in variant
             use_fp = "+FP" in variant and not use_fpc
-            model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+            use_t2 = "+T2" in variant
+            model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+T2", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
             model_name = MODEL_TIERS[model_key]
 
             if use_d400:
@@ -2134,11 +2216,31 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
                                   mb_tags=mb_tags_str,
                                   fp_match=fp_match_str)
 
+            family_prompt = ""
+            if use_t2:
+                families = sorted(_family_to_genres().keys())
+                family_prompt = build_family_prompt(
+                    meta, families,
+                    web_search_context=ws_context,
+                    lastfm_tags=lf_tags,
+                    fp_match=fp_match_str,
+                )
+
             jobs.append({
                 "track": t,
                 "variant": variant,
                 "model_name": model_name,
                 "prompt": prompt,
+                "family_prompt": family_prompt,
+                "use_t2": use_t2,
+                "meta": meta,
+                "audio_desc": audio_desc,
+                "ws_context": ws_context,
+                "use_wsx": use_wsx,
+                "lf_tags": lf_tags,
+                "use_p56": use_p56,
+                "mb_tags_str": mb_tags_str,
+                "fp_match_str": fp_match_str,
                 "track_key": track_key,
             })
 
@@ -2147,9 +2249,45 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
 
     # ── Execute API calls in parallel ────────────────────────────────────
     def _process_job(job: Dict[str, Any]) -> Dict[str, Any]:
-        """Call OpenAI for a single (track, variant) job. Thread-safe."""
+        """Call OpenAI for a single (track, variant) job. Thread-safe.
+
+        For +T2 variants, performs two sequential calls: family, then subgenre
+        within the selected family. Falls back to full label list if step 1
+        returns an unknown family.
+        """
+        family_result: Dict[str, Any] = {}
+        total_in = 0
+        total_out = 0
+        total_elapsed = 0.0
+
         try:
-            result = call_openai(api_key, job["prompt"], job["model_name"])
+            if job["use_t2"]:
+                # Step 1: family
+                family_result = call_openai(api_key, job["family_prompt"], job["model_name"])
+                total_in += family_result.get("_input_tokens", 0)
+                total_out += family_result.get("_output_tokens", 0)
+                total_elapsed += family_result.get("_elapsed", 0)
+                picked_family = family_result.get("family", "")
+                fam_to_g = _family_to_genres()
+                subgenres = fam_to_g.get(picked_family, [])
+                if not subgenres:
+                    # Unknown family — fall back to full list (preserves accuracy)
+                    subgenres = genre_labels
+                # Step 2: subgenre within family
+                subgenre_prompt = build_prompt(
+                    job["meta"], subgenres, job["audio_desc"], job["ws_context"],
+                    web_search_structured=job["use_wsx"],
+                    lastfm_tags=job["lf_tags"],
+                    confusion_hints=job["use_p56"],
+                    mb_tags=job["mb_tags_str"],
+                    fp_match=job["fp_match_str"],
+                )
+                result = call_openai(api_key, subgenre_prompt, job["model_name"])
+            else:
+                result = call_openai(api_key, job["prompt"], job["model_name"])
+            total_in += result.get("_input_tokens", 0)
+            total_out += result.get("_output_tokens", 0)
+            total_elapsed += result.get("_elapsed", 0)
         except Exception as e:
             result = {"genre": "ERROR", "confidence": 0, "reasoning": str(e)}
 
@@ -2157,7 +2295,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         expected = job["track"]["expected_genre"]
         is_correct = predicted == expected
 
-        return {
+        out: Dict[str, Any] = {
             "filename": job["track"]["filename"],
             "expected_genre": expected,
             "predicted_genre": predicted,
@@ -2166,11 +2304,16 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
             "reasoning": result.get("reasoning", ""),
             "variant": job["variant"],
             "model": job["model_name"],
-            "elapsed": result.get("_elapsed", 0),
-            "input_tokens": result.get("_input_tokens", 0),
-            "output_tokens": result.get("_output_tokens", 0),
+            "elapsed": round(total_elapsed, 2) if job["use_t2"] else result.get("_elapsed", 0),
+            "input_tokens": total_in if job["use_t2"] else result.get("_input_tokens", 0),
+            "output_tokens": total_out if job["use_t2"] else result.get("_output_tokens", 0),
             "_track_key": job["track_key"],
         }
+        if job["use_t2"]:
+            out["picked_family"] = family_result.get("family", "")
+            out["family_confidence"] = family_result.get("confidence", 0)
+            out["family_reasoning"] = family_result.get("reasoning", "")[:200]
+        return out
 
     if jobs:
         t_start = time.time()
@@ -2239,7 +2382,7 @@ def run_ab_test(variants: List[str], resume: bool = False, concurrency: int = 16
         variant_results = [r for r in all_results if r.get("variant") == variant]
         avg_in = sum(r.get("input_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
         avg_out = sum(r.get("output_tokens", 0) for r in variant_results) / max(len(variant_results), 1)
-        model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
+        model_key = variant.replace("+D400", "").replace("+GA", "").replace("+WSX", "").replace("+WS", "").replace("+LF", "").replace("+P56", "").replace("+MBL", "").replace("+MB", "").replace("+FPC", "").replace("+FP", "").replace("+T2", "").replace("+EI", "").replace("+E2", "").replace("+E", "")
         model_name = MODEL_TIERS[model_key]
 
         # Pricing per 1M tokens (approximate, 2026 rates)
