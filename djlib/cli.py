@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, csv, time, os, json, shutil, unicodedata
+import argparse, csv, re, time, os, json, shutil, unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -634,27 +634,45 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             
-            from djlib.metadata.genre_resolver import resolve as resolve_genres, ALL_SOURCES
-            print(f"   🎵 Resolving genres for: {a} - {t}")
-            enabled_sources = set(ALL_SOURCES)
-            if getattr(args, "skip_soundcloud", False):
-                enabled_sources.discard("soundcloud")
-            if getattr(args, "skip_beatport", False):
-                enabled_sources.discard("beatport")
-            # Pass tag_genre for weak fallback signal
-            original_tag_genre = (r.get("tag_genre_original") or "").strip()
-            genre_res = resolve_genres(
-                a,
-                t,
-                version=v,
-                duration_s=dur_s,
-                sources=enabled_sources,
-                tag_genre=original_tag_genre,
-            )
-            print(f"      Result: main={genre_res.main if genre_res else None}, conf={genre_res.confidence if genre_res else None}")
+            from djlib.metadata.genre_classifier import classify_genre, ClassifierError
+            print(f"   🎵 Classifying genre (nano+WS+LF) for: {a} - {t}")
+            bpm_str = (r.get("bpm") or r.get("tag_bpm_original") or "").strip()
+            key_str = (r.get("key_camelot") or r.get("tag_key_original") or "").strip()
+            filename_hint = Path(r.get("file_path", "")).name if r.get("file_path") else ""
+            try:
+                cls = classify_genre(
+                    artist=a, title=t, version=v,
+                    bpm=bpm_str, key=key_str, filename=filename_hint,
+                )
+            except ClassifierError as e:
+                print(f"      ❌ Classification failed (after retry): {e}")
+                r["ai_genre"] = ""
+                r["ai_confidence"] = ""
+                r["ai_reasoning"] = f"ERROR: {str(e)[:200]}"
+                r["ai_classify_date"] = _now_iso()
+                genre_res = None
+            else:
+                r["ai_genre"] = cls["genre"]
+                r["ai_confidence"] = f"{cls['confidence']:.2f}"
+                r["ai_reasoning"] = cls["reasoning"][:500]
+                r["ai_classify_date"] = _now_iso()
+                if cls.get("lastfm_tags"):
+                    lf_top = [name.strip() for name in re.split(r',\s*', cls["lastfm_tags"]) if name.strip()][:5]
+                    r["genres_lastfm"] = ", ".join(s.split(" (")[0] for s in lf_top)
+                    lfm_set += 1
+                # Shim to keep the downstream code (expects genre_res with .main/.confidence) working
+                class _GRes:
+                    def __init__(self, g, c):
+                        self.main = g
+                        self.subs = []
+                        self.confidence = c
+                        self.breakdown = []
+                genre_res = _GRes(cls["genre"], cls["confidence"])
+                print(f"      Result: {cls['genre']} (conf={cls['confidence']:.2f})")
+
             if genre_res and genre_res.confidence >= 0.03:  # lower threshold for missing genres
-                # Ustaw 3 gatunki: main + subs
-                genres = [genre_res.main] + genre_res.subs[:2]  # max 3 total
+                # Ustaw gatunek (main z klasyfikatora — subs puste w nowym modelu)
+                genres = [genre_res.main] + genre_res.subs[:2]
                 genre_str = ", ".join(genres)
                 current_genre = (r.get("genre_suggest") or "").strip()
                 # Treat noise-only genres as empty (e.g., "puerto rico, merge" from Last.fm artist tags)
@@ -665,10 +683,13 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 if force_genres or not current_genre or is_noise_only or genre_res.confidence > 0.08:
                     r["genre_suggest"] = genre_str
                     any_change = True
-                    # Update meta_source to reflect all sources used
+                    # Update meta_source: classifier has no breakdown → use its source label.
                     sources = [s.source for s in genre_res.breakdown]
                     if sources:
                         r["meta_source"] = f"{r.get('meta_source', '')}+genres({','.join(sources)})".strip("+")
+                    else:
+                        tag = "ai_classifier(nano+WS+LF)"
+                        r["meta_source"] = f"{r.get('meta_source', '')}+{tag}".strip("+")
 
                 # Zapisz surowe listy tagów per źródło do dodatkowych kolumn
                 try:
@@ -2413,6 +2434,72 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     _unsorted_file_tags[audio_file] = {}
         print(f"   Found {len(_unsorted_audio_files)} audio files")
     
+    # Helper: skip files whose filename is not safe (mojibake / NFD double-encoding etc.)
+    # macOS stores filenames in NFD; we accept NFD but reject paths that contain control
+    # chars (typical mojibake signature) or don't roundtrip through exists().
+    _unsafe_files: list[tuple[Path, str]] = []
+
+    def _path_is_safe(p: Path) -> tuple[bool, str]:
+        try:
+            name = p.name
+            for ch in name:
+                cp = ord(ch)
+                if cp < 0x20 or 0x80 <= cp <= 0x9F:
+                    return False, f"control char U+{cp:04X} (likely mojibake — typographic quotes / em-dash)"
+            if not Path(str(p)).exists():
+                return False, "path does not roundtrip via exists() (NFC/NFD mismatch)"
+            return True, ""
+        except Exception as e:
+            return False, f"exception: {e}"
+
+    def _warn_unsafe(p: Path, why: str) -> None:
+        _unsafe_files.append((p, why))
+        print(f"   ⚠️  Skipping file — broken characters in name: {p.name!r}")
+        print(f"      reason: {why}")
+        print(f"      (You'll be offered an automatic rename at the end of this run.)")
+
+    def _sanitize_filename(name: str) -> str:
+        """Turn a mojibake/typography-polluted filename into a safe ASCII-ish one.
+
+        Preserves the extension. Returns a string that, when written to disk,
+        will pass _path_is_safe().
+        """
+        # First, try to undo double-encoded UTF-8 (mojibake): bytes like "â\x80\x9c"
+        # are the latin-1 interpretation of UTF-8 bytes \xe2\x80\x9c = "“".
+        # macOS stores filenames in NFD (a + combining circumflex); normalize to NFC
+        # before the latin-1 roundtrip, otherwise combining marks can't encode.
+        try:
+            nfc = unicodedata.normalize("NFC", name)
+            fixed = nfc.encode("latin-1").decode("utf-8")
+            if fixed != nfc and any(ch in fixed for ch in "“”‘’–—…"):
+                name = fixed
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+
+        stem, dot, ext = name.rpartition(".")
+        if not dot:
+            stem, ext = name, ""
+        replacements = {
+            "“": '"', "”": '"', "„": '"', "‟": '"',
+            "‘": "'", "’": "'", "‚": "'", "‛": "'",
+            "–": "-", "—": "-", "−": "-",
+            "…": "...",
+            " ": " ",
+        }
+        for src, dst in replacements.items():
+            stem = stem.replace(src, dst)
+        # Strip C0/C1 control characters (typical mojibake residue)
+        stem = "".join(
+            ch for ch in stem
+            if not (ord(ch) < 0x20 or 0x80 <= ord(ch) <= 0x9F)
+        )
+        # Collapse runs of whitespace
+        stem = " ".join(stem.split())
+        stem = stem.strip(" .")
+        if not stem:
+            stem = "untitled"
+        return f"{stem}.{ext}" if ext else stem
+
     # Step 1.5a: Track ID reconciliation - find moved files by their DJLIB_TRACK_ID tag
     print()
     print("=" * 60)
@@ -2439,6 +2526,10 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             reconciled_paths: dict[str, str] = {}  # old_path → new_path
             
             for audio_file in _unsorted_audio_files:
+                ok, why = _path_is_safe(audio_file)
+                if not ok:
+                    _warn_unsafe(audio_file, why)
+                    continue
                 tags = _unsorted_file_tags.get(audio_file, {})
                 file_track_id = tags.get('track_id', '')
                 
@@ -2501,7 +2592,25 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
         
         if unsorted_path.exists() and _unsorted_audio_files:
             # Build filename → rekordbox_id map (for files where path no longer exists)
-            rekordbox_mapping = get_rekordbox_track_ids()  # {Path: rb_id}
+            # Guard with SIGALRM timeout — if Rekordbox DB is locked/missing, hang here can block WF0.
+            import signal as _signal
+
+            class _RbTimeout(Exception):
+                pass
+
+            def _rb_handler(signum, frame):
+                raise _RbTimeout()
+
+            _old_handler = _signal.signal(_signal.SIGALRM, _rb_handler)
+            _signal.alarm(60)
+            try:
+                rekordbox_mapping = get_rekordbox_track_ids()  # {Path: rb_id}
+            except _RbTimeout:
+                print("   ⚠️  Rekordbox mapping timed out (60s) — skipping 1.5b. Is Rekordbox running / DB locked?")
+                rekordbox_mapping = {}
+            finally:
+                _signal.alarm(0)
+                _signal.signal(_signal.SIGALRM, _old_handler)
             
             # Create filename → (rb_id, original_path) for files that don't exist at their DB path
             filename_to_rb: dict[str, tuple[str, Path]] = {}
@@ -2519,6 +2628,10 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 recovered_paths: dict[str, str] = {}  # old_path → new_path
                 
                 for audio_file in _unsorted_audio_files:
+                    ok, why = _path_is_safe(audio_file)
+                    if not ok:
+                        print(f"   ⚠️  Skipping unsafe filename ({why}): {audio_file.name!r}")
+                        continue
                     if audio_file.name in filename_to_rb:
                         rb_id, original_path = filename_to_rb[audio_file.name]
                         
@@ -2858,6 +2971,99 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     print("💡 Your library is now ready for tracking!")
     print("   Files have DJLIB_TRACK_ID, DJLIB_REKORDBOX_ID, DJLIB_TRAKTOR_ID tags")
     print()
+
+    if _unsafe_files:
+        print("=" * 60)
+        print(f"⚠️  {len(_unsafe_files)} FILE(S) SKIPPED — broken characters in names")
+        print("=" * 60)
+        print()
+        print("These files have broken characters in their names (usually copied from")
+        print("Beatport / SoundCloud / web pages, where quotes and dashes are fancy")
+        print("typography). macOS can display them, but tools can't process them.")
+        print()
+        print("I can rename them automatically. You'll see each proposal before it happens.")
+        print()
+
+        import sys as _sys
+
+        can_prompt = _sys.stdin.isatty() and not dry_run
+        renamed_count = 0
+        remaining: list[tuple[Path, str]] = []
+        accept_all = False
+
+        if not can_prompt:
+            reason = "dry-run" if dry_run else "non-interactive stdin"
+            print(f"(Skipping interactive rename: {reason}.)")
+            print("To fix manually: rename each file in Finder, then re-run")
+            print("    python -m djlib.cli sync-dj-libraries --write")
+            print()
+            for p, why in _unsafe_files:
+                proposed = _sanitize_filename(p.name)
+                print(f"   • {p}")
+                print(f"       reason:   {why}")
+                print(f"       suggested new name: {proposed}")
+            print()
+        else:
+            for idx, (p, why) in enumerate(_unsafe_files, 1):
+                proposed_name = _sanitize_filename(p.name)
+                new_path = p.with_name(proposed_name)
+
+                print(f"[{idx}/{len(_unsafe_files)}] Proposed rename:")
+                print(f"   folder: {p.parent}")
+                print(f"   BEFORE: {p.name!r}")
+                print(f"   AFTER:  {proposed_name}")
+                print(f"   reason: {why}")
+
+                # Handle name collision
+                if new_path.exists() and new_path != p:
+                    print(f"   ⚠️  A file with that name already exists — will skip this one.")
+                    remaining.append((p, why))
+                    print()
+                    continue
+
+                if accept_all:
+                    choice = "y"
+                else:
+                    try:
+                        choice = input("   Rename? [y]es / [n]o / [a]ll remaining / [q]uit: ").strip().lower()
+                    except EOFError:
+                        choice = "n"
+
+                if choice in ("a", "all"):
+                    accept_all = True
+                    choice = "y"
+                if choice in ("q", "quit"):
+                    remaining.append((p, why))
+                    for rest in _unsafe_files[idx:]:
+                        remaining.append(rest)
+                    print("   (aborted; remaining files left untouched)")
+                    print()
+                    break
+                if choice not in ("y", "yes"):
+                    print("   → skipped")
+                    remaining.append((p, why))
+                    print()
+                    continue
+
+                try:
+                    os.rename(str(p), str(new_path))
+                    print(f"   ✅ renamed")
+                    renamed_count += 1
+                except Exception as e:
+                    print(f"   ❌ rename failed: {e}")
+                    remaining.append((p, why))
+                print()
+
+            print(f"Renamed {renamed_count} / {len(_unsafe_files)} file(s).")
+            if remaining:
+                print(f"{len(remaining)} still need manual attention:")
+                for p, _why in remaining:
+                    print(f"   • {p}")
+            if renamed_count > 0:
+                print()
+                print("💡 Re-run to pick up the renamed files:")
+                print("   python -m djlib.cli sync-dj-libraries --write")
+            print()
 
 
 def cmd_create_path_map(args: argparse.Namespace) -> None:
