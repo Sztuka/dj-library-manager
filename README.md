@@ -204,33 +204,49 @@ python -m djlib.cli undo
 
 ```text
 dj-library-manager/
-├── djlib/              # Main application
-│   ├── cli.py          # CLI commands
-│   ├── config.py       # Configuration
-│   ├── tags.py         # Tag reading/writing
-│   ├── external_sync.py # DJ software integration
-│   ├── audio/          # Essentia analysis
-│   ├── metadata/       # API clients (Beatport, MB, etc.)
-│   └── ml/             # ML dataset export
+├── djlib/                    # Main package
+│   ├── cli.py                # CLI entry point (argparse)
+│   ├── config.py             # Paths, settings, YAML config loader
+│   ├── csvdb.py              # CSV read/write operations
+│   ├── enrich.py             # AcoustID / enrichment orchestration
+│   ├── fingerprint.py        # fpcalc audio fingerprinting wrapper
+│   ├── genre_canonical.py    # Canonical genre resolution
+│   ├── genre_mapper.py       # genres.yml → label mapping
+│   ├── tags.py               # Audio tag reading/writing (mutagen)
+│   ├── external_sync.py      # Rekordbox / Traktor sync
+│   ├── audio/                # Essentia feature extraction + SQLite cache
+│   ├── metadata/             # API clients
+│   │   ├── lastfm.py         # Last.fm tags + track info
+│   │   ├── mb_client.py      # MusicBrainz recording/artist lookup
+│   │   ├── soundcloud.py     # SoundCloud search
+│   │   └── web_search.py     # SearXNG web search + entity extraction
+│   ├── ml/                   # ML dataset export (pandas)
+│   └── review/               # Flask Review UI (port 8899)
+│       ├── server.py          # API endpoints + HTML serving
+│       ├── static/            # app.js, style.css (vanilla JS, no build)
+│       └── templates/         # index.html (Jinja2)
+├── scripts/                  # Standalone scripts and AB tests
+│   ├── ab_test_genre.py      # Genre classifier AB test framework
+│   └── ...                   # ~30 utility / debug scripts
 ├── data/
-│   ├── unsorted.csv    # Staging CSV
-│   ├── library.csv     # Master database
-│   └── training_dataset_full.csv
-├── LOGS/               # Operation logs
-├── genres.yml          # Canonical genre definitions
-├── config.local.yml    # Local configuration (gitignored)
-└── docs/               # Documentation
+│   ├── unsorted.csv          # Staging area (tracks pending review)
+│   ├── library.csv           # Master database (~30 fields per track)
+│   └── ab_test/              # Gold-labeled test set + results.json
+├── LOGS/                     # Move logs, scan status (gitignored)
+├── genres.yml                # ~60 canonical genres with families + synonyms
+├── config.yml                # Default config (paths, API keys)
+├── config.local.yml          # Local overrides (gitignored)
+└── docs/                     # Architecture, roadmaps, analysis docs
 ```
 
 ---
 
 ## Configuration Files
 
-| File               | Purpose                               |
-| ------------------ | ------------------------------------- |
-| `config.local.yml` | Local paths and settings (gitignored) |
-| `genres.yml`       | 30 canonical genres with synonyms     |
-| `rules.yml`        | Auto-decision rules (legacy)          |
+| File               | Purpose                                                |
+| ------------------ | ------------------------------------------------------ |
+| `config.local.yml` | Local paths and settings (gitignored)                  |
+| `genres.yml`       | ~60 canonical genres with families, also_in, synonyms  |
 
 ---
 
