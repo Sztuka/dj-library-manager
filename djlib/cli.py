@@ -46,6 +46,42 @@ except Exception:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _ensure_unique_path(target: Path) -> Path:
+    """Return the first free variant of ``target`` by appending ``' (N)'``.
+
+    Two different mojibake filenames in the same folder can sanitize to the
+    same clean name (e.g. ``foo"bar.mp3`` and ``foo“bar.mp3`` both collapse
+    to ``foo bar.mp3``). Returning a ``(2)`` / ``(3)`` / … variant keeps
+    every file; content-level duplicates are caught later by
+    ``python -m djlib.cli dupes``.
+
+    NFC-compares against the parent listing so macOS NFD-on-disk doesn't
+    make a candidate look free when it actually collides.
+    """
+    if not target.exists():
+        # Also guard against NFD-on-disk: `target.exists()` follows symlinks
+        # and normalizes, but on case-insensitive APFS an NFC lookup may
+        # miss an NFD twin. Compare against the normalized directory list.
+        taken = _parent_nfc_names_uncached(target.parent)
+        if unicodedata.normalize("NFC", target.name) not in taken:
+            return target
+    stem = target.stem
+    ext = target.suffix
+    parent = target.parent
+    taken_names = _parent_nfc_names_uncached(parent)
+    n = 2
+    while True:
+        candidate = parent / f"{stem} ({n}){ext}"
+        if (
+            not candidate.exists()
+            and unicodedata.normalize("NFC", candidate.name) not in taken_names
+        ):
+            return candidate
+        n += 1
+        if n > 10_000:
+            raise RuntimeError(f"Giving up finding a unique name for {target}")
+
+
 def _parent_nfc_names_uncached(parent: Path) -> frozenset[str]:
     """Return NFC-normalized names of entries in ``parent``, empty on error."""
     try:
@@ -3137,18 +3173,23 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 proposed_name = _sanitize_filename(p.name)
                 new_path = p.with_name(proposed_name)
 
+                # On collision, pick the next free ' (N)' variant so the
+                # second-identically-sanitized file isn't silently dropped.
+                collision = new_path.exists() and new_path != p
+                if collision:
+                    new_path = _ensure_unique_path(new_path)
+                    proposed_name = new_path.name
+
                 print(f"[{idx}/{len(_unsafe_files)}] Proposed rename:")
                 print(f"   folder: {p.parent}")
                 print(f"   BEFORE: {p.name!r}")
                 print(f"   AFTER:  {proposed_name}")
                 print(f"   reason: {why}")
-
-                # Handle name collision
-                if new_path.exists() and new_path != p:
-                    print(f"   ⚠️  A file with that name already exists — will skip this one.")
-                    remaining.append((p, why))
-                    print()
-                    continue
+                if collision:
+                    print(
+                        f"   ℹ️  Name collision — appended a suffix so nothing is lost. "
+                        f"Run 'python -m djlib.cli dupes' later to clean up content duplicates."
+                    )
 
                 if accept_all:
                     choice = "y"
