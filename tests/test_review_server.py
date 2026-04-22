@@ -135,7 +135,28 @@ def test_tracks_processed_returns_list(client):
     assert isinstance(data, list)
 
 
-def test_tracks_processed_from_library_csv(client, tmp_path):
+@pytest.fixture
+def fake_dest_roots(tmp_path, monkeypatch):
+    """Patch server._get_processed_dest_roots to return tmp_path-anchored roots.
+
+    Mixes deliberately lives under library (as in production default layout:
+    `{LIB_ROOT}/MIXES/`), so ordering matters — mixes must win over library.
+    """
+    from djlib.review import server as srv
+
+    base = tmp_path.resolve()
+    lib = base / "Music Library"
+    roots = [
+        ("mixes", lib / "MIXES"),
+        ("rejected", base / "Music Rejected"),
+        ("archive", base / "Music Archive"),
+        ("library", lib),
+    ]
+    monkeypatch.setattr(srv, "_get_processed_dest_roots", lambda: roots)
+    return tmp_path
+
+
+def test_tracks_processed_from_library_csv(client, tmp_path, fake_dest_roots):
     """Processed endpoint reads library.csv filtered by destination folders."""
     from djlib.review import server as srv
 
@@ -143,17 +164,18 @@ def test_tracks_processed_from_library_csv(client, tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     lib_csv = data_dir / "library.csv"
+    lib_base = str(tmp_path)
     lib_csv.write_text(
         "external_source,external_track_id,track_id,old_full_path,artist,title,"
         "bpm,key,rating,color,duration_seconds,date_added,last_played,"
         "play_count,snapshot_date,rekordbox_id,traktor_id,cue_count\n"
         # Track in Music Library (should appear)
         "rekordbox,rb1,tid-aaa-111,"
-        "/Users/test/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
+        f"{lib_base}/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
         "DJ Test,Track One,128,5A,4,,200,2025-12-15,,5,,rb1,,0\n"
         # Track in Music Archive (should appear)
         "traktor,,tid-bbb-222,"
-        "/Users/test/Music Archive/Unknown/Unknown.mp3,"
+        f"{lib_base}/Music Archive/Unknown/Unknown.mp3,"
         "Unknown Artist,Unknown Track,120,3B,0,,180,2025-11-01,,0,,,,0\n"
         # Track in ~/Music (NOT processed — DJ software import, should be excluded)
         "rekordbox+traktor,rb2,tid-ccc-333,"
@@ -190,16 +212,17 @@ def test_tracks_processed_from_library_csv(client, tmp_path):
         srv._REPO = old_repo
 
 
-def test_tracks_processed_no_duplicates(client, tmp_path):
+def test_tracks_processed_no_duplicates(client, tmp_path, fake_dest_roots):
     """Library.csv has unique track_ids, so processed should have no dupes."""
     from djlib.review import server as srv
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    base = str(tmp_path)
     (data_dir / "library.csv").write_text(
         "external_source,track_id,old_full_path,artist,title,bpm,key,rating,play_count\n"
-        "rekordbox,tid-001,/Users/test/Music Library/A/track.mp3,Artist A,Track A,128,5A,3,2\n"
-        "traktor,tid-002,/Users/test/Music Library/B/track.mp3,Artist B,Track B,130,7B,0,0\n"
+        f"rekordbox,tid-001,{base}/Music Library/A/track.mp3,Artist A,Track A,128,5A,3,2\n"
+        f"traktor,tid-002,{base}/Music Library/B/track.mp3,Artist B,Track B,130,7B,0,0\n"
     )
 
     old_repo = srv._REPO
@@ -214,16 +237,22 @@ def test_tracks_processed_no_duplicates(client, tmp_path):
         srv._REPO = old_repo
 
 
-def test_tracks_processed_rejected_and_mixes(client, tmp_path):
-    """Tracks in Music Rejected and Music Mixes are also processed."""
+def test_tracks_processed_rejected_and_mixes(client, tmp_path, fake_dest_roots):
+    """Tracks in rejected and mixes destinations classify correctly.
+
+    Critical invariant: a track under `{LIB_ROOT}/MIXES/…` must classify as
+    `mixes`, NOT `library`. The old substring matcher ("Music Library" matches
+    first) misclassified every mix as a library track.
+    """
     from djlib.review import server as srv
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    base = str(tmp_path)
     (data_dir / "library.csv").write_text(
         "external_source,track_id,old_full_path,artist,title,bpm,key,rating,play_count\n"
-        "rekordbox,tid-rej,/Users/test/Music Rejected/bad.mp3,Bad,Track,120,1A,0,0\n"
-        "traktor,tid-mix,/Users/test/Music Library/MIXES/set.mp3,DJ,Mix Set,125,,0,0\n"
+        f"rekordbox,tid-rej,{base}/Music Rejected/bad.mp3,Bad,Track,120,1A,0,0\n"
+        f"traktor,tid-mix,{base}/Music Library/MIXES/set.mp3,DJ,Mix Set,125,,0,0\n"
     )
 
     old_repo = srv._REPO
@@ -234,8 +263,7 @@ def test_tracks_processed_rejected_and_mixes(client, tmp_path):
         assert len(data) == 2
         dests = {t["track_id"]: t["destination"] for t in data}
         assert dests["tid-rej"] == "rejected"
-        # Music Library/MIXES → "library" since "Music Library" matches first
-        assert dests["tid-mix"] == "library"
+        assert dests["tid-mix"] == "mixes"
     finally:
         srv._REPO = old_repo
 
