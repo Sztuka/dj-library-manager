@@ -44,6 +44,61 @@ except Exception:
 
 # --- Pomocnicze ---
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _parent_nfc_names_uncached(parent: Path) -> frozenset[str]:
+    """Return NFC-normalized names of entries in ``parent``, empty on error."""
+    try:
+        return frozenset(
+            unicodedata.normalize("NFC", n) for n in os.listdir(str(parent))
+        )
+    except OSError:
+        return frozenset()
+
+
+def _check_path_is_safe(
+    p: Path,
+    parent_names_cache: Optional[Dict[str, frozenset[str]]] = None,
+) -> tuple[bool, str]:
+    """Return (is_safe, reason).
+
+    A path is "safe" for downstream tag writes / renames when:
+      * its ``name`` contains no C0/C1 control chars (catches typical
+        double-encoded UTF-8 mojibake — typographic quotes, em-dashes),
+      * the file exists, AND
+      * the name appears in the parent directory listing under NFC-normalized
+        comparison (catches stale ``rglob`` results, broken symlinks, and
+        mid-rename races where ``Path`` disagrees with actual storage).
+
+    When ``parent_names_cache`` is provided, directory listings are cached per
+    parent; safe to share across many calls within one command run.
+    """
+    try:
+        name = p.name
+        for ch in name:
+            cp = ord(ch)
+            if cp < 0x20 or 0x80 <= cp <= 0x9F:
+                return False, f"control char U+{cp:04X} (likely mojibake — typographic quotes / em-dash)"
+
+        if not p.exists():
+            return False, "file does not exist"
+
+        parent_key = str(p.parent)
+        if parent_names_cache is not None:
+            names = parent_names_cache.get(parent_key)
+            if names is None:
+                names = _parent_nfc_names_uncached(p.parent)
+                parent_names_cache[parent_key] = names
+        else:
+            names = _parent_nfc_names_uncached(p.parent)
+
+        name_nfc = unicodedata.normalize("NFC", name)
+        if name_nfc not in names:
+            return False, "filename not found in parent directory listing after NFC normalize"
+
+        return True, ""
+    except Exception as e:
+        return False, f"exception during safety check: {e}"
 LEGACY_ML_MSG = (
     "Legacy ML pipeline (FMA) został usunięty. "
     "Trenowanie i predykcje ML wrócą po wdrożeniu lokalnych modeli na bazie Essentia. "
@@ -2435,22 +2490,19 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
         print(f"   Found {len(_unsorted_audio_files)} audio files")
     
     # Helper: skip files whose filename is not safe (mojibake / NFD double-encoding etc.)
-    # macOS stores filenames in NFD; we accept NFD but reject paths that contain control
-    # chars (typical mojibake signature) or don't roundtrip through exists().
+    # macOS stores filenames in NFD; we accept NFD but reject:
+    #   (a) names containing C0/C1 control chars — typical double-encoded UTF-8 mojibake
+    #   (b) paths that don't round-trip: the name must appear in the parent directory
+    #       listing under NFC-normalized comparison. Fake/stale Path objects (stale
+    #       glob results, broken symlinks, mid-rename races) fail this check.
+    # Guard applies at every step that performs or depends on filesystem writes:
+    # 1.5a track-id reconciliation, 1.5b Rekordbox recovery, 1.5c Traktor recovery,
+    # and Step 2 (actual DJLIB tag writes on library files).
     _unsafe_files: list[tuple[Path, str]] = []
+    _listdir_cache: Dict[str, frozenset[str]] = {}
 
     def _path_is_safe(p: Path) -> tuple[bool, str]:
-        try:
-            name = p.name
-            for ch in name:
-                cp = ord(ch)
-                if cp < 0x20 or 0x80 <= cp <= 0x9F:
-                    return False, f"control char U+{cp:04X} (likely mojibake — typographic quotes / em-dash)"
-            if not Path(str(p)).exists():
-                return False, "path does not roundtrip via exists() (NFC/NFD mismatch)"
-            return True, ""
-        except Exception as e:
-            return False, f"exception: {e}"
+        return _check_path_is_safe(p, parent_names_cache=_listdir_cache)
 
     def _warn_unsafe(p: Path, why: str) -> None:
         _unsafe_files.append((p, why))
@@ -2630,7 +2682,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 for audio_file in _unsorted_audio_files:
                     ok, why = _path_is_safe(audio_file)
                     if not ok:
-                        print(f"   ⚠️  Skipping unsafe filename ({why}): {audio_file.name!r}")
+                        _warn_unsafe(audio_file, why)
                         continue
                     if audio_file.name in filename_to_rb:
                         rb_id, original_path = filename_to_rb[audio_file.name]
@@ -2739,6 +2791,10 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 recovered_paths: dict[str, str] = {}  # old_path → new_path
                 
                 for audio_file in _unsorted_audio_files:
+                    ok, why = _path_is_safe(audio_file)
+                    if not ok:
+                        _warn_unsafe(audio_file, why)
+                        continue
                     if audio_file.name in filename_to_tr:
                         tr_id, original_path = filename_to_tr[audio_file.name]
                         
@@ -2840,15 +2896,22 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             file_path_str = row.get('old_full_path', '') or row.get('file_path', '')
             if not file_path_str:
                 return 'skip', ('no_path', None)
-            
+
             file_path = Path(file_path_str)
             if not file_path.exists():
                 return 'skip', ('not_found', file_path.name)
-            
+
+            # Guard against mojibake / NFC-NFD mismatched names before any write.
+            # mutagen tag writes can corrupt files or raise obscure errors on
+            # control-char filenames (see WF0 double-encoded UTF-8 incident).
+            ok, why = _path_is_safe(file_path)
+            if not ok:
+                return 'skip', ('unsafe_name', f"{file_path.name}: {why}")
+
             track_id = row.get('track_id', '')
             if not track_id:
                 return 'skip', ('no_track_id', file_path.name)
-            
+
             try:
                 # Write all DJLIB tags including external IDs
                 write_djlib_tags(
@@ -2878,6 +2941,8 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     tags_skipped += 1
                     if result and result[0] == 'not_found':
                         skipped_list.append(result[1])
+                    elif result and result[0] == 'unsafe_name':
+                        skipped_list.append(f"[unsafe] {result[1]}")
                 elif status == 'error':
                     tags_errors += 1
                     if result:  # result is tuple (filename, error)
