@@ -1138,10 +1138,29 @@ def api_ai_chat():
 _enrich_lock = threading.Lock()
 
 
-def _resolve_genres(artist: str, title: str, **kwargs):
-    """Lazy wrapper for genre_resolver.resolve (avoids heavy import at startup)."""
-    from djlib.metadata.genre_resolver import resolve
-    return resolve(artist, title, **kwargs)
+def _classify_genre(
+    artist: str,
+    title: str,
+    *,
+    version: str = "",
+    bpm: str = "",
+    key: str = "",
+    filename: str = "",
+):
+    """Lazy wrapper for the production genre_classifier (nano+WS+LF).
+
+    Same pipeline that ``enrich-online`` (workflow 2) uses, so manual
+    re-enrich in REVIEW produces identical results for the same inputs.
+    """
+    from djlib.metadata.genre_classifier import classify_genre
+    return classify_genre(
+        artist=artist,
+        title=title,
+        version=version,
+        bpm=bpm,
+        key=key,
+        filename=filename,
+    )
 
 
 def _detect_artist_title_swap(row: Dict[str, str]) -> Optional[Dict[str, str]]:
@@ -1328,14 +1347,18 @@ def api_enrich_track():
         return jsonify({"error": "Another enrichment is in progress, try again"}), 429
 
     try:
-        tag_genre = (row.get("tag_genre_original") or "").strip()
         _log.info("Re-enriching: %s - %s (%s)", artist, title, version)
+        bpm_str = (row.get("bpm") or row.get("tag_bpm_original") or "").strip()
+        key_str = (row.get("key_camelot") or row.get("tag_key_original") or "").strip()
+        fp = row.get("file_path", "")
+        filename_hint = Path(fp).name if fp else ""
 
-        genre_res = _resolve_genres(
+        cls = _classify_genre(
             artist, title,
             version=version,
-            duration_s=dur_s,
-            tag_genre=tag_genre,
+            bpm=bpm_str,
+            key=key_str,
+            filename=filename_hint,
         )
     except Exception as e:
         _log.warning("Enrich failed: %s", e)
@@ -1343,7 +1366,11 @@ def api_enrich_track():
     finally:
         _enrich_lock.release()
 
-    if not genre_res or genre_res.confidence < 0.01:
+    genre_main = (cls.get("genre") or "").strip()
+    confidence = float(cls.get("confidence") or 0.0)
+    classifier_source = cls.get("source", "nano+WS+LF")
+
+    if not genre_main or confidence < 0.01:
         return jsonify({
             "genre": None,
             "genre_full": None,
@@ -1352,31 +1379,29 @@ def api_enrich_track():
             "swap_suggestion": swap_suggestion,
         })
 
-    genres = [genre_res.main] + genre_res.subs[:2]
-    genre_full = ", ".join(genres)
-    sources = list({s.source for s in genre_res.breakdown})
+    # Classifier produces one canonical label (no subs), so genre_full == genre.
+    genre_full = genre_main
+    sources = [f"ai_classifier({classifier_source})"]
 
-    # Collect per-source raw tags for display
+    # Display breakdown: show the classifier's reasoning and raw Last.fm tags.
     source_details: Dict[str, str] = {}
-    for s in genre_res.breakdown:
-        top_tags = sorted(s.tags.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        source_details[s.source] = ", ".join(t[0] for t in top_tags)
+    reasoning = (cls.get("reasoning") or "").strip()
+    if reasoning:
+        source_details["classifier"] = reasoning[:200]
+    lf_tags_raw = (cls.get("lastfm_tags") or "").strip()
+    if lf_tags_raw:
+        source_details["lastfm"] = lf_tags_raw[:200]
 
-    # Map source names to CSV column names for saving
-    _SOURCE_TO_CSV = {
-        "beatport": "genres_beatport",
-        "lastfm": "genres_lastfm",
-        "mb": "genres_musicbrainz",
-        "soundcloud": "genres_soundcloud",
-    }
+    # Per-source CSV columns: classifier only surfaces Last.fm tags directly.
+    # Other per-source columns (genres_beatport, genres_musicbrainz, etc.) are
+    # owned by batch enrichment and intentionally left untouched here.
     source_genres: Dict[str, str] = {}
-    for s in genre_res.breakdown:
-        csv_col = _SOURCE_TO_CSV.get(s.source)
-        if csv_col:
-            top_tags = sorted(s.tags.items(), key=lambda kv: kv[1], reverse=True)[:8]
-            source_genres[csv_col] = ", ".join(t[0] for t in top_tags)
+    if lf_tags_raw:
+        lf_top = [name.strip() for name in re.split(r',\s*', lf_tags_raw) if name.strip()][:5]
+        if lf_top:
+            source_genres["genres_lastfm"] = ", ".join(s.split(" (")[0] for s in lf_top)
 
-    meta_source = "|".join(sorted(sources))
+    meta_source = f"ai_classifier({classifier_source})"
 
     # --- Extract year from sources (cached from genre resolution) ---
     year: Optional[str] = None
@@ -1402,9 +1427,9 @@ def api_enrich_track():
             pass
 
     return jsonify({
-        "genre": genre_res.main,
+        "genre": genre_main,
         "genre_full": genre_full,
-        "confidence": round(genre_res.confidence, 3),
+        "confidence": round(confidence, 3),
         "sources": sources,
         "source_details": source_details,
         "source_genres": source_genres,
