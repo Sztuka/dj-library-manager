@@ -35,30 +35,48 @@ from mutagen.mp4 import MP4
 from mutagen.wave import WAVE
 
 
+_TRACK_ID_NAMESPACE = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
+_TRACK_ID_TAIL_BYTES = 1024 * 1024
+_TRACK_ID_ID3V1_TAIL_SKIP = 128
+
+
 def generate_track_id(filepath: Path, artist: str = "", title: str = "") -> str:
     """
-    Generate a deterministic track ID based on file path and metadata.
-    
-    This creates a UUID5 from the combination of:
-    - Absolute file path
-    - Artist + Title (if available)
-    
-    The same file with same metadata will always get the same ID.
+    Generate a deterministic track ID from audio file content.
+
+    UUID5 over `{filesize}:{sha256(tail)}`, where tail is the last 1 MB of the
+    file minus the trailing 128 B (ID3v1 footer). Hashing from the end keeps the
+    ID stable across ID3v2/Vorbis tag edits at the file head. Different audio
+    content → different ID, regardless of path or filename.
+
+    artist/title args are accepted for backwards compatibility but unused.
+
+    Fallback: if the file does not exist, falls back to path+metadata UUID5.
+    All in-tree callers read DJLIB_TRACK_ID from the file tag first, so this
+    fallback is only used for legacy / synthetic paths.
     """
-    # Use file path as primary identifier
-    path_str = str(filepath.resolve())
-    
-    # Add metadata for better uniqueness
-    metadata_str = f"{artist}|{title}".lower().strip()
-    
-    # Combine
-    combined = f"{path_str}|{metadata_str}"
-    
-    # Generate UUID5 (deterministic, namespace-based)
-    namespace = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')  # DNS namespace
-    track_uuid = uuid.uuid5(namespace, combined)
-    
-    return str(track_uuid)
+    path = Path(filepath)
+    if not path.exists():
+        path_str = str(path.resolve())
+        metadata_str = f"{artist}|{title}".lower().strip()
+        return str(uuid.uuid5(_TRACK_ID_NAMESPACE, f"{path_str}|{metadata_str}"))
+
+    size = path.stat().st_size
+    hasher = hashlib.sha256()
+
+    with open(path, 'rb') as f:
+        if size <= _TRACK_ID_TAIL_BYTES + _TRACK_ID_ID3V1_TAIL_SKIP:
+            data = f.read()
+            if len(data) > _TRACK_ID_ID3V1_TAIL_SKIP:
+                data = data[:-_TRACK_ID_ID3V1_TAIL_SKIP]
+            hasher.update(data)
+        else:
+            tail_start = size - _TRACK_ID_TAIL_BYTES - _TRACK_ID_ID3V1_TAIL_SKIP
+            f.seek(tail_start)
+            hasher.update(f.read(_TRACK_ID_TAIL_BYTES))
+
+    combined = f"{size}:{hasher.hexdigest()}"
+    return str(uuid.uuid5(_TRACK_ID_NAMESPACE, combined))
 
 
 def write_djlib_tags(
