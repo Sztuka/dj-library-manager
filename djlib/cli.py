@@ -51,9 +51,10 @@ def _ensure_unique_path(target: Path) -> Path:
 
     Two different mojibake filenames in the same folder can sanitize to the
     same clean name (e.g. ``foo"bar.mp3`` and ``foo“bar.mp3`` both collapse
-    to ``foo bar.mp3``). Returning a ``(2)`` / ``(3)`` / … variant keeps
-    every file; content-level duplicates are caught later by
-    ``python -m djlib.cli dupes``.
+    to ``foo bar.mp3``). The two files are not necessarily duplicates —
+    same stem is just a rename coincidence. This helper only ensures the
+    destination path is unique; content-level dedup is a separate concern
+    and not assumed here.
 
     NFC-compares against the parent listing so macOS NFD-on-disk doesn't
     make a candidate look free when it actually collides.
@@ -3187,8 +3188,9 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 print(f"   reason: {why}")
                 if collision:
                     print(
-                        f"   ℹ️  Name collision — appended a suffix so nothing is lost. "
-                        f"Run 'python -m djlib.cli dupes' later to clean up content duplicates."
+                        f"   ℹ️  Target name already taken in this folder — "
+                        f"appended a suffix so the rename can go through. "
+                        f"(Not a duplicate check — just making the path unique.)"
                     )
 
                 if accept_all:
