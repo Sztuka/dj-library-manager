@@ -1237,11 +1237,23 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             
-            # Block export if no rekordbox_id found anywhere
+            # Block export if no rekordbox_id found anywhere — unless the
+            # DJ explicitly opted in to the tag-only workflow via
+            # `--allow-no-rekordbox`. In that mode the track enters library
+            # with `analysis_source=tags` so consumers (REVIEW UI, ML export)
+            # know BPM/Key came from the audio file, not Rekordbox analysis.
             final_rekordbox_id = current_rekordbox_id or file_rekordbox_id
             if not final_rekordbox_id:
-                _skip("NO_REKORDBOX_ID", f"{src.name}  → Uruchom 'sync-dj-libraries --write' aby przypisać ID")
-                continue
+                if not getattr(args, "allow_no_rekordbox", False):
+                    _skip(
+                        "NO_REKORDBOX_ID",
+                        f"{src.name}  → Uruchom 'sync-dj-libraries --write' aby przypisać ID, lub użyj 'apply --allow-no-rekordbox'",
+                    )
+                    continue
+                print(
+                    f"   ⚠️  No Rekordbox ID for {src.name} — applying with "
+                    f"analysis_source=tags (not yet analyzed by Rekordbox)"
+                )
             
             if current_rekordbox_id and current_rekordbox_id != r.get("rekordbox_id", ""):
                 print(f"   🔧 Updating Rekordbox ID for {src.name}: {r.get('rekordbox_id', '')} → {current_rekordbox_id}")
@@ -1470,6 +1482,26 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 archived_traktor_ids.append(str(r.get("traktor_id") or ""))
                 print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
         
+        # Provenance of BPM+Key. Consumers (REVIEW UI, ML export) use this to
+        # tell an analyzed track from a tag-only import. Rekordbox wins when
+        # its ID is present (DJ software re-analyzed the file); Traktor is
+        # next; `tags` covers the `--allow-no-rekordbox` path where BPM/Key
+        # come from ID3. Empty string means "unknown provenance" (no DJ
+        # software ID AND no BPM/Key in tags — defensive default).
+        has_rb = bool(r.get("rekordbox_id"))
+        has_tr = bool(r.get("traktor_id"))
+        has_tag_analysis = bool(r.get("bpm")) and bool(
+            r.get("key_camelot") or r.get("key")
+        )
+        if has_rb:
+            analysis_source = "rekordbox"
+        elif has_tr:
+            analysis_source = "traktor"
+        elif has_tag_analysis:
+            analysis_source = "tags"
+        else:
+            analysis_source = ""
+
         # Update record (only for library/mixes destinations OR archive for archive CSV)
         record = {
             "track_id": r.get("track_id", ""),
@@ -1486,6 +1518,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "genre": r.get("genre") or r.get("genre_suggest") or "",
             "bpm": r.get("bpm") or "",
             "key_camelot": r.get("key_camelot") or "",
+            "analysis_source": analysis_source,
             "energy_hint": r.get("energy_hint") or "",
             "destination": destination or "library",  # Default to library if not specified
             "must_play": r.get("must_play") or "",
@@ -3725,6 +3758,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     ap2 = sp.add_parser("apply")
     ap2.add_argument("--dry-run", action="store_true")
+    ap2.add_argument(
+        "--allow-no-rekordbox",
+        action="store_true",
+        help=(
+            "Move tracks to library even when Rekordbox has not seen them yet. "
+            "BPM/Key fall back to audio tags and the row is marked "
+            "analysis_source=tags, ready_for_rekordbox=false. Without this "
+            "flag, tracks missing rekordbox_id are skipped (default behavior)."
+        ),
+    )
     ap2.set_defaults(func=cmd_apply)
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
