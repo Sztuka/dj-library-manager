@@ -159,6 +159,13 @@ def _load_processed_tracks() -> List[Dict[str, str]]:
             continue  # Not a processed track (e.g. ~/Music/ from DJ imports)
 
         ext_src = row.get("external_source", "").strip()
+        analysis_src = row.get("analysis_source", "").strip()
+        rb_id = row.get("rekordbox_id", "").strip()
+        # "ready for Rekordbox" = DJ software has actually analyzed this
+        # track. A track imported via `apply --allow-no-rekordbox` has
+        # analysis_source=tags and no rekordbox_id until the next sync
+        # picks it up from Rekordbox's database.
+        ready_for_rb = "yes" if rb_id else "no"
         rec: Dict[str, str] = {
             "track_id": row.get("track_id", ""),
             "file_path": path,  # for audio playback
@@ -169,9 +176,11 @@ def _load_processed_tracks() -> List[Dict[str, str]]:
             "rating": row.get("rating", ""),
             "play_count": row.get("play_count", ""),
             "external_source": ext_src,
+            "analysis_source": analysis_src,
             "date_added": row.get("date_added", ""),
             "destination": dest_type,
             "in_dj_software": "yes" if ext_src else "no",
+            "ready_for_rekordbox": ready_for_rb,
         }
         result.append(rec)
 
