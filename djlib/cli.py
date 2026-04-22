@@ -2417,20 +2417,40 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             fp_duplicates_merged = before_fp_dedup - len(df)
             duplicates_merged += fp_duplicates_merged
             
-            from djlib.library_schema import save_library_csv
+            from djlib.library_schema import (
+                LIBRARY_FIELDNAMES as _CANONICAL,
+                load_library_csv,
+                merge_with_existing_library,
+                save_library_csv,
+            )
 
-            # Preserve any columns pandas produced that aren't in the canonical
-            # schema yet (e.g. legacy per-source genre fields). The canonical
-            # writer drops unknowns by default — `extra_fieldnames` keeps them
-            # until PR2b formally retires each one.
-            from djlib.library_schema import LIBRARY_FIELDNAMES as _CANONICAL
+            # Merge-by-track_id: preserve djlib-owned fields (file_hash,
+            # original_path, added_date, …) from the existing library.csv.
+            # Without this step the DJ-software snapshot nukes everything
+            # djlib computed or tracked itself. Orphan rows (previously in
+            # library, no longer returned by RB/Traktor) are kept with their
+            # external IDs cleared.
+            existing_rows = load_library_csv(CSV_PATH)
+            new_rows = df.fillna("").to_dict(orient="records")
+            merged_rows = merge_with_existing_library(new_rows, existing_rows)
+
+            # Preserve any columns pandas produced that aren't in the
+            # canonical schema yet. The canonical writer drops unknowns by
+            # default; `extra_fieldnames` is the escape hatch for transient
+            # legacy columns.
             extra = [c for c in df.columns if c not in _CANONICAL]
             save_library_csv(
                 CSV_PATH,
-                df.to_dict(orient="records"),
+                merged_rows,
                 extra_fieldnames=extra,
             )
-            print(f"✅ Merged {len(df)} unique tracks into library.csv")
+            orphan_count = sum(
+                1 for r in merged_rows
+                if not r.get("rekordbox_id") and not r.get("traktor_id")
+            )
+            print(f"✅ Merged {len(merged_rows)} unique tracks into library.csv")
+            if orphan_count:
+                print(f"   ({orphan_count} orphan rows — in library but no longer in RB/Traktor)")
             if total_filtered > 0:
                 print(f"   (Filtered out {total_filtered} unwanted tracks:")
                 if apple_music_filtered > 0:

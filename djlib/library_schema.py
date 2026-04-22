@@ -152,6 +152,105 @@ def _write_schema_sidecar(csv_path: Path, row_count: int) -> None:
     os.replace(tmp, sidecar)
 
 
+# Fields that djlib owns and must survive a sync from RB/Traktor.
+# Rationale per field:
+#   file_hash, original_path — computed by djlib at `apply`, neither DJ
+#       software stores them.
+#   added_date — when djlib first adopted the track; `date_added` coming
+#       from RB/Traktor is the DJ-software import date, a different thing.
+#   key_original, key_source — reserved for PR3 key-tracking; once set,
+#       a re-sync should not clear them because RB doesn't know the
+#       original form.
+#   analysis_source — reserved for PR3 (tags|rekordbox|traktor|beatport).
+DJLIB_OWNED_FIELDS: List[str] = [
+    "file_hash",
+    "original_path",
+    "added_date",
+    "key_original",
+    "key_source",
+    "analysis_source",
+]
+
+
+def merge_with_existing_library(
+    new_rows: List[Dict[str, object]],
+    existing_rows: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    """Merge fresh RB/Traktor snapshot with existing library.csv by track_id.
+
+    Why this exists: `cmd_sync_dj_libraries` used to overwrite library.csv
+    with pandas `to_csv`, which wiped every field that djlib owns because
+    those fields don't come from Rekordbox/Traktor. The canonical writer
+    from PR2a fixed the *mechanics* of the write; this function fixes the
+    *content*. Together they make `sync-dj-libraries` non-destructive for
+    djlib-owned state.
+
+    Rules:
+      1. For each `track_id` present in both new and existing: take the new
+         row (DJ-software data is fresh) but overlay any non-empty
+         `DJLIB_OWNED_FIELDS` value from the existing row. `added_date` is
+         also backfilled from the row's own `date_added` when neither side
+         has it — first sync after an import should not leave it blank.
+      2. New `track_id`s pass through unchanged (with the same `added_date`
+         backfill).
+      3. Existing `track_id`s that the sync no longer returns become
+         **orphans**: the row is kept but `external_source`, `rekordbox_id`,
+         `traktor_id` are cleared. A DJ can still find the file via its
+         djlib-owned path, and a later sync will re-adopt it if RB/Traktor
+         see it again. (Deleting orphans outright would silently drop
+         tracks that were merely re-imported under a new DB ID.)
+    """
+    existing_by_tid: Dict[str, Dict[str, object]] = {}
+    for r in existing_rows:
+        tid = str(r.get("track_id") or "").strip()
+        if tid:
+            existing_by_tid[tid] = r
+
+    seen_tids: set = set()
+    merged: List[Dict[str, object]] = []
+
+    for row in new_rows:
+        tid = str(row.get("track_id") or "").strip()
+        out: Dict[str, object] = dict(row)
+
+        if tid and tid in existing_by_tid:
+            prev = existing_by_tid[tid]
+            for field in DJLIB_OWNED_FIELDS:
+                prev_val = prev.get(field, "")
+                if prev_val not in ("", None):
+                    out[field] = prev_val
+            seen_tids.add(tid)
+
+        if not out.get("added_date"):
+            # Backfill: first time we're seeing this track, use whatever
+            # "date added" the DJ software had, else stay empty.
+            out["added_date"] = row.get("date_added", "") or (
+                existing_by_tid.get(tid, {}).get("added_date", "") if tid else ""
+            )
+
+        merged.append(out)
+
+    # Orphans: existed before, no longer returned by any DJ software
+    for tid, prev in existing_by_tid.items():
+        if tid in seen_tids:
+            continue
+        orphan = dict(prev)
+        orphan["external_source"] = ""
+        orphan["rekordbox_id"] = ""
+        orphan["traktor_id"] = ""
+        merged.append(orphan)
+
+    return merged
+
+
+def load_library_csv(csv_path: Path) -> List[Dict[str, str]]:
+    """Read existing library.csv. Returns [] if absent or empty."""
+    if not csv_path.exists():
+        return []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
 def save_library_csv(
     csv_path: Path,
     rows: List[Dict[str, object]],
