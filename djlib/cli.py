@@ -2417,8 +2417,19 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             fp_duplicates_merged = before_fp_dedup - len(df)
             duplicates_merged += fp_duplicates_merged
             
-            CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(CSV_PATH, index=False)
+            from djlib.library_schema import save_library_csv
+
+            # Preserve any columns pandas produced that aren't in the canonical
+            # schema yet (e.g. legacy per-source genre fields). The canonical
+            # writer drops unknowns by default — `extra_fieldnames` keeps them
+            # until PR2b formally retires each one.
+            from djlib.library_schema import LIBRARY_FIELDNAMES as _CANONICAL
+            extra = [c for c in df.columns if c not in _CANONICAL]
+            save_library_csv(
+                CSV_PATH,
+                df.to_dict(orient="records"),
+                extra_fieldnames=extra,
+            )
             print(f"✅ Merged {len(df)} unique tracks into library.csv")
             if total_filtered > 0:
                 print(f"   (Filtered out {total_filtered} unwanted tracks:")
