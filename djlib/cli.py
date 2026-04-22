@@ -3174,24 +3174,11 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 proposed_name = _sanitize_filename(p.name)
                 new_path = p.with_name(proposed_name)
 
-                # On collision, pick the next free ' (N)' variant so the
-                # second-identically-sanitized file isn't silently dropped.
-                collision = new_path.exists() and new_path != p
-                if collision:
-                    new_path = _ensure_unique_path(new_path)
-                    proposed_name = new_path.name
-
                 print(f"[{idx}/{len(_unsafe_files)}] Proposed rename:")
                 print(f"   folder: {p.parent}")
                 print(f"   BEFORE: {p.name!r}")
                 print(f"   AFTER:  {proposed_name}")
                 print(f"   reason: {why}")
-                if collision:
-                    print(
-                        f"   ℹ️  Target name already taken in this folder — "
-                        f"appended a suffix so the rename can go through. "
-                        f"(Not a duplicate check — just making the path unique.)"
-                    )
 
                 if accept_all:
                     choice = "y"
@@ -3216,6 +3203,19 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     remaining.append((p, why))
                     print()
                     continue
+
+                # Suffix is reactive: only when the clean target is actually
+                # taken in the SAME folder. Different-folder copies (most of
+                # the user's real-world case) rename straight through with
+                # no suffix. POSIX `os.rename` would silently overwrite an
+                # existing file, so we pre-check — Python stdlib has no
+                # "rename-fail-if-exists" primitive on POSIX.
+                if new_path.exists() and new_path != p:
+                    new_path = _ensure_unique_path(new_path)
+                    print(
+                        f"   ℹ️  '{proposed_name}' already exists here — "
+                        f"using {new_path.name} instead to avoid overwriting."
+                    )
 
                 try:
                     os.rename(str(p), str(new_path))
