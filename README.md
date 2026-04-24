@@ -56,8 +56,8 @@ pip install -e .
 # 2. Configure library paths
 python -m djlib.cli configure
 
-# 3. (Optional) Setup metadata sources
-python -m djlib.cli setup-beatport  # EDM genres + artwork
+# 3. (Optional) Setup legacy metadata helpers
+python -m djlib.cli setup-beatport  # Optional; not required for enrich-online
 
 # 4. (Optional) Install Essentia for audio analysis
 python scripts/install_essentia.py
@@ -171,12 +171,13 @@ python -m djlib.cli undo
 
 | Source          | Data Provided        | Weight       | Setup                    |
 | --------------- | -------------------- | ------------ | ------------------------ |
-| **Beatport**    | EDM genres, BPM, Key | 10 (highest) | `setup-beatport` command |
-| **Last.fm**     | Genres, play counts  | 6            | No setup needed          |
-| **MusicBrainz** | Year, album, artist  | 3            | No setup needed          |
-| **SoundCloud**  | Genres (EDM)         | 2            | Auto-configured          |
+| **Web Search + AI** | Genre + release year | Primary      | OpenAI API key           |
+| **Last.fm**         | Tags, play counts    | Supporting   | No setup needed          |
+| **MusicBrainz**     | Year, album, artist  | Supporting   | No setup needed          |
+| **Beatport**        | Optional legacy/API  | Optional     | `setup-beatport` command |
+| **SoundCloud**      | Optional URL scrape  | Optional     | Auto-configured          |
 
-**Genre Resolution:** Multi-source weighted voting system. Subgenres (e.g., "tech house") get specificity boost over generic parents (e.g., "house").
+**Genre Resolution:** `enrich-online` uses the production `nano+WS+LF` classifier (web search + Last.fm + OpenAI), with MusicBrainz/Last.fm as supporting metadata sources.
 
 ---
 

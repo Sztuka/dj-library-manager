@@ -9,8 +9,9 @@ Pipeline per track:
     2. Last.fm count-weighted tags
     3. gpt-5-nano classification call with canonical genre list
 
-Returns ``genre``, ``confidence``, ``reasoning``, ``source`` — or raises
-``ClassifierError`` on hard failure (after one automatic retry on timeout).
+Returns ``genre``, ``confidence``, ``reasoning``, ``year``, ``year_evidence``,
+``source`` — or raises ``ClassifierError`` on hard failure (after one
+automatic retry on timeout).
 """
 from __future__ import annotations
 
@@ -37,6 +38,7 @@ _GENRES_FILE = _REPO / "genres.yml"
 MODEL = "gpt-5-nano"
 OPENAI_TIMEOUT = 120
 OPENAI_URL = "https://api.openai.com/v1/responses"
+_YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2}|2100)\b")
 
 
 class ClassifierError(Exception):
@@ -89,6 +91,33 @@ def _fetch_lastfm_tags(artist: str, title: str) -> str:
     if not tags:
         return ""
     return ", ".join(f"{name} ({cnt})" for name, cnt in tags)
+
+
+def _normalize_release_year(value: Any) -> str:
+    """Normalize a model-returned year/date into ``YYYY`` or empty string."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null"}:
+        return ""
+    match = _YEAR_RE.search(text)
+    if not match:
+        return ""
+    year = match.group(1)
+    try:
+        year_int = int(year)
+    except ValueError:
+        return ""
+    if 1900 <= year_int <= (time.gmtime().tm_year + 1):
+        return year
+    return ""
+
+
+def _year_supported_by_web_context(year: str, web_search_context: str) -> bool:
+    """Accept a year only when it appears in the fetched web-search context."""
+    if not year or not web_search_context or web_search_context.startswith("(No web search"):
+        return False
+    return bool(re.search(rf"\b{re.escape(year)}\b", web_search_context))
 
 
 def _build_prompt(
@@ -206,9 +235,15 @@ def _build_prompt(
         f"Reggae, Punk, Indie Pop, Synthpop, etc.). For these genres, artist identity is the "
         f"primary signal. Do NOT let BPM override artist knowledge — a hip-hop track at 170 BPM "
         f"is still Hip-Hop (BPM detector may have measured double-time).\n\n"
+        f"Also extract the release year for THIS exact track/version ONLY when the web search "
+        f"results explicitly support it. For remixes/edits, use the remix/edit release year, "
+        f"NOT the original song's year. If the year is ambiguous, missing from the search "
+        f"results, or based only on your background knowledge, return null.\n\n"
         f"If signals are weak or conflicting, choose the broadest matching genre family "
         f"and set confidence below 0.5.\n\n"
-        f"Respond with JSON: {{\"genre\": \"...\", \"confidence\": 0.0-1.0, \"reasoning\": \"...\"}}\n"
+        f"Respond with JSON: {{\"genre\": \"...\", \"confidence\": 0.0-1.0, "
+        f"\"reasoning\": \"...\", \"year\": \"YYYY or null\", "
+        f"\"year_evidence\": \"source/snippet or null\"}}\n"
         f"Confidence guide: 0.9+ only when multiple signals agree, 0.7-0.9 single strong signal, "
         f"<0.7 uncertain or conflicting. Confidence MUST be below 0.5 if classification relies solely on BPM.\n"
         f"In reasoning, briefly list each signal used and what it indicated."
@@ -275,8 +310,8 @@ def classify_genre(
     Model: ``gpt-5-nano``. AB-tested at 75.5% exact / 90.5% family accuracy.
 
     Returns:
-        ``{"genre": str, "confidence": float, "reasoning": str, "source": str,
-           "lastfm_tags": str}``
+        ``{"genre": str, "confidence": float, "reasoning": str, "year": str,
+           "year_evidence": str, "source": str, "lastfm_tags": str}``
 
     Raises:
         ClassifierError: on OpenAI timeout/error after ``max_retries + 1``
@@ -304,10 +339,25 @@ def classify_genre(
     for attempt in range(max_retries + 1):
         try:
             result = _call_openai(api_key, prompt)
+            release_year = _normalize_release_year(
+                result.get("year") or result.get("release_year")
+            )
+            year_evidence = str(result.get("year_evidence", "") or "").strip()
+            if release_year and not _year_supported_by_web_context(release_year, ws_ctx):
+                log.warning(
+                    "Discarding classifier year %s for %s - %s: not found in WS context",
+                    release_year, artist, title,
+                )
+                release_year = ""
+                year_evidence = ""
+            if not release_year:
+                year_evidence = ""
             return {
                 "genre": str(result.get("genre", "")).strip(),
                 "confidence": float(result.get("confidence", 0.0) or 0.0),
                 "reasoning": str(result.get("reasoning", "")).strip(),
+                "year": release_year,
+                "year_evidence": year_evidence,
                 "source": "nano+WS+LF",
                 "lastfm_tags": lf_tags,
             }

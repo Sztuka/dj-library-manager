@@ -526,7 +526,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 # Auto-bucketing logic is no longer relevant. Use manual genre selection in unsorted.csv instead.
 
 def cmd_enrich_online(args: argparse.Namespace) -> None:
-    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
+    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm + WS classifier.
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
     """
@@ -582,90 +582,38 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         except Exception:
             pass
 
-    _flush_status()
+    def _classifier_from_online(online: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+        if not online:
+            return None
+        marker_fields = (
+            "__classifier_genre",
+            "__classifier_confidence",
+            "__classifier_reasoning",
+            "__classifier_year",
+            "__classifier_year_evidence",
+            "__classifier_lastfm_tags",
+        )
+        if not any((online.get(k) or "").strip() for k in marker_fields):
+            return None
+        try:
+            confidence = float((online.get("__classifier_confidence") or "0").strip() or 0.0)
+        except Exception:
+            confidence = 0.0
+        return {
+            "genre": (online.get("__classifier_genre") or "").strip(),
+            "confidence": confidence,
+            "reasoning": (online.get("__classifier_reasoning") or "").strip(),
+            "source": (online.get("__classifier_source") or "nano+WS+LF").strip(),
+            "lastfm_tags": (online.get("__classifier_lastfm_tags") or "").strip(),
+            "year": (online.get("__classifier_year") or "").strip(),
+            "year_evidence": (online.get("__classifier_year_evidence") or "").strip(),
+        }
 
-    # Beatport token validation with auto-refresh
-    beatport_available = True
-    try:
-        from djlib.metadata.beatport import get_valid_token
-        # Attempt to get valid token (triggers auto-refresh if expired)
-        token = get_valid_token()
-        print("✅ Beatport: Token ready")
-    except Exception as e:
-        beatport_available = False
-        error_msg = str(e)
-        print(f"\n⚠️  Beatport: {error_msg}")
-        
-        # Provide helpful guidance based on error type
-        if "credentials" in error_msg.lower() or "missing" in error_msg.lower():
-            print(f"   Setup: python -m djlib.cli setup-beatport")
-        
-        # Only prompt if user hasn't already set skip flag
-        if not getattr(args, "skip_beatport", False):
-            _flush_status()
-            try:
-                choice = input("Kontynuować bez Beatport? [Y/n]: ").strip().lower()
-            except Exception:
-                choice = "y"
-            
-            if choice in {"n", "no"}:
-                print("Przerwano na prośbę użytkownika.")
-                status_doc["state"] = "done"
-                status_doc["completed_at"] = _now_iso()
-                _flush_status()
-                return
-            else:
-                print("→ Pomiń Beatport w tym przebiegu.")
-                setattr(args, "skip_beatport", True)
     _flush_status()
-
-    # SoundCloud client id health (informative, does not block)
-    sc_health_msg = ""
-    try:
-        from djlib.metadata.soundcloud import client_id_status
-        h = client_id_status()
-        if h:
-            status_doc["soundcloud"]["client_id_status"] = h.get("status", "unknown")
-        sc_health_msg = f"soundcloud_client_id_status={h.get('status')}" if h else ""
-        if h and h.get("status") == "ok":
-            print(f"✅ SoundCloud: {h.get('message')}")
-            if not getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "active"
-        elif h and h.get("status") == "expired":
-            print(f"ℹ SoundCloud: {h.get('message')} - auto-refresh dostępny")
-            # Auto-refresh will happen automatically when needed
-            if not getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "active"
-        elif h and h.get("status") in {"invalid", "error"}:
-            print(f"⚠ SoundCloud client_id: {h.get('message')}")
-            if getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "skipped"
-            else:
-                status_doc["soundcloud"]["prompt_shown"] = True
-                _flush_status()
-                try:
-                    choice = input("Kontynuować bez SoundCloud? [Y/n]: ").strip().lower()
-                except Exception:
-                    choice = "y"
-                if choice in {"n", "no"}:
-                    print("Przerwano na prośbę użytkownika (SoundCloud invalid).")
-                    status_doc["soundcloud"]["decision"] = "aborted"
-                    status_doc["state"] = "done"
-                    status_doc["completed_at"] = _now_iso()
-                    _flush_status()
-                    return
-                else:
-                    print("→ Pomiń SoundCloud w tym przebiegu.")
-                    setattr(args, "skip_soundcloud", True)
-                    status_doc["soundcloud"]["decision"] = "skipped"
-        elif h and h.get("status") == "missing":
-            if getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "skipped"
-            else:
-                print("ℹ Brak SoundCloud client_id (można ustawić DJLIB_SOUNDCLOUD_CLIENT_ID).")
-                status_doc["soundcloud"]["decision"] = "skipped"  # treat missing as skipped
-    except Exception:
-        pass
+    print("ℹ enrich-online uses MusicBrainz, Last.fm and WS-based AI classification; Beatport/SoundCloud APIs are not used in this workflow.")
+    status_doc["soundcloud"]["client_id_status"] = "unused"
+    status_doc["soundcloud"]["decision"] = "skipped"
+    status_doc["soundcloud"]["attempted_requests"] = 0
     _flush_status()
 
     for r in rows:
@@ -673,6 +621,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             continue
         p = Path(r.get("file_path",""))
         online = enrich_online_for_row(p, r)
+        precomputed_cls = _classifier_from_online(online)
         if not online:
             processed += 1
             status_doc["rows_processed"] = processed
@@ -703,7 +652,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         if any_change and (online.get("meta_source") or "").strip():
             r["meta_source"] = online["meta_source"]
         
-    # Zawsze spróbuj wzbogacić gatunki używając wszystkich źródeł (MB + Last.fm + SoundCloud)
+    # Always try to enrich genres using the production WS-based classifier.
         try:
             a = (r.get("artist_suggest") or r.get("artist") or "").strip()
             t = (r.get("title_suggest") or r.get("title") or "").strip()
@@ -726,28 +675,38 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             
-            from djlib.metadata.genre_classifier import classify_genre, ClassifierError
-            print(f"   🎵 Classifying genre (nano+WS+LF) for: {a} - {t}")
-            bpm_str = (r.get("bpm") or r.get("tag_bpm_original") or "").strip()
-            key_str = (r.get("key_camelot") or r.get("tag_key_original") or "").strip()
-            filename_hint = Path(r.get("file_path", "")).name if r.get("file_path") else ""
-            try:
-                cls = classify_genre(
-                    artist=a, title=t, version=v,
-                    bpm=bpm_str, key=key_str, filename=filename_hint,
-                )
-            except ClassifierError as e:
-                print(f"      ❌ Classification failed (after retry): {e}")
-                r["ai_genre"] = ""
-                r["ai_confidence"] = ""
-                r["ai_reasoning"] = f"ERROR: {str(e)[:200]}"
-                r["ai_classify_date"] = _now_iso()
-                genre_res = None
+            cls = precomputed_cls
+            if cls is None:
+                from djlib.metadata.genre_classifier import classify_genre, ClassifierError
+                print(f"   🎵 Classifying genre (nano+WS+LF) for: {a} - {t}")
+                bpm_str = (r.get("bpm") or r.get("tag_bpm_original") or "").strip()
+                key_str = (r.get("key_camelot") or r.get("tag_key_original") or "").strip()
+                filename_hint = Path(r.get("file_path", "")).name if r.get("file_path") else ""
+                try:
+                    cls = classify_genre(
+                        artist=a, title=t, version=v,
+                        bpm=bpm_str, key=key_str, filename=filename_hint,
+                    )
+                except ClassifierError as e:
+                    print(f"      ❌ Classification failed (after retry): {e}")
+                    r["ai_genre"] = ""
+                    r["ai_confidence"] = ""
+                    r["ai_reasoning"] = f"ERROR: {str(e)[:200]}"
+                    r["ai_classify_date"] = _now_iso()
+                    genre_res = None
+                    cls = None
             else:
+                print(f"   🎵 Reusing genre classification (nano+WS+LF) for: {a} - {t}")
+
+            if cls is not None:
                 r["ai_genre"] = cls["genre"]
                 r["ai_confidence"] = f"{cls['confidence']:.2f}"
                 r["ai_reasoning"] = cls["reasoning"][:500]
                 r["ai_classify_date"] = _now_iso()
+                cls_year = (cls.get("year") or "").strip()
+                if cls_year and not (r.get("year_suggest") or "").strip():
+                    r["year_suggest"] = cls_year
+                    any_change = True
                 if cls.get("lastfm_tags"):
                     lf_top = [name.strip() for name in re.split(r',\s*', cls["lastfm_tags"]) if name.strip()][:5]
                     r["genres_lastfm"] = ", ".join(s.split(" (")[0] for s in lf_top)
@@ -805,10 +764,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             elif not genre_res and force_genres:
-                # All online sources returned nothing (e.g. SC remixer
-                # validation failed — track not found on any platform).
-                # Fall back to original file tag genre so the track isn't
-                # left with stale/wrong data from a previous enrich run.
+                # Classifier produced no usable genre. Fall back to the original
+                # file tag so the row is not left with stale data from an older run.
                 original_tag_genre = (r.get("tag_genre_original") or "").strip()
                 if original_tag_genre:
                     r["genre_suggest"] = original_tag_genre.lower()
@@ -823,35 +780,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             # Debug: print exception for troubleshooting
             print(f"Genre resolution failed for {a} - {t}: {e}")
             pass
-
-        # Safety net: extract artist from Beatport for remixes where
-        # suggest_metadata didn't provide an artist (e.g. AcoustID intercepted,
-        # transient error, or low confidence discarded the result).
-        # Uses in-process cache — no extra API call when genre_resolver already
-        # queried Beatport above.
-        if (
-            not (r.get("artist_suggest") or "").strip()
-            and v
-            and not getattr(args, "skip_beatport", False)
-        ):
-            try:
-                from djlib.metadata.beatport import search_track as bp_search
-                bp_result = bp_search(a, t, dur_s, version=v)
-                if bp_result and bp_result.get("artist"):
-                    r["artist_suggest"] = bp_result["artist"]
-                    any_change = True
-                    print(f"      🎤 Artist from Beatport: {bp_result['artist']}")
-                    # Also fill year/album if still empty
-                    if not (r.get("year_suggest") or "").strip():
-                        rd = bp_result.get("release_date", "")
-                        if rd and rd.strip():
-                            r["year_suggest"] = rd.split("-")[0]
-                    if not (r.get("album_suggest") or "").strip():
-                        alb = bp_result.get("release_name", "") or bp_result.get("album", "")
-                        if alb and alb.strip():
-                            r["album_suggest"] = alb
-            except Exception:
-                pass
 
         # Popularność z Last.fm (playcount/listeners) — pomoc dla singalong/party dance/decades
         try:
@@ -949,12 +877,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         "lastfm": lfm_cnt,
         "soundcloud": sc_cnt,
     }
-    # Uzupełnij attempted_requests z modułu SoundCloud
-    try:
-        from djlib.metadata.soundcloud import soundcloud_request_count
-        status_doc["soundcloud"]["attempted_requests"] = soundcloud_request_count()
-    except Exception:
-        pass
+    status_doc["soundcloud"]["attempted_requests"] = 0
     status_doc["rows_processed"] = processed
     status_doc["updated"] = changed
     status_doc["state"] = "done"
@@ -984,8 +907,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     #     print(f"🎨 Okładki URL: found={covers_added}, failed={covers_failed}")
     if not _lfm_key_present:
         print("   ⚠ Brak LASTFM_API_KEY (DJLIB_LASTFM_API_KEY) — kolumna genres_lastfm może pozostać pusta.")
-    if sc_health_msg:
-        print(f"   ℹ {sc_health_msg}")
 
 def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
     """Uzupełnij brakujące fingerprinty w istniejącym CSV.
@@ -3827,7 +3748,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_parser("fix-filenames").set_defaults(func=cmd_fix_titles_from_filenames)
     ep = sp.add_parser("enrich-online")
     ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm nawet jeśli już wypełnione")
-    ep.add_argument("--skip-soundcloud", action="store_true", help="Pomiń źródło SoundCloud nawet jeśli client_id jest ustawiony")
+    ep.add_argument("--skip-soundcloud", action="store_true", help="Legacy no-op: enrich-online no longer uses the SoundCloud API")
     ep.set_defaults(func=cmd_enrich_online)
 
     # analyze-audio

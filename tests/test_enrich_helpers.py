@@ -336,214 +336,108 @@ class TestSuggestMetadataOffline:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_via_genre_sources: Beatport artist extraction
+# _resolve_via_genre_sources: classifier + non-API metadata
 # ---------------------------------------------------------------------------
 
-class TestResolveViaGenreSourcesBeatportArtist:
-    """When artist is empty and Beatport finds a remix, extract artist."""
-
+class TestResolveViaGenreSourcesClassifier:
+    @patch("djlib.metadata.soundcloud.get_track_year")
     @patch("djlib.metadata.beatport.search_track")
-    @patch("djlib.metadata.lastfm.track_info", return_value={})
-    def test_beatport_provides_artist_for_remix_without_artist(
-        self, mock_lastfm_info, mock_bp_search
+    @patch("djlib.metadata.lastfm.track_info", return_value={"album": "El Carinoso EP"})
+    @patch("djlib.metadata.genre_classifier.classify_genre")
+    def test_classifier_provides_genre_and_year_for_remix(
+        self, mock_classify, mock_lastfm_info, mock_bp_search, mock_sc_year
     ):
-        """Remix with no artist: Beatport result should populate artist_suggest."""
         from djlib.enrich import _resolve_via_genre_sources
 
-        # Mock Beatport search_track to return a result with artist
-        mock_bp_search.return_value = {
-            "artist": "Pablo Fierro",
+        mock_classify.return_value = {
             "genre": "Afro House",
-            "release_date": "2021-06-15",
-            "release_name": "El Carinoso EP",
+            "confidence": 0.8,
+            "reasoning": "WS and remixer identity point to Afro House",
+            "source": "nano+WS+LF",
+            "lastfm_tags": "afro house (15), house (10)",
+            "year": "2021",
+            "year_evidence": "Discogs snippet mentions 2021 release",
         }
 
-        # Mock the genre resolver to return a valid result
-        from djlib.metadata.genre_resolver import GenreResolution, SourceScore
-        mock_genre_result = GenreResolution(
-            main="Afro House",
-            subs=[],
-            confidence=0.8,
-            breakdown=[SourceScore(source="bp", weight=25.0, tags={"Afro House": 25.0})],
+        result = _resolve_via_genre_sources(
+            artist="Pablo Fierro",
+            title="El Carinoso",
+            version="Gregor Salto Remix",
+            dur_sec=468,
+            live=False,
+            tags={
+                "filename": "Pablo Fierro - El Carinoso (Gregor Salto Remix).mp3",
+                "bpm": "123",
+                "key_camelot": "8A",
+            },
         )
-
-        with patch(
-            "djlib.metadata.genre_resolver.resolve", return_value=mock_genre_result
-        ):
-            result = _resolve_via_genre_sources(
-                artist="",
-                title="El Carinoso",
-                version="Gregor Salto Remix",
-                dur_sec=468,
-                live=False,
-                tags={},
-            )
 
         assert result is not None
         assert result["artist_suggest"] == "Pablo Fierro"
+        assert result["genre_suggest"] == "Afro House"
         assert result["year_suggest"] == "2021"
+        assert result["album_suggest"] == "El Carinoso EP"
+        assert result["meta_source"].startswith("ai_classifier(")
+        assert result["__classifier_genre"] == "Afro House"
+        assert result["__classifier_year"] == "2021"
+        mock_bp_search.assert_not_called()
+        mock_sc_year.assert_not_called()
 
-    @patch("djlib.metadata.beatport.search_track")
     @patch("djlib.metadata.lastfm.track_info", return_value={})
-    def test_beatport_does_not_overwrite_existing_artist(
-        self, mock_lastfm_info, mock_bp_search
+    @patch("djlib.metadata.genre_classifier.classify_genre")
+    @patch("djlib.metadata.mb_client.get_original_release_info")
+    def test_originals_prefer_musicbrainz_year_and_album(
+        self, mock_mb_info, mock_classify, mock_lastfm_info
     ):
-        """When artist is already known, Beatport should not overwrite it."""
         from djlib.enrich import _resolve_via_genre_sources
 
-        mock_bp_search.return_value = {
-            "artist": "Pablo Fierro",
-            "genre": "Afro House",
-            "release_date": "2021-06-15",
+        mock_mb_info.return_value = ("1998", "Moon Safari", "rg-123")
+        mock_classify.return_value = {
+            "genre": "Downtempo",
+            "confidence": 0.9,
+            "reasoning": "Artist knowledge + WS",
+            "source": "nano+WS+LF",
+            "lastfm_tags": "",
+            "year": "2024",
+            "year_evidence": "Reissue snippet",
         }
 
-        from djlib.metadata.genre_resolver import GenreResolution, SourceScore
-        mock_genre_result = GenreResolution(
-            main="Afro House",
-            subs=[],
-            confidence=0.8,
-            breakdown=[SourceScore(source="bp", weight=25.0, tags={"Afro House": 25.0})],
+        result = _resolve_via_genre_sources(
+            artist="Air",
+            title="All I Need",
+            version="",
+            dur_sec=290,
+            live=False,
+            tags={},
         )
 
-        with patch(
-            "djlib.metadata.genre_resolver.resolve", return_value=mock_genre_result
-        ):
-            result = _resolve_via_genre_sources(
-                artist="Existing Artist",
-                title="El Carinoso",
-                version="Gregor Salto Remix",
-                dur_sec=468,
-                live=False,
-                tags={},
-            )
+        assert result is not None
+        assert result["genre_suggest"] == "Downtempo"
+        assert result["year_suggest"] == "1998"
+        assert result["album_suggest"] == "Moon Safari"
+        assert result["release_group_id"] == "rg-123"
+        assert result["__classifier_year"] == "2024"
+        assert "musicbrainz_release_info" in result["meta_source"]
+
+    @patch("djlib.metadata.lastfm.track_info", return_value={"album": "Discovery", "year": "2001"})
+    @patch("djlib.metadata.genre_classifier.classify_genre", side_effect=RuntimeError("boom"))
+    @patch("djlib.metadata.mb_client.get_original_release_info", return_value=None)
+    def test_classifier_failure_still_returns_lastfm_metadata(
+        self, mock_mb_info, mock_classify, mock_lastfm_info
+    ):
+        from djlib.enrich import _resolve_via_genre_sources
+
+        result = _resolve_via_genre_sources(
+            artist="Daft Punk",
+            title="One More Time",
+            version="",
+            dur_sec=320,
+            live=False,
+            tags={},
+        )
 
         assert result is not None
-        # Should keep the existing artist, not overwrite with Beatport
-        assert result["artist_suggest"] == "Existing Artist"
-
-
-# ---------------------------------------------------------------------------
-# CLI safety net: Beatport artist extraction when suggest_metadata didn't
-# provide an artist (e.g. AcoustID intercepted, transient error, or offline
-# fallback discarded the result).
-# ---------------------------------------------------------------------------
-
-class TestCLIBeatportArtistSafetyNet:
-    """Test the safety-net logic added in cli.py's enrich-online loop.
-
-    When genres_beatport is populated but artist_suggest is empty, the CLI
-    calls beatport.search_track (in-process cache hit) to extract artist,
-    year, and album.
-    """
-
-    @patch("djlib.metadata.beatport.search_track")
-    def test_safety_net_fills_artist_from_beatport(self, mock_bp):
-        """Empty artist_suggest + version present → extract artist from Beatport."""
-        mock_bp.return_value = {
-            "artist": "Pablo Fierro",
-            "genre": "Afro House",
-            "release_date": "2021-06-15",
-            "release_name": "El Carinoso",
-        }
-
-        r = {
-            "artist_suggest": "",
-            "title_suggest": "El Carinoso",
-            "version_suggest": "Gregor Salto Remix",
-            "genre_suggest": "house",
-            "genres_beatport": "house",
-            "year_suggest": "",
-            "album_suggest": "",
-        }
-        a, t, v, dur_s = "", "El Carinoso", "Gregor Salto Remix", 468
-
-        # Execute safety net logic (mirrors cli.py code)
-        if not (r.get("artist_suggest") or "").strip() and v:
-            from djlib.metadata.beatport import search_track as bp_search
-            bp_result = bp_search(a, t, dur_s, version=v)
-            if bp_result and bp_result.get("artist"):
-                r["artist_suggest"] = bp_result["artist"]
-                if not (r.get("year_suggest") or "").strip():
-                    rd = bp_result.get("release_date", "")
-                    if rd and rd.strip():
-                        r["year_suggest"] = rd.split("-")[0]
-                if not (r.get("album_suggest") or "").strip():
-                    alb = bp_result.get("release_name", "") or bp_result.get("album", "")
-                    if alb and alb.strip():
-                        r["album_suggest"] = alb
-
-        assert r["artist_suggest"] == "Pablo Fierro"
-        assert r["year_suggest"] == "2021"
-        assert r["album_suggest"] == "El Carinoso"
-
-    @patch("djlib.metadata.beatport.search_track")
-    def test_safety_net_skips_when_artist_already_set(self, mock_bp):
-        """If artist_suggest is already set, safety net should not run."""
-        r = {
-            "artist_suggest": "Existing Artist",
-            "version_suggest": "Gregor Salto Remix",
-        }
-        v = "Gregor Salto Remix"
-
-        if not (r.get("artist_suggest") or "").strip() and v:
-            mock_bp.assert_not_called()
-
-        assert r["artist_suggest"] == "Existing Artist"
-        mock_bp.assert_not_called()
-
-    @patch("djlib.metadata.beatport.search_track")
-    def test_safety_net_skips_when_no_version(self, mock_bp):
-        """No version (original track) → safety net should not run."""
-        r = {"artist_suggest": "", "version_suggest": ""}
-        v = ""
-
-        if not (r.get("artist_suggest") or "").strip() and v:
-            mock_bp.assert_not_called()
-
-        mock_bp.assert_not_called()
-
-    @patch("djlib.metadata.beatport.search_track")
-    def test_safety_net_handles_beatport_none(self, mock_bp):
-        """Beatport returns None → no crash, artist stays empty."""
-        mock_bp.return_value = None
-
-        r = {"artist_suggest": "", "year_suggest": "2020", "album_suggest": ""}
-        a, t, v, dur_s = "", "El Carinoso", "Gregor Salto Remix", 468
-
-        if not (r.get("artist_suggest") or "").strip() and v:
-            from djlib.metadata.beatport import search_track as bp_search
-            bp_result = bp_search(a, t, dur_s, version=v)
-            if bp_result and bp_result.get("artist"):
-                r["artist_suggest"] = bp_result["artist"]
-
-        assert r["artist_suggest"] == ""
-
-    @patch("djlib.metadata.beatport.search_track")
-    def test_safety_net_does_not_overwrite_existing_year(self, mock_bp):
-        """Year already set → Beatport year should not overwrite."""
-        mock_bp.return_value = {
-            "artist": "Pablo Fierro",
-            "release_date": "2010-01-01",
-            "release_name": "Old Album",
-        }
-
-        r = {"artist_suggest": "", "year_suggest": "2021", "album_suggest": ""}
-        a, t, v, dur_s = "", "El Carinoso", "Gregor Salto Remix", 468
-
-        if not (r.get("artist_suggest") or "").strip() and v:
-            from djlib.metadata.beatport import search_track as bp_search
-            bp_result = bp_search(a, t, dur_s, version=v)
-            if bp_result and bp_result.get("artist"):
-                r["artist_suggest"] = bp_result["artist"]
-                if not (r.get("year_suggest") or "").strip():
-                    rd = bp_result.get("release_date", "")
-                    if rd and rd.strip():
-                        r["year_suggest"] = rd.split("-")[0]
-                if not (r.get("album_suggest") or "").strip():
-                    alb = bp_result.get("release_name", "") or bp_result.get("album", "")
-                    if alb and alb.strip():
-                        r["album_suggest"] = alb
-
-        assert r["artist_suggest"] == "Pablo Fierro"
-        assert r["year_suggest"] == "2021"  # existing year preserved
-        assert r["album_suggest"] == "Old Album"  # album was empty, so filled
+        assert result["genre_suggest"] == ""
+        assert result["year_suggest"] == "2001"
+        assert result["album_suggest"] == "Discovery"
+        assert result["meta_source"] == "lastfm_track_info"
