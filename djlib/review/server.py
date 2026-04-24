@@ -1316,7 +1316,7 @@ def api_scrape_url():
 def api_enrich_track():
     """Re-enrich a single track using user-edited artist/title values.
 
-    Uses genre resolver (Beatport, Last.fm, SoundCloud, MusicBrainz) to find
+    Uses the production WS-based classifier (same path as workflow 2) to find
     genre based on the CURRENT artist/title in the CSV (which may have been
     edited by the user in the UI).
 
@@ -1325,8 +1325,8 @@ def api_enrich_track():
 
     Returns:
         { "genre": "Afro House", "genre_full": "Afro House, Deep House",
-          "confidence": 0.85, "sources": ["beatport", "lastfm"],
-          "year": "2024", "album": "...",
+          "confidence": 0.85, "sources": ["ai_classifier(nano+WS+LF)"],
+          "year": "2024",
           "swap_suggestion": { "swapped": true, ... } | null }
     """
     data = request.get_json(silent=True)
@@ -1432,29 +1432,10 @@ def api_enrich_track():
             source_genres["genres_lastfm"] = ", ".join(s.split(" (")[0] for s in lf_top)
 
     meta_source = f"ai_classifier({classifier_source})"
-
-    # --- Extract year from sources (cached from genre resolution) ---
-    year: Optional[str] = None
-    # 1. SoundCloud year (cached during genre fetch)
-    try:
-        from djlib.metadata.soundcloud import get_cached_year
-        sc_year = get_cached_year(artist, title, version)
-        if sc_year:
-            year = sc_year
-    except Exception:
-        pass
-    # 2. Beatport release_date (HTTP-cached, so this is instant)
-    if not year:
-        try:
-            from djlib.metadata.beatport import search_track as bp_search
-            bp_res = bp_search(artist, title, dur_s, version=version)
-            if bp_res and bp_res.get("release_date"):
-                rd = str(bp_res["release_date"]).strip()
-                # Extract year from date string (e.g. "2024-03-15" → "2024")
-                if rd and len(rd) >= 4:
-                    year = rd[:4]
-        except Exception:
-            pass
+    year = (cls.get("year") or "").strip() or None
+    year_evidence = (cls.get("year_evidence") or "").strip()
+    if year_evidence:
+        source_details["year"] = year_evidence[:200]
 
     return jsonify({
         "genre": genre_main,

@@ -486,7 +486,14 @@ def test_enrich_track_not_found(client):
     assert resp.status_code == 404
 
 
-def _classifier_result(genre: str, confidence: float, lastfm_tags: str = "", reasoning: str = "") -> Dict:
+def _classifier_result(
+    genre: str,
+    confidence: float,
+    lastfm_tags: str = "",
+    reasoning: str = "",
+    year: str | None = None,
+    year_evidence: str = "",
+) -> Dict:
     """Build a classifier-shape dict for mocking _classify_genre."""
     return {
         "genre": genre,
@@ -494,6 +501,8 @@ def _classifier_result(genre: str, confidence: float, lastfm_tags: str = "", rea
         "reasoning": reasoning,
         "source": "nano+WS+LF",
         "lastfm_tags": lastfm_tags,
+        "year": year or "",
+        "year_evidence": year_evidence,
     }
 
 
@@ -635,8 +644,8 @@ def test_enrich_uses_user_edited_fields(client, tmp_path):
     assert captured_args["version"] == "Talon Remix"
 
 
-def test_enrich_track_returns_year_from_soundcloud(client, tmp_path):
-    """Year from SoundCloud cache is included in enrich response."""
+def test_enrich_track_returns_year_from_classifier(client, tmp_path):
+    """Classifier-provided year is included in enrich response."""
     from djlib.review import server as srv
 
     csv_path = _make_unsorted_csv(tmp_path, [{
@@ -652,51 +661,30 @@ def test_enrich_track_returns_year_from_soundcloud(client, tmp_path):
         "genre_suggest": "",
     }])
 
-    mock_result = _classifier_result(genre="Deep House", confidence=0.80)
+    mock_result = _classifier_result(
+        genre="Deep House",
+        confidence=0.80,
+        year="2023",
+        year_evidence="Discogs result mentions Released 2023",
+    )
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
          patch.object(srv, "_classify_genre", return_value=mock_result), \
-         patch("djlib.metadata.soundcloud.get_cached_year", return_value="2023"):
+         patch("djlib.metadata.soundcloud.get_cached_year") as mock_sc_year, \
+         patch("djlib.metadata.beatport.search_track") as mock_bp_search:
         resp = client.post("/api/enrich-track", json={"track_id": "year-sc-1"})
 
     assert resp.status_code == 200
     data = json.loads(resp.data)
     assert data["year"] == "2023"
     assert data["genre"] == "Deep House"
+    assert data["source_details"]["year"] == "Discogs result mentions Released 2023"
+    mock_sc_year.assert_not_called()
+    mock_bp_search.assert_not_called()
 
 
-def test_enrich_track_returns_year_from_beatport(client, tmp_path):
-    """Year from Beatport release_date is included when SC has no year."""
-    from djlib.review import server as srv
-
-    csv_path = _make_unsorted_csv(tmp_path, [{
-        "track_id": "year-bp-1",
-        "file_path": "/tmp/test/Artist - Title.wav",
-        "artist": "Another Artist",
-        "title": "Another Title",
-        "version_info": "",
-        "duration_suggest": "4:30",
-        "tag_genre_original": "",
-        "artist_suggest": "",
-        "title_suggest": "",
-        "genre_suggest": "",
-    }])
-
-    mock_result = _classifier_result(genre="Tech House", confidence=0.90)
-
-    with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch.object(srv, "_classify_genre", return_value=mock_result), \
-         patch("djlib.metadata.soundcloud.get_cached_year", return_value=None), \
-         patch("djlib.metadata.beatport.search_track", return_value={"release_date": "2024-06-15"}):
-        resp = client.post("/api/enrich-track", json={"track_id": "year-bp-1"})
-
-    assert resp.status_code == 200
-    data = json.loads(resp.data)
-    assert data["year"] == "2024"
-
-
-def test_enrich_track_year_none_when_no_sources(client, tmp_path):
-    """Year is null when neither SC nor BP have year data."""
+def test_enrich_track_year_none_when_classifier_has_no_year(client, tmp_path):
+    """Year is null when classifier does not return one."""
     from djlib.review import server as srv
 
     csv_path = _make_unsorted_csv(tmp_path, [{
@@ -715,9 +703,7 @@ def test_enrich_track_year_none_when_no_sources(client, tmp_path):
     mock_result = _classifier_result(genre="House", confidence=0.70)
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch.object(srv, "_classify_genre", return_value=mock_result), \
-         patch("djlib.metadata.soundcloud.get_cached_year", return_value=None), \
-         patch("djlib.metadata.beatport.search_track", return_value=None):
+         patch.object(srv, "_classify_genre", return_value=mock_result):
         resp = client.post("/api/enrich-track", json={"track_id": "year-none-1"})
 
     assert resp.status_code == 200
@@ -2194,4 +2180,3 @@ def test_unsorted_tracks_include_rating_field(client, tmp_path):
         assert len(data) >= 1
         track = next(t for t in data if t["track_id"] == "rating-test-3")
         assert track["rating"] == "3"
-
