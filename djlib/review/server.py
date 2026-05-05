@@ -306,6 +306,57 @@ def api_update_track():
     return jsonify({"ok": True})
 
 
+@app.route("/api/tracks/batch-update", methods=["POST"])
+def api_batch_update_tracks():
+    """Update fields of multiple tracks at once.
+
+    Request body (JSON):
+        { "track_ids": ["id1", "id2", ...], "fields": { "genre": "Tech House", ... }, "source": "unsorted" }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    track_ids = data.get("track_ids", [])
+    fields = data.get("fields", {})
+    source = data.get("source", "unsorted")
+    if not track_ids:
+        return jsonify({"error": "No track_ids"}), 400
+    if not fields:
+        return jsonify({"error": "No fields to update"}), 400
+
+    csv_file = LIBRARY_REVIEW_CSV if source in ("library-review", "library-fix") else UNSORTED_CSV
+    id_set = set(track_ids)
+
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(csv_file)
+        # Detect which requested fields actually exist in this CSV's schema
+        schema_keys = set(rows[0].keys()) if rows else set()
+        applied_fields = {k: v for k, v in fields.items() if k in schema_keys}
+        dropped_fields = [k for k in fields.keys() if k not in schema_keys]
+
+        if not applied_fields:
+            return jsonify({
+                "ok": False,
+                "error": "None of the requested fields exist in this CSV",
+                "dropped_fields": dropped_fields,
+            }), 400
+
+        updated = 0
+        for row in rows:
+            tid = row.get("track_id") or row.get("file_hash")
+            if tid in id_set:
+                for key, value in applied_fields.items():
+                    row[key] = str(value)
+                updated += 1
+
+        if updated == 0:
+            return jsonify({"error": "No matching tracks found"}), 404
+
+        write_unsorted_rows(csv_file, rows, [])
+    return jsonify({"ok": True, "updated": updated, "dropped_fields": dropped_fields})
+
+
 @app.route("/api/genres")
 def api_genres():
     """Return list of valid genre labels from genres.yml."""
