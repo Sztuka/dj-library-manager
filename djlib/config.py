@@ -570,7 +570,7 @@ def get_ai_chat_model() -> str:
 
 
 def get_ai_quick_model() -> str:
-    """Return AI model for one-shot tasks like identify / suggest-genre (default gpt-4o-mini)."""
+    """Return AI model for one-shot tasks like identify / suggest-genre (default gpt-5-nano)."""
     env = os.getenv("DJLIB_AI_QUICK_MODEL")
     if env:
         return env.strip()

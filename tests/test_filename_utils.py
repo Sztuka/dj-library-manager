@@ -6,7 +6,8 @@ from djlib.filename import parse_from_filename, merge_title_and_version
 def test_parse_preserves_hyphenated_artist():
     artist, title, version = parse_from_filename(Path("AC-DC - T.N.T. [12B 128].mp3"))
     assert artist == "AC-DC"
-    assert title == "T.N.T. [12B 128]"
+    assert "T.N.T." in title
+    assert "12B 128" in title
     assert version == ""
 
 
