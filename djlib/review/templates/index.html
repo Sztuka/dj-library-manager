@@ -69,6 +69,48 @@
       </div>
     </header>
 
+    <!-- ── Batch edit bar ────────────────────────────────────────── -->
+    <div id="batch-bar" class="batch-bar hidden">
+      <button id="batch-clear" class="batch-clear-btn" title="Clear selection">✕</button>
+      <span id="batch-count" class="batch-count">0 selected</span>
+      <div class="batch-sep"></div>
+      <select id="batch-genre" class="batch-input batch-genre-select">
+        <option value="">Genre…</option>
+      </select>
+      <input type="text" id="batch-year" class="batch-input batch-year-input" placeholder="Year" maxlength="4" pattern="\d{4}" inputmode="numeric" title="4-digit year (1900–2099)" />
+      <input type="text" id="batch-artist" class="batch-input batch-artist-input" placeholder="Artist…" />
+      <div class="batch-sep"></div>
+      <select id="batch-status" class="batch-input batch-status-select">
+        <option value="">Status…</option>
+        <option value="accept">Accept</option>
+        <option value="reject">Reject</option>
+        <option value="review">Review</option>
+        <option value="undecided">Undecided</option>
+      </select>
+      <select id="batch-dest" class="batch-input batch-dest-select">
+        <option value="">Dest…</option>
+        <option value="library">Library</option>
+        <option value="reject">Reject</option>
+        <option value="archive">Archive</option>
+        <option value="mixes">Mixes</option>
+      </select>
+      <select id="batch-rating" class="batch-input batch-rating-select">
+        <option value="">Rating…</option>
+        <option value="0">Clear (0)</option>
+        <option value="1">★</option>
+        <option value="2">★★</option>
+        <option value="3">★★★</option>
+        <option value="4">★★★★</option>
+        <option value="5">★★★★★</option>
+      </select>
+      <select id="batch-done" class="batch-input batch-done-select">
+        <option value="">Done…</option>
+        <option value="TRUE">✓ Done</option>
+        <option value="FALSE">✗ Undone</option>
+      </select>
+      <button id="batch-apply" class="batch-apply-btn">Apply to <span id="batch-apply-count">0</span></button>
+    </div>
+
     <!-- ── Track table ─────────────────────────────────────────── -->
     <main id="table-container">
       <table id="tracks-table">
@@ -133,7 +175,9 @@
       <span class="sep">·</span>
       <kbd>D</kbd> Done
       <span class="sep">·</span>
-      <kbd>Shift+↑↓</kbd> Batch select
+      <kbd>Shift+↑↓</kbd> Extend selection
+      <span class="sep">·</span>
+      <kbd>☐</kbd> Batch select
       <span class="sep">·</span>
       <kbd>⌘Z</kbd> Undo
       <span class="sep">·</span>

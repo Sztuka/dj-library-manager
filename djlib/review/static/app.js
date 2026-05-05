@@ -180,6 +180,20 @@
   const urlInputCancel = document.getElementById("url-input-cancel");
   const urlInputSubmit = document.getElementById("url-input-submit");
 
+  // Batch bar
+  const batchBar = document.getElementById("batch-bar");
+  const batchClear = document.getElementById("batch-clear");
+  const batchCount = document.getElementById("batch-count");
+  const batchGenre = document.getElementById("batch-genre");
+  const batchYear = document.getElementById("batch-year");
+  const batchArtist = document.getElementById("batch-artist");
+  const batchStatus = document.getElementById("batch-status");
+  const batchDest = document.getElementById("batch-dest");
+  const batchRating = document.getElementById("batch-rating");
+  const batchDone = document.getElementById("batch-done");
+  const batchApply = document.getElementById("batch-apply");
+  const batchApplyCount = document.getElementById("batch-apply-count");
+
   // AI availability (checked once on load)
   let aiAvailable = false;
   let aiPending = false; // prevents double-clicks
@@ -198,6 +212,7 @@
   // -- Column definitions per source --------------------------
   const COLUMNS = {
     unsorted: [
+      { key: "_select", label: "", width: "28px", type: "row-select" },
       { key: "_index", label: "#", width: "36px" },
       { key: "artist", label: "Artist", width: "15%", type: "editable" },
       { key: "title", label: "Title", width: "16%", type: "editable" },
@@ -261,6 +276,7 @@
       },
     ],
     "library-review": [
+      { key: "_select", label: "", width: "28px", type: "row-select" },
       { key: "_index", label: "#", width: "36px" },
       { key: "artist", label: "Artist", width: "14%", type: "editable" },
       { key: "title", label: "Title", width: "15%", type: "editable" },
@@ -281,6 +297,7 @@
       { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
     ],
     "library-fix": [
+      { key: "_select", label: "", width: "28px", type: "row-select" },
       { key: "_index", label: "#", width: "32px" },
       { key: "artist", label: "Artist", width: "11%", type: "editable" },
       { key: "title", label: "Title", width: "12%", type: "editable" },
@@ -456,6 +473,15 @@
     selectedSet.clear();
     selectionAnchor = -1;
     undoStack = [];
+    // Reset batch bar inputs to avoid ghost values across source switches
+    if (batchGenre) batchGenre.value = "";
+    if (batchYear) batchYear.value = "";
+    if (batchArtist) batchArtist.value = "";
+    if (batchStatus) batchStatus.value = "";
+    if (batchDest) batchDest.value = "";
+    if (batchRating) batchRating.value = "";
+    if (batchDone) batchDone.value = "";
+    updateBatchBar();
     applyFilters();
     // Auto-select first row
     if (filteredTracks.length > 0) {
@@ -470,6 +496,7 @@
     } catch (e) {
       genres = [];
     }
+    populateBatchGenre();
   }
 
   // -- Populate key filter from library data ------------------
@@ -768,16 +795,44 @@
     const hr = document.createElement("tr");
     for (const col of cols) {
       const th = document.createElement("th");
-      th.textContent = col.label;
-      if (col.width) th.style.width = col.width;
-      th.dataset.key = col.key;
-      if (sortKey === col.key) {
-        th.classList.add("sorted");
-        th.textContent += sortDir === 1 ? " \u25B2" : " \u25BC";
+      if (col.key === "_select") {
+        th.classList.add("col-select");
+        th.dataset.key = col.key;
+        if (col.width) th.style.width = col.width;
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.id = "select-all-cb";
+        cb.title = "Select / deselect all";
+        cb.addEventListener("change", function () {
+          if (cb.checked) {
+            for (let j = 0; j < filteredTracks.length; j++) {
+              selectedSet.add(trackId(filteredTracks[j]));
+            }
+          } else {
+            selectedSet.clear();
+          }
+          // Sync DOM (rows + per-row checkboxes)
+          for (let j = 0; j < tableBody.children.length; j++) {
+            const tr = tableBody.children[j];
+            tr.classList.toggle("selected", cb.checked);
+            const rowCb = tr.querySelector('.col-select input[type="checkbox"]');
+            if (rowCb) rowCb.checked = cb.checked;
+          }
+          updateBatchBar();
+        });
+        th.appendChild(cb);
+      } else {
+        th.textContent = col.label;
+        if (col.width) th.style.width = col.width;
+        th.dataset.key = col.key;
+        if (sortKey === col.key) {
+          th.classList.add("sorted");
+          th.textContent += sortDir === 1 ? " \u25B2" : " \u25BC";
+        }
+        th.addEventListener("click", function () {
+          handleSort(col.key);
+        });
       }
-      th.addEventListener("click", function () {
-        handleSort(col.key);
-      });
       hr.appendChild(th);
     }
     tableHead.appendChild(hr);
@@ -792,8 +847,9 @@
       tr.dataset.idx = i;
 
       // Row state classes
+      const trackTid = trackId(track);
       if (i === currentIndex) tr.classList.add("active");
-      if (selectedSet.has(i)) tr.classList.add("selected");
+      if (selectedSet.has(trackTid)) tr.classList.add("selected");
       if (track.status === "accept") tr.classList.add("status-accept");
       else if (track.status === "reject") tr.classList.add("status-reject");
       if (track.done === "TRUE") tr.classList.add("is-done");
@@ -802,7 +858,30 @@
         const td = document.createElement("td");
         if (col.cls) td.classList.add(col.cls);
 
-        if (col.key === "_index") {
+        if (col.key === "_select") {
+          td.classList.add("col-select");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = selectedSet.has(trackTid);
+          cb.addEventListener(
+            "change",
+            (function (tid, cb, tr) {
+              return function (e) {
+                e.stopPropagation();
+                if (cb.checked) {
+                  selectedSet.add(tid);
+                  tr.classList.add("selected");
+                } else {
+                  selectedSet.delete(tid);
+                  tr.classList.remove("selected");
+                }
+                updateBatchBar();
+                updateSelectAllState();
+              };
+            })(trackTid, cb, tr),
+          );
+          td.appendChild(cb);
+        } else if (col.key === "_index") {
           td.textContent = i + 1;
           td.classList.add("col-index");
         } else if (col.type === "checkbox") {
@@ -916,7 +995,7 @@
             if (e.shiftKey) {
               extendSelection(i);
             } else {
-              clearSelection();
+              // Move cursor only — preserve batch selection (#3)
               selectRow(i);
             }
           };
@@ -1045,14 +1124,176 @@
     });
   }
 
-  // -- Batch selection ----------------------------------------
-  function clearSelection() {
-    for (const idx of selectedSet) {
-      if (idx < tableBody.children.length) {
-        tableBody.children[idx].classList.remove("selected");
+  // -- Batch bar helpers --------------------------------------
+  function updateBatchBar() {
+    const n = selectedSet.size;
+    if (n === 0) {
+      batchBar.classList.add("hidden");
+      return;
+    }
+    batchBar.classList.remove("hidden");
+    batchCount.textContent = n + " selected";
+    batchApplyCount.textContent = n;
+  }
+
+  function updateSelectAllState() {
+    const cb = document.getElementById("select-all-cb");
+    if (!cb) return;
+    const n = selectedSet.size;
+    const total = filteredTracks.length;
+    if (n === 0) {
+      cb.checked = false;
+      cb.indeterminate = false;
+    } else if (n >= total) {
+      cb.checked = true;
+      cb.indeterminate = false;
+    } else {
+      cb.checked = false;
+      cb.indeterminate = true;
+    }
+  }
+
+  function populateBatchGenre() {
+    batchGenre.innerHTML = '<option value="">Genre…</option>';
+    for (const g of genres) {
+      const opt = document.createElement("option");
+      opt.value = g;
+      opt.textContent = g;
+      batchGenre.appendChild(opt);
+    }
+  }
+
+  function applyBatchFields() {
+    if (!isEditableSource()) return;
+    const fields = {};
+    const genreVal = batchGenre.value.trim();
+    const yearVal = batchYear.value.trim();
+    const artistVal = batchArtist.value.trim();
+    const statusVal = batchStatus.value;
+    const destVal = batchDest.value;
+    const ratingVal = batchRating.value;
+    const doneVal = batchDone.value;
+
+    // Year validation: 4 digits in plausible DJ-music range
+    if (yearVal) {
+      const yearNum = parseInt(yearVal, 10);
+      if (!/^\d{4}$/.test(yearVal) || yearNum < 1900 || yearNum > 2099) {
+        showToast("Invalid year — use 1900–2099", "reject");
+        batchYear.focus();
+        batchYear.select();
+        return;
       }
     }
+
+    if (genreVal) fields.genre = genreVal;
+    if (yearVal) fields.year = yearVal;
+    if (artistVal) fields.artist = artistVal;
+    if (statusVal) fields.status = statusVal;
+    if (destVal) fields.destination = destVal;
+    if (ratingVal !== "") fields.rating = ratingVal;  // "0" is valid for clearing
+    if (doneVal) fields.done = doneVal;
+
+    if (selectedSet.size === 0) {
+      showToast("Nothing selected", "reject");
+      return;
+    }
+    if (Object.keys(fields).length === 0) {
+      showToast("No fields to apply", "");
+      return;
+    }
+
+    // Build {tid -> track} map and track_ids list from current selection
+    const targets = [];
+    for (let i = 0; i < filteredTracks.length; i++) {
+      const tid = trackId(filteredTracks[i]);
+      if (selectedSet.has(tid)) {
+        targets.push({ tid: tid, track: filteredTracks[i] });
+      }
+    }
+    if (targets.length === 0) {
+      showToast("Nothing selected", "reject");
+      return;
+    }
+    const track_ids = targets.map(function (t) { return t.tid; });
+
+    // Snapshot prior values for rollback
+    const rollback = [];
+    for (const { track } of targets) {
+      const prev = {};
+      for (const k of Object.keys(fields)) prev[k] = track[k] || "";
+      rollback.push({ track, prev });
+    }
+
+    // Optimistic update in memory + push single-batch undo
+    pushBatchUndo(rollback, fields);
+    for (const { track } of targets) {
+      for (const [k, v] of Object.entries(fields)) {
+        track[k] = v;
+      }
+    }
+
+    const n = track_ids.length;
+    batchApply.disabled = true;
+    fetch("/api/tracks/batch-update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_ids, fields, source: currentSource }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+      .then(function (resp) {
+        if (resp.status >= 200 && resp.status < 300 && resp.body.ok) {
+          showToast("Updated " + resp.body.updated + " tracks", "accept");
+          if (resp.body.dropped_fields && resp.body.dropped_fields.length) {
+            setTimeout(function () {
+              showToast("Skipped (not in CSV): " + resp.body.dropped_fields.join(", "), "reject");
+            }, 1300);
+          }
+          applyFilters();
+        } else {
+          // Rollback in-memory
+          for (const { track, prev } of rollback) {
+            for (const [k, v] of Object.entries(prev)) track[k] = v;
+          }
+          undoStack.pop(); // drop the batch-undo entry we never committed
+          applyFilters();
+          showToast("Batch update failed — reverted", "reject");
+        }
+      })
+      .catch(function () {
+        for (const { track, prev } of rollback) {
+          for (const [k, v] of Object.entries(prev)) track[k] = v;
+        }
+        undoStack.pop();
+        applyFilters();
+        showToast("Batch update error — reverted", "reject");
+      })
+      .finally(function () {
+        batchApply.disabled = false;
+      });
+
+    batchGenre.value = "";
+    batchYear.value = "";
+    batchArtist.value = "";
+    batchStatus.value = "";
+    batchDest.value = "";
+    batchRating.value = "";
+    batchDone.value = "";
+    // Selection preserved (#4)
+    showToast("Applying to " + n + " tracks…", "");
+  }
+
+  // -- Batch selection ----------------------------------------
+  function clearSelection() {
     selectedSet.clear();
+    // Walk all rendered rows — set may have held stale ids after a re-render
+    for (let j = 0; j < tableBody.children.length; j++) {
+      const tr = tableBody.children[j];
+      tr.classList.remove("selected");
+      const rowCb = tr.querySelector('.col-select input[type="checkbox"]');
+      if (rowCb) rowCb.checked = false;
+    }
+    updateBatchBar();
+    updateSelectAllState();
   }
 
   function extendSelection(toIndex) {
@@ -1062,9 +1303,14 @@
     const lo = Math.min(selectionAnchor, toIndex);
     const hi = Math.max(selectionAnchor, toIndex);
     for (let i = lo; i <= hi; i++) {
-      selectedSet.add(i);
+      if (i >= 0 && i < filteredTracks.length) {
+        selectedSet.add(trackId(filteredTracks[i]));
+      }
       if (i < tableBody.children.length) {
-        tableBody.children[i].classList.add("selected");
+        const tr = tableBody.children[i];
+        tr.classList.add("selected");
+        const rowCb = tr.querySelector('.col-select input[type="checkbox"]');
+        if (rowCb) rowCb.checked = true;
       }
     }
     // Move cursor to toIndex
@@ -1087,6 +1333,8 @@
       updateFilenameDisplay(track);
       updateGenreSources(track);
     }
+    updateBatchBar();
+    updateSelectAllState();
   }
 
   // -- Row selection ------------------------------------------
@@ -2827,10 +3075,20 @@
 
   // -- Undo ---------------------------------------------------
   function pushUndo(track, fields) {
-    const entry = { trackId: trackId(track), prev: {} };
+    const entry = { type: "single", trackId: trackId(track), prev: {} };
     for (const k of Object.keys(fields)) {
       entry.prev[k] = track[k] || "";
     }
+    undoStack.push(entry);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+  }
+
+  function pushBatchUndo(rollback, fields) {
+    // rollback: [{track, prev}, ...]; fields: keys that were changed
+    const items = rollback.map(function (r) {
+      return { trackId: trackId(r.track), prev: { ...r.prev } };
+    });
+    const entry = { type: "batch", items: items, fieldKeys: Object.keys(fields) };
     undoStack.push(entry);
     if (undoStack.length > MAX_UNDO) undoStack.shift();
   }
@@ -2841,6 +3099,34 @@
       return;
     }
     const entry = undoStack.pop();
+
+    if (entry.type === "batch") {
+      // Restore in-memory + push one batch-update to server
+      const track_ids = [];
+      const fieldsByTid = {};
+      for (const item of entry.items) {
+        const track = allTracks.find(function (t) { return trackId(t) === item.trackId; });
+        if (!track) continue;
+        for (const [k, v] of Object.entries(item.prev)) track[k] = v;
+        track_ids.push(item.trackId);
+        fieldsByTid[item.trackId] = item.prev;
+      }
+      // Group by identical prev-field-set isn't worth it — server endpoint sets the SAME fields
+      // across all track_ids. We need one request per distinct prev-field-set.
+      // Simpler: fall back to per-track updates here (rare path, undo is small).
+      for (const item of entry.items) {
+        fetch("/api/tracks/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ track_id: item.trackId, fields: item.prev, source: currentSource }),
+        }).catch(function (e) { console.error("Undo save failed:", e); });
+      }
+      applyFilters();
+      showToast("Undo batch: " + entry.fieldKeys.join(", ") + " ×" + entry.items.length, "");
+      return;
+    }
+
+    // Legacy single-track undo
     const track = allTracks.find(function (t) {
       return trackId(t) === entry.trackId;
     });
@@ -2876,9 +3162,10 @@
 
     const targets = [];
     if (selectedSet.size > 0) {
-      for (const idx of selectedSet) {
-        if (idx >= 0 && idx < filteredTracks.length) {
-          targets.push({ idx: idx, track: filteredTracks[idx] });
+      // Map track_ids to current indices in filteredTracks
+      for (let i = 0; i < filteredTracks.length; i++) {
+        if (selectedSet.has(trackId(filteredTracks[i]))) {
+          targets.push({ idx: i, track: filteredTracks[i] });
         }
       }
     } else if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
@@ -3200,6 +3487,34 @@
   filterRating.addEventListener("change", function () {
     applyFilters();
     if (filteredTracks.length > 0) selectRow(0);
+  });
+
+  // -- Batch bar events ---------------------------------------
+  batchClear.addEventListener("click", function () {
+    clearSelection();
+  });
+
+  batchApply.addEventListener("click", function () {
+    applyBatchFields();
+  });
+
+  batchYear.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") applyBatchFields();
+  });
+
+  batchArtist.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") applyBatchFields();
+  });
+
+  batchGenre.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") applyBatchFields();
+  });
+
+  // Status -> Dest mirror (matches AUTO_DEST behavior in setStatus)
+  batchStatus.addEventListener("change", function () {
+    if (AUTO_DEST[batchStatus.value]) {
+      batchDest.value = AUTO_DEST[batchStatus.value];
+    }
   });
 
   // -- Init ---------------------------------------------------

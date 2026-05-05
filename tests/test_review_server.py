@@ -125,6 +125,133 @@ def test_update_track_not_found(client):
     assert resp.status_code == 404
 
 
+# ── Batch update API ─────────────────────────────────────────────────────────
+
+def test_batch_update_no_body(client):
+    resp = client.post("/api/tracks/batch-update")
+    assert resp.status_code in (400, 415)
+
+
+def test_batch_update_no_track_ids(client):
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"fields": {"genre": "Techno"}},
+    )
+    assert resp.status_code == 400
+
+
+def test_batch_update_no_fields(client):
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": ["some-id"]},
+    )
+    assert resp.status_code == 400
+
+
+def test_batch_update_not_found(client):
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": ["nonexistent-id-xyz"], "fields": {"genre": "Techno"}},
+    )
+    assert resp.status_code == 404
+
+
+def test_batch_update_updates_multiple_tracks(client, tmp_path, monkeypatch):
+    """Batch update should write the new field value to all matching tracks."""
+    import csv, uuid
+    from djlib.review import server as srv
+
+    csv_file = tmp_path / "unsorted.csv"
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "status",
+                  "destination", "done", "rating", "year", "bpm", "key_camelot",
+                  "version_info", "file_path"]
+    rows = [
+        {k: "" for k in fieldnames} | {"track_id": tid, "genre": "House", "artist": "Test"}
+        for tid in ids
+    ]
+    with open(csv_file, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    monkeypatch.setattr(srv, "UNSORTED_CSV", csv_file)
+
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": ids[:2], "fields": {"genre": "Techno"}, "source": "unsorted"},
+    )
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["ok"] is True
+    assert data["updated"] == 2
+
+    with open(csv_file, newline="") as f:
+        result = list(csv.DictReader(f))
+    genres = {r["track_id"]: r["genre"] for r in result}
+    assert genres[ids[0]] == "Techno"
+    assert genres[ids[1]] == "Techno"
+    assert genres[ids[2]] == "House"  # untouched
+    # dropped_fields should be empty when all requested fields exist
+    assert data.get("dropped_fields", []) == []
+
+
+def test_batch_update_reports_dropped_fields(client, tmp_path, monkeypatch):
+    """Fields not in CSV schema should be reported in dropped_fields, not silently lost."""
+    import csv, uuid
+    from djlib.review import server as srv
+
+    csv_file = tmp_path / "unsorted.csv"
+    tid = str(uuid.uuid4())
+    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "status",
+                  "destination", "done", "rating", "year", "bpm", "key_camelot"]
+    rows = [{k: "" for k in fieldnames} | {"track_id": tid, "genre": "House"}]
+    with open(csv_file, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    monkeypatch.setattr(srv, "UNSORTED_CSV", csv_file)
+
+    # Send a real field + a bogus field
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": [tid], "fields": {"genre": "Techno", "bogus_field": "x"}, "source": "unsorted"},
+    )
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["ok"] is True
+    assert data["updated"] == 1
+    assert "bogus_field" in data["dropped_fields"]
+    assert "genre" not in data["dropped_fields"]
+
+
+def test_batch_update_all_fields_dropped_returns_400(client, tmp_path, monkeypatch):
+    """If every requested field is unknown, return 400 instead of silent success."""
+    import csv, uuid
+    from djlib.review import server as srv
+
+    csv_file = tmp_path / "unsorted.csv"
+    tid = str(uuid.uuid4())
+    fieldnames = ["track_id", "artist", "title"]
+    with open(csv_file, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerow({"track_id": tid, "artist": "A", "title": "T"})
+
+    monkeypatch.setattr(srv, "UNSORTED_CSV", csv_file)
+
+    # Use truly unknown field names (not in UNSORTED_COLUMNS schema)
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": [tid], "fields": {"bogus_one": "x", "bogus_two": "y"}, "source": "unsorted"},
+    )
+    assert resp.status_code == 400
+    data = json.loads(resp.data)
+    assert data["ok"] is False
+    assert set(data["dropped_fields"]) == {"bogus_one", "bogus_two"}
+
+
 # ── Processed tracks API ─────────────────────────────────────────────────────
 
 def test_tracks_processed_returns_list(client):

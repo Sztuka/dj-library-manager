@@ -164,6 +164,144 @@ select:focus {
   border-color: var(--accent);
 }
 
+/* ── Batch edit bar ────────────────────────────────────────── */
+
+#batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  background: #1a1a32;
+  border-bottom: 1px solid var(--accent);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+#batch-bar.hidden {
+  display: none;
+}
+
+.batch-clear-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.batch-clear-btn:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.batch-count {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.batch-sep {
+  width: 1px;
+  height: 22px;
+  background: var(--accent);
+  opacity: 0.35;
+  flex-shrink: 0;
+  margin: 0 4px;
+}
+
+.batch-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  padding: 3px 7px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.batch-input:focus {
+  border-color: var(--accent);
+}
+
+.batch-genre-select {
+  width: 130px;
+  cursor: pointer;
+}
+
+.batch-year-input {
+  width: 52px;
+  text-align: center;
+}
+
+.batch-artist-input {
+  width: 140px;
+}
+
+.batch-status-select {
+  width: 90px;
+  cursor: pointer;
+}
+
+.batch-dest-select {
+  width: 78px;
+  cursor: pointer;
+}
+
+.batch-rating-select {
+  width: 82px;
+  cursor: pointer;
+}
+
+.batch-done-select {
+  width: 82px;
+  cursor: pointer;
+}
+
+.batch-apply-btn {
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 12px;
+  font-family: var(--font-ui);
+  white-space: nowrap;
+}
+
+.batch-apply-btn:hover {
+  background: #9080ff;
+}
+
+.batch-apply-btn:active {
+  background: #6050dd;
+}
+
+/* Row selection checkbox column */
+.col-select {
+  width: 28px;
+  text-align: center;
+  padding: 0 4px !important;
+}
+
+.col-select input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+  width: 13px;
+  height: 13px;
+}
+
+/* Selected row overlay (stacks on top of status color) */
+tr.selected td {
+  background: rgba(124, 108, 255, 0.14);
+}
+
 /* ── Table ─────────────────────────────────────────────────── */
 
 #table-container {
