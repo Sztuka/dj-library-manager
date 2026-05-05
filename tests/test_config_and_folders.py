@@ -65,10 +65,10 @@ def test_get_ai_chat_model_default(tmp_path, monkeypatch):
 
 
 def test_get_ai_quick_model_default(tmp_path, monkeypatch):
-    """Returns default gpt-4o-mini when no config or env is set."""
+    """Returns default gpt-5-nano when no config or env is set."""
     monkeypatch.delenv("DJLIB_AI_QUICK_MODEL", raising=False)
     monkeypatch.setattr(config, "_CANDIDATES", [tmp_path / "nope.yml"])
-    assert config.get_ai_quick_model() == "gpt-4o-mini"
+    assert config.get_ai_quick_model() == "gpt-5-nano"
 
 
 def test_get_ai_chat_model_from_env(monkeypatch):
