@@ -87,6 +87,8 @@ LIBRARY_FIELDNAMES: List[str] = [
     "analysis_source",  # tags|rekordbox|traktor|beatport
     # ── Per-field provenance (ghost-row review) ───────────────────────────
     "field_sources",    # JSON: {"genre": "ai_classifier:nano+WS+LF", "year": "manual", ...}
+    # ── Duplicate tracking (scan→apply cue merge) ─────────────────────
+    "duplicate_paths",  # JSON array: paths of acoustic duplicates skipped during scan
 ]
 
 # Default retention for the backup folder. Syncs can happen several times a
@@ -172,6 +174,7 @@ DJLIB_OWNED_FIELDS: List[str] = [
     "key_source",
     "analysis_source",
     "field_sources",
+    "duplicate_paths",
 ]
 
 

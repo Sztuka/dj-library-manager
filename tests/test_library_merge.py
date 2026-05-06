@@ -125,6 +125,7 @@ def test_djlib_owned_fields_list_is_stable():
         "key_source",
         "analysis_source",
         "field_sources",
+        "duplicate_paths",
     }
 
 
