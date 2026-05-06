@@ -1736,12 +1736,49 @@ def _enrich_one_for_batch(
                 }
 
     if "year" in fields:
-        year_val = (cls.get("year") or "").strip()
+        year_val = ""
+        year_src = ""
+        year_conf = 0.0
+
+        # 1. MusicBrainz — most reliable, skip for remixes/edits (like enrich.py does)
+        if not version:
+            try:
+                from djlib.metadata import mb_client
+                mb_info = mb_client.get_original_release_info(artist, title)
+                if mb_info:
+                    mb_year, _album, _rg = mb_info
+                    if mb_year:
+                        year_val = mb_year
+                        year_src = "musicbrainz"
+                        year_conf = 0.92
+            except Exception as exc:
+                _log.debug("MB year lookup failed for %s: %s", tid, exc)
+
+        # 2. nano classifier (already called above)
+        if not year_val:
+            cls_year = (cls.get("year") or "").strip()
+            if cls_year:
+                year_val = cls_year
+                year_src = f"ai_classifier:{cls.get('source', 'nano+WS+LF')}"
+                year_conf = 0.8
+
+        # 3. Last.fm fallback — skip for remixes (unreliable for remix release dates)
+        if not year_val and not version:
+            try:
+                from djlib.metadata import lastfm
+                lf = lastfm.track_info(artist, title)
+                if lf.get("year"):
+                    year_val = str(lf["year"]).strip()
+                    year_src = "lastfm"
+                    year_conf = 0.75
+            except Exception as exc:
+                _log.debug("Last.fm year lookup failed for %s: %s", tid, exc)
+
         if year_val:
             payload["year"] = {
                 "value": year_val,
-                "source": cls.get("year_evidence", "ai_classifier")[:80],
-                "confidence": 0.8,
+                "source": year_src,
+                "confidence": year_conf,
                 "was": (row.get("year") or ""),
             }
 
