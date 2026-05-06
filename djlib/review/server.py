@@ -461,6 +461,90 @@ _BATCH_JOBS: Dict[str, Dict[str, Any]] = {}
 _BATCH_JOBS_LOCK = threading.Lock()
 _BATCH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="enrich-batch")
 
+_SEARXNG_COMPOSE = Path(__file__).resolve().parents[2] / "docker" / "docker-compose.searxng.yml"
+
+
+def _ensure_searxng_running(timeout_docker: int = 60, timeout_searxng: int = 30) -> bool:
+    """Best-effort: ensure the SearXNG Docker container is up before batch enrichment.
+
+    Steps:
+    1. If SearXNG already responds → done.
+    2. If Docker daemon is not running → start Docker Desktop (macOS) and wait.
+    3. Run ``docker compose up -d`` for the SearXNG service.
+    4. Wait until SearXNG responds or timeout expires.
+    5. Reset genre_classifier._searcher so the classifier re-checks availability.
+
+    Returns True if SearXNG is available after this call, False otherwise.
+    """
+    from djlib.metadata.web_search import create_searcher
+
+    def _searxng_up() -> bool:
+        try:
+            return create_searcher("searxng").is_available()
+        except Exception:
+            return False
+
+    if _searxng_up():
+        return True
+
+    _log.info("SearXNG not available — attempting Docker startup")
+
+    # Check Docker daemon
+    try:
+        r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+        docker_ok = r.returncode == 0
+    except Exception:
+        docker_ok = False
+
+    if not docker_ok:
+        _log.info("Docker daemon not running — launching Docker Desktop")
+        try:
+            subprocess.Popen(["open", "-a", "Docker"])
+        except Exception as exc:
+            _log.warning("Could not launch Docker Desktop: %s", exc)
+            return False
+        deadline = time.monotonic() + timeout_docker
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            try:
+                r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+                if r.returncode == 0:
+                    _log.info("Docker daemon ready")
+                    break
+            except Exception:
+                pass
+        else:
+            _log.warning("Docker daemon did not start within %ds", timeout_docker)
+            return False
+
+    # Start SearXNG container
+    if _SEARXNG_COMPOSE.exists():
+        try:
+            subprocess.run(
+                ["docker", "compose", "-f", str(_SEARXNG_COMPOSE), "up", "-d"],
+                capture_output=True, timeout=60,
+            )
+            _log.info("docker compose up -d finished")
+        except Exception as exc:
+            _log.warning("docker compose up failed: %s", exc)
+
+    # Wait for SearXNG to respond
+    deadline = time.monotonic() + timeout_searxng
+    while time.monotonic() < deadline:
+        if _searxng_up():
+            _log.info("SearXNG is now available")
+            # Reset module-level cache so classifier picks it up
+            try:
+                import djlib.metadata.genre_classifier as _gc
+                _gc._searcher = None
+            except Exception:
+                pass
+            return True
+        time.sleep(2)
+
+    _log.warning("SearXNG did not become available within %ds", timeout_searxng)
+    return False
+
 
 # ── AI Genre Suggest ─────────────────────────────────────────────────────────
 
@@ -1865,6 +1949,7 @@ def api_enrich_batch():
         _BATCH_JOBS[job_id] = job
 
     def _run_job() -> None:
+        _ensure_searxng_running()
         futures = [
             _BATCH_EXECUTOR.submit(_enrich_one_for_batch, row, fields, job)
             for row in rows_to_enrich
