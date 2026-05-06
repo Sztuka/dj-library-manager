@@ -1858,9 +1858,9 @@ def _enrich_one_for_batch(
                 finally:
                     time.sleep(1.1)  # ensure 1 req/s across all workers
 
-        # 2. Discogs — strong for electronic/dance music, skip for remixes
-        # Rate-limited via _DISCOGS_SEMAPHORE: 25 req/min anon → 2.5s gap
-        if not year_val and not version:
+        # 2. Discogs — covers remixes and edits as standalone singles; query
+        #    regardless of version. Rate-limited via _DISCOGS_SEMAPHORE: 25 req/min anon → 2.5s gap
+        if not year_val:
             with _DISCOGS_SEMAPHORE:
                 try:
                     from djlib.metadata import discogs
