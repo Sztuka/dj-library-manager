@@ -2146,3 +2146,309 @@ kbd {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ── Ghost-row review mode ─────────────────────────────────────────────────── */
+
+/* Review toolbar — sticky bar shown above table during batch enrich */
+.review-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: rgba(251, 191, 36, 0.08);
+  border-bottom: 1px solid rgba(251, 191, 36, 0.25);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.review-toolbar.hidden {
+  display: none;
+}
+
+.review-toolbar-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fbbf24;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+#review-progress {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  min-width: 70px;
+}
+
+.review-toolbar-sep {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
+
+/* Bulk column toggle buttons */
+.review-bulk-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  transition: background 0.15s, color 0.15s;
+}
+
+.review-bulk-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+/* Filter buttons */
+.review-filter-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  transition: background 0.15s, color 0.15s;
+}
+
+.review-filter-btn.active {
+  background: rgba(251, 191, 36, 0.18);
+  border-color: rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+}
+
+.review-filter-btn:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+/* Threshold input */
+#review-threshold {
+  width: 44px;
+  padding: 3px 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-family: var(--font-ui);
+  text-align: center;
+}
+
+#review-threshold:focus {
+  outline: none;
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
+.review-apply-btn {
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: none;
+  background: #34d399;
+  color: #1a1a2e;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  margin-left: auto;
+}
+
+.review-apply-btn:hover {
+  background: #6ee7b7;
+}
+
+.review-apply-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.review-cancel-btn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+  color: #f87171;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+.review-cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+/* Ghost rows */
+.ghost-row > td {
+  background: rgba(251, 191, 36, 0.04);
+  border-top: none !important;
+  padding: 4px 6px;
+  vertical-align: top;
+}
+
+.ghost-row {
+  border-left: 3px solid rgba(251, 191, 36, 0.5);
+}
+
+/* Ghost cell states */
+.ghost-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  border-radius: 4px;
+  padding: 2px 5px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.ghost-cell.ghost-accept {
+  background: rgba(52, 211, 153, 0.12);
+  color: #6ee7b7;
+  border: 1px solid rgba(52, 211, 153, 0.25);
+}
+
+.ghost-cell.ghost-accept:hover {
+  background: rgba(52, 211, 153, 0.2);
+}
+
+.ghost-cell.ghost-reject {
+  background: rgba(239, 68, 68, 0.06);
+  color: rgba(248, 113, 113, 0.5);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  text-decoration: line-through;
+}
+
+.ghost-cell.ghost-reject:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  text-decoration: none;
+}
+
+.ghost-cell.ghost-overwrite {
+  border: 1px solid rgba(251, 191, 36, 0.35);
+}
+
+.ghost-cell.ghost-overwrite.ghost-accept {
+  background: rgba(251, 191, 36, 0.1);
+  color: #fcd34d;
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.ghost-cell.ghost-same {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  opacity: 0.55;
+}
+
+.ghost-cell.ghost-empty {
+  color: var(--text-dim);
+  opacity: 0.4;
+  cursor: default;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.ghost-tick {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.ghost-was {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-style: italic;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60px;
+}
+
+/* Source badges on ghost cells */
+.ghost-src-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 3px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.ghost-src-badge.src-MB { background: rgba(99, 179, 237, 0.2); color: #63b3ed; }
+.ghost-src-badge.src-LF { background: rgba(248, 113, 113, 0.2); color: #f87171; }
+.ghost-src-badge.src-BP { background: rgba(167, 139, 250, 0.2); color: #a78bfa; }
+.ghost-src-badge.src-SC { background: rgba(251, 146, 60, 0.2); color: #fb923c; }
+.ghost-src-badge.src-AI { background: rgba(52, 211, 153, 0.2); color: #34d399; }
+.ghost-src-badge.src-?  { background: rgba(255, 255, 255, 0.08); color: var(--text-dim); }
+
+/* Confidence badge on ghost row header cell */
+.ghost-conf {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.ghost-conf-high { background: rgba(52, 211, 153, 0.18); color: #34d399; }
+.ghost-conf-mid  { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
+.ghost-conf-low  { background: rgba(239, 68, 68, 0.18);  color: #f87171; }
+
+/* Per-row apply button */
+.ghost-apply-row-btn {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.08);
+  color: #34d399;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  white-space: nowrap;
+}
+
+.ghost-apply-row-btn:hover {
+  background: rgba(52, 211, 153, 0.18);
+}
+
+/* Applied row fade-out animation */
+@keyframes ghostApplied {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.ghost-applied {
+  animation: ghostApplied 0.4s ease forwards;
+  pointer-events: none;
+}
+
+/* Review-locked state — disable track-row interactions but allow scroll */
+body.review-locked .track-row {
+  pointer-events: none;
+}
+
+body.review-locked .track-row td {
+  color: var(--text-dim);
+}
+
+/* Hidden ghost rows under filter */
+.ghost-row.ghost-hidden {
+  display: none;
+}
+
+/* Also hide the data row paired with a hidden ghost row */
+.track-row.ghost-pair-hidden {
+  display: none;
+}

@@ -37,6 +37,20 @@
   // Auto-play on navigation
   let autoPlay = false;
 
+  // ── Ghost-row review state ──────────────────────────────────────────────────
+  var ghostReview = {
+    active: false,
+    jobId: null,
+    total: 0,
+    done: 0,
+    locked: false,          // true while streaming: block edits + sort changes
+    pollTimer: null,
+    ticked: {},             // { track_id: { field: bool } }
+    proposals: {},          // { track_id: { field: {value,source,confidence,was} } }
+    filter: "all",          // "all" | "conflicts" | "low"
+    autoThreshold: parseFloat(localStorage.getItem("ghost-auto-accept") || "0.85"),
+  };
+
   // Auto-destination mapping
   const AUTO_DEST = { accept: "library", reject: "reject" };
 
@@ -153,6 +167,12 @@
   const aiChatPrompts = document.getElementById("ai-chat-prompts");
   const aiChatDragHandle = document.getElementById("ai-chat-drag-handle");
   const urlScrapeBanner = document.getElementById("url-scrape-banner");
+  const reviewToolbar = document.getElementById("review-toolbar");
+  const reviewProgress = document.getElementById("review-progress");
+  const reviewTickedCount = document.getElementById("review-ticked-count");
+  const reviewApplyBtn = document.getElementById("review-apply-btn");
+  const reviewCancelBtn = document.getElementById("review-cancel-btn");
+  const reviewAutoThresholdInput = document.getElementById("review-auto-threshold");
   const urlScrapeBannerArtist = document.getElementById(
     "url-scrape-banner-artist",
   );
@@ -385,7 +405,7 @@
     var newVal = stars === current ? 0 : stars;
     track.rating = String(newVal);
     // Update the cell in the DOM
-    var row = tableBody.children[currentIndex];
+    var row = getDataRow(currentIndex);
     if (row) {
       var cells = row.querySelectorAll(".col-rating");
       if (cells.length) cells[0].innerHTML = ratingToStars(newVal);
@@ -473,6 +493,8 @@
     selectedSet.clear();
     selectionAnchor = -1;
     undoStack = [];
+    // Exit review mode when switching sources (ghost rows belong to unsorted only)
+    if (ghostReview.active) exitReviewMode(true);
     // Reset batch bar inputs to avoid ghost values across source switches
     if (batchGenre) batchGenre.value = "";
     if (batchYear) batchYear.value = "";
@@ -787,6 +809,506 @@
   }
 
   // -- Table rendering ----------------------------------------
+  // ── Ghost-row navigation helper ────────────────────────────────────────────
+  // Returns the i-th data row (skipping ghost rows) from tableBody.
+  // Use instead of tableBody.children[i] everywhere navigation touches the DOM,
+  // so that interspersed ghost rows don't shift the index-to-row mapping.
+  function getDataRow(index) {
+    if (index < 0) return null;
+    var count = 0;
+    for (var i = 0; i < tableBody.children.length; i++) {
+      var child = tableBody.children[i];
+      if (child.classList.contains("ghost-row")) continue;
+      if (count === index) return child;
+      count++;
+    }
+    return null;
+  }
+
+  // ── Ghost-row enrichment fields allowed per source ─────────────────────────
+  var GHOST_FIELDS = ["genre", "year", "artist", "title", "version_info"];
+
+  // Source abbreviation badges
+  var SOURCE_ABBR = {
+    "ai_classifier": "AI",
+    "ai_identify": "AI",
+    "musicbrainz": "MB",
+    "beatport": "BP",
+    "soundcloud": "SC",
+    "lastfm": "LF",
+    "manual": "M",
+  };
+
+  function ghostSourceBadge(source) {
+    if (!source) return "";
+    var key = source.split(":")[0];
+    var label = SOURCE_ABBR[key] || key.substring(0, 3).toUpperCase();
+    return '<span class="ghost-src-badge src-' + key + '">' + label + '</span>';
+  }
+
+  function ghostDefaultTicked(field, proposal) {
+    var conf = proposal.confidence || 0;
+    var wasEmpty = !proposal.was || proposal.was === "";
+    // Never auto-tick an overwrite (was non-empty and proposal differs)
+    if (!wasEmpty && proposal.value !== proposal.was) return false;
+    return conf >= ghostReview.autoThreshold;
+  }
+
+  // Build (or rebuild) ghost row ticked map for one track's proposals.
+  function ghostInitTicked(tid, proposals) {
+    var entry = {};
+    for (var field in proposals) {
+      if (!Object.prototype.hasOwnProperty.call(proposals, field)) continue;
+      if (field === "_ts") continue;
+      entry[field] = ghostDefaultTicked(field, proposals[field]);
+    }
+    ghostReview.ticked[tid] = entry;
+  }
+
+  function ghostCountTicked() {
+    var n = 0;
+    for (var tid in ghostReview.ticked) {
+      if (!Object.prototype.hasOwnProperty.call(ghostReview.ticked, tid)) continue;
+      var fields = ghostReview.ticked[tid];
+      for (var f in fields) {
+        if (fields[f]) n++;
+      }
+    }
+    return n;
+  }
+
+  function updateReviewToolbar() {
+    if (!ghostReview.active) {
+      reviewToolbar.classList.add("hidden");
+      return;
+    }
+    reviewToolbar.classList.remove("hidden");
+
+    var label = ghostReview.locked
+      ? "ENRICHING " + ghostReview.done + "/" + ghostReview.total + "…"
+      : ghostReview.done + "/" + ghostReview.total + " done";
+    reviewProgress.textContent = label;
+
+    var ticked = ghostCountTicked();
+    reviewTickedCount.textContent = ticked + " ticked";
+    reviewApplyBtn.disabled = ticked === 0;
+    reviewApplyBtn.textContent = "Apply " + ticked;
+
+    // Update bulk column toggle button states
+    var bulkBtns = reviewToolbar.querySelectorAll(".review-bulk-btn");
+    bulkBtns.forEach(function (btn) {
+      var field = btn.dataset.field;
+      var allOn = true, anyOn = false;
+      for (var tid in ghostReview.ticked) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.ticked, tid)) continue;
+        if (!(field in ghostReview.ticked[tid])) { allOn = false; continue; }
+        if (ghostReview.ticked[tid][field]) anyOn = true;
+        else allOn = false;
+      }
+      btn.classList.toggle("bulk-all-on", allOn && anyOn);
+      btn.classList.toggle("bulk-some-on", !allOn && anyOn);
+    });
+
+    // Apply ghost row filter visibility
+    applyGhostFilter();
+  }
+
+  function applyGhostFilter() {
+    var filter = ghostReview.filter;
+    var ghostRows = tableBody.querySelectorAll("tr.ghost-row");
+    ghostRows.forEach(function (gr) {
+      var tid = gr.dataset.ghostFor;
+      if (filter === "all") {
+        gr.style.display = "";
+        return;
+      }
+      var proposals = ghostReview.proposals[tid] || {};
+      if (filter === "conflicts") {
+        var hasConflict = false;
+        for (var f in proposals) {
+          if (f === "_ts") continue;
+          var p = proposals[f];
+          if (p.was && p.was !== "" && p.value !== p.was) { hasConflict = true; break; }
+        }
+        gr.style.display = hasConflict ? "" : "none";
+        return;
+      }
+      if (filter === "low") {
+        var hasLow = false;
+        for (var f2 in proposals) {
+          if (f2 === "_ts") continue;
+          if ((proposals[f2].confidence || 0) < 0.7) { hasLow = true; break; }
+        }
+        gr.style.display = hasLow ? "" : "none";
+        return;
+      }
+    });
+  }
+
+  // Render or refresh the ghost row for one track.
+  function renderGhostRow(track, proposals) {
+    var tid = track.track_id || track.file_hash || "";
+    if (!tid) return;
+
+    // Remove existing ghost row for this track if any
+    var existing = tableBody.querySelector('tr.ghost-row[data-ghost-for="' + tid + '"]');
+    if (existing) existing.remove();
+
+    var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
+
+    var tr = document.createElement("tr");
+    tr.classList.add("ghost-row");
+    tr.dataset.ghostFor = tid;
+
+    cols.forEach(function (col, colIdx) {
+      var td = document.createElement("td");
+      td.className = col.cls || "";
+      td.classList.add("ghost-cell");
+
+      if (colIdx === 1) {
+        // Index column: show confidence badge + "↳"
+        var proposal0 = null;
+        var maxConf = 0;
+        for (var f in proposals) {
+          if (f === "_ts") continue;
+          var c = proposals[f] && proposals[f].confidence || 0;
+          if (c > maxConf) { maxConf = c; proposal0 = proposals[f]; }
+        }
+        var confPct = Math.round(maxConf * 100);
+        var confCls = maxConf >= 0.85 ? "ghost-conf-high" : maxConf >= 0.6 ? "ghost-conf-mid" : "ghost-conf-low";
+        td.innerHTML = '<span class="ghost-lead">↳</span> <span class="ghost-conf ' + confCls + '">' + confPct + '%</span>';
+        tr.appendChild(td);
+        return;
+      }
+
+      var field = col.key;
+      if (!GHOST_FIELDS.includes(field)) {
+        // Not enrichable: empty cell
+        td.innerHTML = "";
+        if (field === "done" || field === "_select") {
+          // Apply-row button in last action column
+          if (field === "done") {
+            var applyBtn = document.createElement("button");
+            applyBtn.className = "ghost-apply-row-btn";
+            applyBtn.title = "Apply this row";
+            applyBtn.textContent = "✓";
+            applyBtn.dataset.tid = tid;
+            applyBtn.addEventListener("click", function () {
+              applyGhostRow(tid);
+            });
+            td.appendChild(applyBtn);
+          }
+        }
+        tr.appendChild(td);
+        return;
+      }
+
+      var proposal = proposals[field];
+      if (!proposal) {
+        td.innerHTML = '<span class="ghost-empty">—</span>';
+        tr.appendChild(td);
+        return;
+      }
+
+      var ticked = ghostReview.ticked[tid] && ghostReview.ticked[tid][field];
+      var isOverwrite = proposal.was && proposal.was !== "" && proposal.value !== proposal.was;
+      var isSame = proposal.value === proposal.was;
+
+      td.classList.toggle("ghost-accept", !!ticked);
+      td.classList.toggle("ghost-reject", !ticked);
+      td.classList.toggle("ghost-overwrite", isOverwrite && !!ticked);
+      td.classList.toggle("ghost-same", isSame);
+
+      var toggleSpan = '<span class="ghost-toggle" role="button" tabindex="0" data-tid="' + tid + '" data-field="' + field + '">' + (ticked ? "✓" : "✗") + '</span>';
+      var valSpan = '<span class="ghost-value">' + escapeHtml(proposal.value || "") + '</span>';
+      var srcSpan = ghostSourceBadge(proposal.source);
+      var wasSpan = isOverwrite ? '<span class="ghost-was">(was: ' + escapeHtml(proposal.was) + ')</span>' : (isSame ? '<span class="ghost-was dim">=</span>' : "");
+
+      td.innerHTML = toggleSpan + " " + valSpan + " " + srcSpan + " " + wasSpan;
+      td.querySelector(".ghost-toggle").addEventListener("click", function (e) {
+        e.stopPropagation();
+        toggleGhostCell(tid, field);
+      });
+      td.querySelector(".ghost-toggle").addEventListener("keydown", function (e) {
+        if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleGhostCell(tid, field); }
+      });
+
+      tr.appendChild(td);
+    });
+
+    // Find the data row for this track and insert ghost row after it
+    var dataRow = tableBody.querySelector('tr[data-tid="' + tid + '"]');
+    if (!dataRow) {
+      // fallback: find by dataset.idx matching filteredTracks index
+      for (var i = 0; i < filteredTracks.length; i++) {
+        if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+          dataRow = getDataRow(i);
+          break;
+        }
+      }
+    }
+    if (dataRow) {
+      dataRow.after(tr);
+    } else {
+      tableBody.appendChild(tr);
+    }
+  }
+
+  function toggleGhostCell(tid, field) {
+    if (!ghostReview.ticked[tid]) ghostReview.ticked[tid] = {};
+    ghostReview.ticked[tid][field] = !ghostReview.ticked[tid][field];
+    // Refresh just this ghost row
+    var track = null;
+    for (var i = 0; i < filteredTracks.length; i++) {
+      if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+        track = filteredTracks[i];
+        break;
+      }
+    }
+    if (track) renderGhostRow(track, ghostReview.proposals[tid] || {});
+    updateReviewToolbar();
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // Apply a single ghost row (all ticked fields for that track)
+  function applyGhostRow(tid) {
+    var ticked = ghostReview.ticked[tid] || {};
+    applyGhostApplications([{ track_id: tid, fields: ticked }]);
+  }
+
+  // Send accepted fields to backend and clean up ghost row(s)
+  function applyGhostApplications(applications) {
+    if (!applications.length) return;
+    fetch("/api/apply-enrichment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ applications: applications }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) { showToast("Apply error: " + data.error, ""); return; }
+        applications.forEach(function (app) {
+          var tid = app.track_id;
+          // Update in-memory track data with accepted values
+          var proposals = ghostReview.proposals[tid] || {};
+          var track = null;
+          for (var i = 0; i < allTracks.length; i++) {
+            if ((allTracks[i].track_id || allTracks[i].file_hash) === tid) { track = allTracks[i]; break; }
+          }
+          if (track) {
+            for (var field in app.fields) {
+              if (app.fields[field] && proposals[field]) {
+                track[field] = proposals[field].value;
+              }
+            }
+          }
+          // Remove ghost row from DOM
+          var gr = tableBody.querySelector('tr.ghost-row[data-ghost-for="' + tid + '"]');
+          if (gr) gr.remove();
+          // Remove from review state
+          delete ghostReview.ticked[tid];
+          delete ghostReview.proposals[tid];
+        });
+        // Refresh table rows for applied tracks so values show up
+        var changedTids = new Set(applications.map(function (a) { return a.track_id; }));
+        reRenderDataRows(changedTids);
+        updateReviewToolbar();
+        showToast("Applied " + data.applied + " track(s)", "");
+        if (Object.keys(ghostReview.proposals).length === 0) {
+          exitReviewMode(false);
+        }
+      })
+      .catch(function () { showToast("Apply request failed", ""); });
+  }
+
+  // Re-render specific data rows in-place (fade-in effect)
+  function reRenderDataRows(tids) {
+    for (var i = 0; i < filteredTracks.length; i++) {
+      var t = filteredTracks[i];
+      var tid = t.track_id || t.file_hash || "";
+      if (!tids.has(tid)) continue;
+      var dataRow = getDataRow(i);
+      if (!dataRow) continue;
+      dataRow.classList.add("ghost-applied");
+      setTimeout((function (dr) {
+        return function () { dr.classList.remove("ghost-applied"); };
+      })(dataRow), 1200);
+    }
+  }
+
+  function applyAllTicked() {
+    var applications = [];
+    for (var tid in ghostReview.ticked) {
+      if (!Object.prototype.hasOwnProperty.call(ghostReview.ticked, tid)) continue;
+      var fields = ghostReview.ticked[tid];
+      var hasAny = Object.values(fields).some(Boolean);
+      if (hasAny) applications.push({ track_id: tid, fields: fields });
+    }
+    applyGhostApplications(applications);
+  }
+
+  function startBatchEnrich(selectedTids) {
+    if (!selectedTids || !selectedTids.length) {
+      showToast("No tracks selected for batch enrich", "");
+      return;
+    }
+    ghostReview.active = true;
+    ghostReview.locked = true;
+    ghostReview.total = selectedTids.length;
+    ghostReview.done = 0;
+    ghostReview.jobId = null;
+    ghostReview.proposals = {};
+    ghostReview.ticked = {};
+
+    // Insert placeholder ghost rows immediately
+    selectedTids.forEach(function (tid) {
+      for (var i = 0; i < filteredTracks.length; i++) {
+        if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+          renderGhostRow(filteredTracks[i], { _loading: true });
+          break;
+        }
+      }
+    });
+
+    updateReviewToolbar();
+    document.body.classList.add("review-locked");
+
+    fetch("/api/enrich-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        track_ids: selectedTids,
+        fields: ["genre", "year", "artist", "title", "version_info"],
+      }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          showToast("Batch enrich error: " + data.error, "");
+          exitReviewMode(true);
+          return;
+        }
+        ghostReview.jobId = data.job_id;
+        ghostReview.total = data.total;
+        pollBatchEnrich();
+      })
+      .catch(function () {
+        showToast("Batch enrich request failed", "");
+        exitReviewMode(true);
+      });
+  }
+
+  function pollBatchEnrich() {
+    if (!ghostReview.jobId) return;
+    ghostReview.pollTimer = setTimeout(function () {
+      fetch("/api/enrich-status?job_id=" + ghostReview.jobId)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.error) { exitReviewMode(true); return; }
+
+          ghostReview.done = data.done;
+
+          // Hydrate new results into ghost rows
+          var newResults = data.new_results || {};
+          for (var tid in newResults) {
+            if (!Object.prototype.hasOwnProperty.call(newResults, tid)) continue;
+            // Fetch full proposal from sidecar on next tick (results are partial)
+          }
+
+          // Re-fetch sidecar delta to get full field proposals
+          if (Object.keys(newResults).length > 0) {
+            hydrateFromSidecar(Object.keys(newResults));
+          }
+
+          updateReviewToolbar();
+
+          if (data.state === "running") {
+            pollBatchEnrich();
+          } else {
+            ghostReview.locked = false;
+            document.body.classList.remove("review-locked");
+            updateReviewToolbar();
+            showToast("Enrichment complete — " + ghostReview.done + " tracks", "");
+          }
+        })
+        .catch(function () {
+          exitReviewMode(true);
+        });
+    }, 1500);
+  }
+
+  function hydrateFromSidecar(tids) {
+    fetch("/api/pending-suggestions")
+      .then(function (r) { return r.json(); })
+      .then(function (sidecar) {
+        tids.forEach(function (tid) {
+          var proposals = sidecar[tid];
+          if (!proposals) return;
+          ghostReview.proposals[tid] = proposals;
+          ghostInitTicked(tid, proposals);
+          for (var i = 0; i < filteredTracks.length; i++) {
+            if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+              renderGhostRow(filteredTracks[i], proposals);
+              break;
+            }
+          }
+        });
+        updateReviewToolbar();
+      });
+  }
+
+  function hydrateAllFromSidecar() {
+    fetch("/api/pending-suggestions")
+      .then(function (r) { return r.json(); })
+      .then(function (sidecar) {
+        var tids = Object.keys(sidecar);
+        if (!tids.length) return;
+        ghostReview.active = true;
+        ghostReview.locked = false;
+        ghostReview.done = tids.length;
+        ghostReview.total = tids.length;
+        tids.forEach(function (tid) {
+          var proposals = sidecar[tid];
+          ghostReview.proposals[tid] = proposals;
+          ghostInitTicked(tid, proposals);
+        });
+        // Ghost rows will be rendered after table is built (deferred in renderTable)
+        updateReviewToolbar();
+      });
+  }
+
+  function exitReviewMode(cancelJob) {
+    if (cancelJob && ghostReview.jobId) {
+      fetch("/api/enrich-cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: ghostReview.jobId }),
+      });
+    }
+    if (ghostReview.pollTimer) {
+      clearTimeout(ghostReview.pollTimer);
+      ghostReview.pollTimer = null;
+    }
+    ghostReview.active = false;
+    ghostReview.locked = false;
+    ghostReview.jobId = null;
+    ghostReview.ticked = {};
+    ghostReview.proposals = {};
+
+    document.body.classList.remove("review-locked");
+
+    // Remove all ghost rows from DOM
+    tableBody.querySelectorAll("tr.ghost-row").forEach(function (gr) { gr.remove(); });
+    updateReviewToolbar();
+  }
+
   function renderTable() {
     const cols = COLUMNS[currentSource] || COLUMNS.unsorted;
 
@@ -848,6 +1370,7 @@
 
       // Row state classes
       const trackTid = trackId(track);
+      if (trackTid) tr.dataset.tid = trackTid; // used by ghost-row querySelector
       if (i === currentIndex) tr.classList.add("active");
       if (selectedSet.has(trackTid)) tr.classList.add("selected");
       if (track.status === "accept") tr.classList.add("status-accept");
@@ -1024,6 +1547,20 @@
     }
 
     tableBody.appendChild(frag);
+
+    // Re-render ghost rows for any proposals already in review state
+    if (ghostReview.active && Object.keys(ghostReview.proposals).length > 0) {
+      for (var gtid in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, gtid)) continue;
+        for (var gi = 0; gi < filteredTracks.length; gi++) {
+          if ((filteredTracks[gi].track_id || filteredTracks[gi].file_hash) === gtid) {
+            renderGhostRow(filteredTracks[gi], ghostReview.proposals[gtid]);
+            break;
+          }
+        }
+      }
+      updateReviewToolbar();
+    }
   }
 
   /**
@@ -1288,6 +1825,7 @@
     // Walk all rendered rows — set may have held stale ids after a re-render
     for (let j = 0; j < tableBody.children.length; j++) {
       const tr = tableBody.children[j];
+      if (tr.classList.contains("ghost-row")) continue;
       tr.classList.remove("selected");
       const rowCb = tr.querySelector('.col-select input[type="checkbox"]');
       if (rowCb) rowCb.checked = false;
@@ -1306,23 +1844,22 @@
       if (i >= 0 && i < filteredTracks.length) {
         selectedSet.add(trackId(filteredTracks[i]));
       }
-      if (i < tableBody.children.length) {
-        const tr = tableBody.children[i];
-        tr.classList.add("selected");
-        const rowCb = tr.querySelector('.col-select input[type="checkbox"]');
+      var selTr = getDataRow(i);
+      if (selTr) {
+        selTr.classList.add("selected");
+        const rowCb = selTr.querySelector('.col-select input[type="checkbox"]');
         if (rowCb) rowCb.checked = true;
       }
     }
     // Move cursor to toIndex
     const prev = currentIndex;
     currentIndex = toIndex;
-    if (prev >= 0 && prev < tableBody.children.length) {
-      tableBody.children[prev].classList.remove("active");
-    }
-    if (toIndex < tableBody.children.length) {
-      const row = tableBody.children[toIndex];
-      row.classList.add("active");
-      row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    var prevRow = getDataRow(prev);
+    if (prevRow) prevRow.classList.remove("active");
+    var toRow = getDataRow(toIndex);
+    if (toRow) {
+      toRow.classList.add("active");
+      toRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
     // Update player info
     const track = filteredTracks[toIndex];
@@ -1347,13 +1884,12 @@
     const track = filteredTracks[index];
 
     // Update visual state (swap classes instead of full re-render)
-    if (prev >= 0 && prev < tableBody.children.length) {
-      tableBody.children[prev].classList.remove("active");
-    }
-    if (index < tableBody.children.length) {
-      const row = tableBody.children[index];
-      row.classList.add("active");
-      row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    var prevDataRow = getDataRow(prev);
+    if (prevDataRow) prevDataRow.classList.remove("active");
+    var newDataRow = getDataRow(index);
+    if (newDataRow) {
+      newDataRow.classList.add("active");
+      newDataRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
 
     // Player info
@@ -1450,8 +1986,9 @@
     const genreColIdx = cols.findIndex(function (c) {
       return c.key === "genre";
     });
-    if (genreColIdx >= 0 && tableBody.children[currentIndex]) {
-      const cell = tableBody.children[currentIndex].children[genreColIdx];
+    var curRow = getDataRow(currentIndex);
+    if (genreColIdx >= 0 && curRow) {
+      const cell = curRow.children[genreColIdx];
       const sel = cell.querySelector("select");
       if (sel) sel.value = g;
     }
@@ -1489,7 +2026,7 @@
       showToast('AI applied: ' + fields.join(', '), '');
       // Refresh row cells
       var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
-      var row = tableBody.children[currentIndex];
+      var row = getDataRow(currentIndex);
       if (row) {
         cols.forEach(function(col, ci) {
           if (col.key === 'genre') {
@@ -1950,8 +2487,9 @@
         var genreColIdx = cols.findIndex(function (c) {
           return c.key === "genre";
         });
-        if (genreColIdx >= 0 && tableBody.children[idx]) {
-          var cell = tableBody.children[idx].children[genreColIdx];
+        var idxRow = getDataRow(idx);
+        if (genreColIdx >= 0 && idxRow) {
+          var cell = idxRow.children[genreColIdx];
           var sel = cell.querySelector("select");
           if (sel) sel.value = mainGenre;
         }
@@ -1959,13 +2497,8 @@
         var yearColIdx = cols.findIndex(function (c) {
           return c.key === "year";
         });
-        if (
-          enrichLastData &&
-          enrichLastData.year &&
-          yearColIdx >= 0 &&
-          tableBody.children[idx]
-        ) {
-          var yearCell = tableBody.children[idx].children[yearColIdx];
+        if (enrichLastData && enrichLastData.year && yearColIdx >= 0 && idxRow) {
+          var yearCell = idxRow.children[yearColIdx];
           if (yearCell) yearCell.textContent = enrichLastData.year;
         }
       }
@@ -2824,8 +3357,9 @@
         var genreColIdx = cols.findIndex(function (c) {
           return c.key === "genre";
         });
-        if (genreColIdx >= 0 && tableBody.children[idx]) {
-          var cell = tableBody.children[idx].children[genreColIdx];
+        var aiRow = getDataRow(idx);
+        if (genreColIdx >= 0 && aiRow) {
+          var cell = aiRow.children[genreColIdx];
           var sel = cell.querySelector("select");
           if (sel) sel.value = genre;
         }
@@ -3187,7 +3721,7 @@
         saveTrackField(track, "destination", AUTO_DEST[status]);
       }
 
-      const row = tableBody.children[idx];
+      const row = getDataRow(idx);
       if (row) {
         row.classList.remove("status-accept", "status-reject");
         if (status === "accept") row.classList.add("status-accept");
@@ -3239,7 +3773,7 @@
     saveTrackField(track, "done", newVal);
     showToast(newVal === "TRUE" ? "Done \u2713" : "Not done", "");
 
-    const row = tableBody.children[currentIndex];
+    const row = getDataRow(currentIndex);
     if (row) {
       row.classList.toggle("is-done", newVal === "TRUE");
       const cols = COLUMNS[currentSource];
@@ -3370,8 +3904,26 @@
       case "KeyE":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
-            requestEnrichTrack(filteredTracks[currentIndex]);
+          if (e.shiftKey) {
+            // Shift+E: batch enrich selected tracks
+            if (currentSource === "unsorted" && !ghostReview.locked) {
+              var batchTids = [];
+              if (selectedSet.size > 0) {
+                filteredTracks.forEach(function (t) {
+                  var tid2 = t.track_id || t.file_hash || "";
+                  if (selectedSet.has(tid2)) batchTids.push(tid2);
+                });
+              } else if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+                var t2 = filteredTracks[currentIndex];
+                batchTids.push(t2.track_id || t2.file_hash || "");
+              }
+              startBatchEnrich(batchTids);
+            }
+          } else {
+            // e: single-track enrich (existing behaviour)
+            if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+              if (!ghostReview.locked) requestEnrichTrack(filteredTracks[currentIndex]);
+            }
           }
         }
         break;
@@ -3537,7 +4089,94 @@
       aiAvailable = false;
     });
 
+  // ── Review toolbar event wiring ────────────────────────────────────────────
+
+  // Apply all ticked
+  reviewApplyBtn.addEventListener("click", function () {
+    if (!ghostReview.locked) applyAllTicked();
+  });
+
+  // Cancel review mode
+  reviewCancelBtn.addEventListener("click", function () {
+    var hasTicked = ghostCountTicked() > 0;
+    if (hasTicked && !confirm("Cancel review? Unapplied proposals will be discarded.")) return;
+    exitReviewMode(true);
+  });
+
+  // Auto-threshold slider
+  if (reviewAutoThresholdInput) {
+    reviewAutoThresholdInput.value = ghostReview.autoThreshold;
+    reviewAutoThresholdInput.addEventListener("change", function () {
+      ghostReview.autoThreshold = parseFloat(this.value) || 0.85;
+      localStorage.setItem("ghost-auto-accept", String(ghostReview.autoThreshold));
+      // Re-init ticked defaults for all proposals
+      for (var tid in ghostReview.proposals) {
+        if (Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid)) {
+          ghostInitTicked(tid, ghostReview.proposals[tid]);
+        }
+      }
+      // Re-render all ghost rows
+      for (var tid2 in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid2)) continue;
+        for (var i = 0; i < filteredTracks.length; i++) {
+          if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid2) {
+            renderGhostRow(filteredTracks[i], ghostReview.proposals[tid2]);
+            break;
+          }
+        }
+      }
+      updateReviewToolbar();
+    });
+  }
+
+  // Bulk column toggle buttons
+  reviewToolbar.querySelectorAll(".review-bulk-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var field = this.dataset.field;
+      // Check current state: if any ticked, untick all; else tick all
+      var anyTicked = false;
+      for (var tid in ghostReview.ticked) {
+        if (ghostReview.ticked[tid] && ghostReview.ticked[tid][field]) { anyTicked = true; break; }
+      }
+      var newState = !anyTicked;
+      for (var tid2 in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid2)) continue;
+        if (field in ghostReview.proposals[tid2]) {
+          if (!ghostReview.ticked[tid2]) ghostReview.ticked[tid2] = {};
+          ghostReview.ticked[tid2][field] = newState;
+        }
+      }
+      // Re-render all ghost rows
+      for (var tid3 in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid3)) continue;
+        for (var i = 0; i < filteredTracks.length; i++) {
+          if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid3) {
+            renderGhostRow(filteredTracks[i], ghostReview.proposals[tid3]);
+            break;
+          }
+        }
+      }
+      updateReviewToolbar();
+    });
+  });
+
+  // Filter buttons
+  reviewToolbar.querySelectorAll(".review-filter-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      reviewToolbar.querySelectorAll(".review-filter-btn").forEach(function (b) {
+        b.classList.remove("active");
+      });
+      this.classList.add("active");
+      ghostReview.filter = this.dataset.filter;
+      applyGhostFilter();
+    });
+  });
+
+  // ── On load: hydrate ghost rows from sidecar (surviving page refresh) ──────
   Promise.all([loadGenres(), loadLibraryIndex()]).then(function () {
-    loadTracks("unsorted");
+    loadTracks("unsorted").then(function () {
+      // After table is rendered, show any pending proposals from sidecar
+      if (currentSource === "unsorted") hydrateAllFromSidecar();
+    });
   });
 })();

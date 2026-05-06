@@ -11,8 +11,10 @@ import pytest
 
 from djlib.library_schema import (
     DEFAULT_BACKUP_RETENTION,
+    DJLIB_OWNED_FIELDS,
     LIBRARY_FIELDNAMES,
     LIBRARY_SCHEMA_VERSION,
+    merge_with_existing_library,
     save_library_csv,
 )
 
@@ -157,3 +159,67 @@ def test_sidecar_updated_on_rewrite(tmp_path: Path) -> None:
 def test_default_retention_is_sane() -> None:
     assert DEFAULT_BACKUP_RETENTION >= 5
     assert DEFAULT_BACKUP_RETENTION <= 100
+
+
+# ── field_sources carryover tests ────────────────────────────────────────────
+
+def test_field_sources_in_schema() -> None:
+    """field_sources must be declared in LIBRARY_FIELDNAMES and DJLIB_OWNED_FIELDS."""
+    assert "field_sources" in LIBRARY_FIELDNAMES
+    assert "field_sources" in DJLIB_OWNED_FIELDS
+
+
+def test_field_sources_survives_merge() -> None:
+    """merge_with_existing_library carries field_sources from existing row."""
+    existing = [
+        {
+            "track_id": "abc",
+            "artist": "Dixon",
+            "title": "Tranquilizer",
+            "file_hash": "deadbeef",
+            "field_sources": json.dumps({"genre": "ai_classifier:nano+WS+LF", "year": "manual"}),
+        }
+    ]
+    # Simulated fresh RB/Traktor snapshot: same track_id, no field_sources
+    new_rows = [
+        {
+            "track_id": "abc",
+            "artist": "Dixon",
+            "title": "Tranquilizer",
+            "rekordbox_id": "1234",
+            "field_sources": "",
+        }
+    ]
+    merged = merge_with_existing_library(new_rows, existing)
+    assert len(merged) == 1
+    assert merged[0]["field_sources"] == json.dumps(
+        {"genre": "ai_classifier:nano+WS+LF", "year": "manual"}
+    )
+
+
+def test_field_sources_not_overwritten_by_empty_existing() -> None:
+    """field_sources from new sync row should not be overwritten if existing is empty."""
+    existing = [
+        {"track_id": "xyz", "artist": "Burial", "field_sources": ""}
+    ]
+    new_rows = [
+        {
+            "track_id": "xyz",
+            "artist": "Burial",
+            "field_sources": json.dumps({"genre": "manual"}),
+        }
+    ]
+    merged = merge_with_existing_library(new_rows, existing)
+    # Existing is empty string → new value should win (DJLIB_OWNED_FIELDS only
+    # carries over non-empty existing values)
+    assert merged[0]["field_sources"] == json.dumps({"genre": "manual"})
+
+
+def test_field_sources_round_trip_through_save(tmp_path: Path) -> None:
+    """field_sources written via save_library_csv is readable back."""
+    dest = tmp_path / "library.csv"
+    payload = json.dumps({"genre": "ai_classifier:nano+WS+LF", "year": "musicbrainz"})
+    rows = [{"track_id": "t1", "field_sources": payload}]
+    save_library_csv(dest, rows)
+    got = _read_csv(dest)
+    assert got[0]["field_sources"] == payload

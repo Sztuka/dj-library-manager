@@ -85,6 +85,8 @@ LIBRARY_FIELDNAMES: List[str] = [
     "snapshot_date",  # when this row was last refreshed from a sync
     # ── Reserved for PR3 (scan↔apply contract) ──────────────────────────
     "analysis_source",  # tags|rekordbox|traktor|beatport
+    # ── Per-field provenance (ghost-row review) ───────────────────────────
+    "field_sources",    # JSON: {"genre": "ai_classifier:nano+WS+LF", "year": "manual", ...}
 ]
 
 # Default retention for the backup folder. Syncs can happen several times a
@@ -169,6 +171,7 @@ DJLIB_OWNED_FIELDS: List[str] = [
     "key_original",
     "key_source",
     "analysis_source",
+    "field_sources",
 ]
 
 

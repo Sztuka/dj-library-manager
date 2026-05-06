@@ -9,6 +9,7 @@ arrows to navigate, A/R/V for accept/reject/review.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import json
 import logging
@@ -16,8 +17,10 @@ import mimetypes
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
+import uuid
 import webbrowser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +30,7 @@ import yaml
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from djlib.config import (
+    LOGS_DIR,
     UNSORTED_CSV,
     get_ai_chat_model,
     get_ai_quick_model,
@@ -387,10 +391,84 @@ def api_reveal():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Pending-suggestions sidecar ──────────────────────────────────────────────
+#
+# Ghost-row review writes proposals here before the user accepts them.
+# Shape: { track_id: { field: {value, source, confidence, was}, timestamp } }
+# Atomic writes (tmp + os.replace) guarded by _CSV_LOCK so concurrent Flask
+# threads don't produce a torn JSON file.
+
+_SIDECAR_PATH = LOGS_DIR / "pending-suggestions.json"
+# TTL: discard suggestions older than this many seconds (24 h)
+_SIDECAR_TTL_S = 86_400
+
+
+def _read_sidecar() -> Dict[str, Any]:
+    """Load sidecar, purging entries older than TTL. Returns {} on missing/corrupt."""
+    if not _SIDECAR_PATH.exists():
+        return {}
+    try:
+        with open(_SIDECAR_PATH, encoding="utf-8") as f:
+            data: Dict[str, Any] = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    cutoff = time.time() - _SIDECAR_TTL_S
+    return {
+        tid: entry
+        for tid, entry in data.items()
+        if isinstance(entry, dict) and entry.get("_ts", 0) >= cutoff
+    }
+
+
+def _write_sidecar(data: Dict[str, Any]) -> None:
+    """Atomically overwrite sidecar with `data`. Must be called under _CSV_LOCK."""
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=LOGS_DIR, suffix=".json.tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, _SIDECAR_PATH)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _sidecar_set(tid: str, fields: Dict[str, Any]) -> None:
+    """Add/replace the proposal entry for one track. Thread-safe."""
+    with _CSV_LOCK:
+        data = _read_sidecar()
+        data[tid] = {**fields, "_ts": time.time()}
+        _write_sidecar(data)
+
+
+def _sidecar_remove(tids: List[str]) -> None:
+    """Remove entries for applied track IDs. Thread-safe."""
+    with _CSV_LOCK:
+        data = _read_sidecar()
+        for tid in tids:
+            data.pop(tid, None)
+        _write_sidecar(data)
+
+
+# ── Batch enrich job registry ─────────────────────────────────────────────────
+#
+# Jobs live in memory; they're ephemeral. The sidecar persists results.
+
+_BATCH_JOBS: Dict[str, Dict[str, Any]] = {}
+_BATCH_JOBS_LOCK = threading.Lock()
+_BATCH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="enrich-batch")
+
+
 # ── AI Genre Suggest ─────────────────────────────────────────────────────────
 
 _ai_cache: Dict[str, Dict[str, Any]] = {}  # track_id -> {genre, confidence, reasoning}
-_identify_cache: Dict[str, Dict[str, Any]] = {}  # track_id -> {artist, title, version, year, ...}
+# Cache keyed by "{track_id}|{artist_lower}|{title_lower}" so edits to
+# artist/title on the same file correctly miss the cache (track_id is stable,
+# but the query content changed).
+_identify_cache: Dict[str, Dict[str, Any]] = {}
 _log = logging.getLogger(__name__)
 
 
@@ -790,11 +868,7 @@ def api_identify_track():
     if not tid:
         return jsonify({"error": "Missing track_id"}), 400
 
-    # Check cache
-    if tid in _identify_cache:
-        return jsonify(_identify_cache[tid])
-
-    # Load row from CSV
+    # Load row from CSV first so we can build the composite cache key
     with _CSV_LOCK:
         rows = load_unsorted_rows(UNSORTED_CSV)
 
@@ -807,13 +881,18 @@ def api_identify_track():
     if not row:
         return jsonify({"error": f"Track not found: {tid}"}), 404
 
+    # Cache key includes artist+title so edits to those fields correctly miss
+    # the cache (track_id is UUID5 from file hash — unchanged by edits).
+    cache_key = f"{tid}|{(row.get('artist') or '').lower()}|{(row.get('title') or '').lower()}"
+    if cache_key in _identify_cache:
+        return jsonify(_identify_cache[cache_key])
+
     # Build prompt with all available context
     prompt = _build_identify_prompt(row)
 
     try:
         result = _call_openai_responses_json(api_key, prompt, max_tokens=400)
-        if tid:
-            _identify_cache[tid] = result
+        _identify_cache[cache_key] = result
         return jsonify(result)
     except Exception as e:
         _log.warning("OpenAI identify error: %s", e)
@@ -848,10 +927,6 @@ def api_ai_classify():
     if not tid:
         return jsonify({"error": "Missing track_id"}), 400
 
-    # Check cache
-    if tid in _classify_cache:
-        return jsonify(_classify_cache[tid])
-
     # Determine source CSV (library-review or unsorted)
     source = data.get("source", "unsorted")
 
@@ -871,6 +946,11 @@ def api_ai_classify():
     if not row:
         return jsonify({"error": f"Track not found: {tid}"}), 404
 
+    # Composite cache key: artist+title edits must miss the cache
+    cache_key = f"{tid}|{(row.get('artist') or '').lower()}|{(row.get('title') or '').lower()}"
+    if cache_key in _classify_cache:
+        return jsonify(_classify_cache[cache_key])
+
     try:
         from djlib.ai_classify import classify_track
         # For library-review, exclude the file's ID3 genre tag which is often
@@ -884,8 +964,7 @@ def api_ai_classify():
             exclude_file_genre_tag=exclude_file_tag,
             use_web_search=web_search,
         )
-        if tid:
-            _classify_cache[tid] = result
+        _classify_cache[cache_key] = result
         # Strip internal _usage from API response
         result_safe = {k: v for k, v in result.items() if not k.startswith("_")}
         return jsonify(result_safe)
@@ -1372,7 +1451,12 @@ def api_enrich_track():
     edited by the user in the UI).
 
     Request body (JSON):
-        { "track_id": "..." }
+        { "track_id": "...", "fields": ["genre", "year"] }   # fields defaults to all
+
+    The optional `fields` list limits which sources are queried.  Currently
+    recognised values: "genre", "year", "artist", "title", "version_info".
+    Unknown field names are silently ignored.  When omitted, all fields are
+    enriched (backward-compatible behaviour).
 
     Returns:
         { "genre": "Afro House", "genre_full": "Afro House, Deep House",
@@ -1385,6 +1469,7 @@ def api_enrich_track():
         return jsonify({"error": "No JSON body"}), 400
 
     tid = data.get("track_id", "")
+    requested_fields: Optional[List[str]] = data.get("fields")  # None = all
     if not tid:
         return jsonify({"error": "Missing track_id"}), 400
 
@@ -1597,6 +1682,295 @@ def api_swap_artist_title():
         "title": new_title,
         "version_info": new_version,
     })
+
+
+# ── Ghost-row review: batch enrich endpoints ─────────────────────────────────
+
+
+def _enrich_one_for_batch(
+    row: Dict[str, str],
+    fields: List[str],
+    job: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Worker: enrich a single row and write result to sidecar. Returns payload or None."""
+    if job.get("cancelled"):
+        return None
+
+    tid = row.get("track_id", "")
+    artist = (row.get("artist") or "").strip()
+    title = (row.get("title") or "").strip()
+    version = (row.get("version_info") or "").strip()
+
+    if not artist and not title:
+        return None
+
+    try:
+        bpm_str = (row.get("bpm") or row.get("tag_bpm_original") or "").strip()
+        key_str = (row.get("key_camelot") or row.get("tag_key_original") or "").strip()
+        fp = row.get("file_path", "")
+        filename_hint = Path(fp).name if fp else ""
+
+        cls = _classify_genre(
+            artist, title,
+            version=version,
+            bpm=bpm_str,
+            key=key_str,
+            filename=filename_hint,
+        )
+    except Exception as exc:
+        _log.warning("Batch enrich failed for %s: %s", tid, exc)
+        return None
+
+    payload: Dict[str, Any] = {}
+
+    # genre + year — always available from classifier
+    if "genre" not in fields or "genre" in fields:
+        if "genre" in fields:
+            genre_val = (cls.get("genre") or "").strip()
+            if genre_val:
+                payload["genre"] = {
+                    "value": genre_val,
+                    "source": f"ai_classifier:{cls.get('source', 'nano+WS+LF')}",
+                    "confidence": round(float(cls.get("confidence") or 0), 3),
+                    "was": (row.get("genre") or ""),
+                }
+
+    if "year" in fields:
+        year_val = (cls.get("year") or "").strip()
+        if year_val:
+            payload["year"] = {
+                "value": year_val,
+                "source": cls.get("year_evidence", "ai_classifier")[:80],
+                "confidence": 0.8,
+                "was": (row.get("year") or ""),
+            }
+
+    # artist / title / version_info — from identify if requested
+    id_needed = any(f in fields for f in ("artist", "title", "version_info"))
+    if id_needed:
+        api_key = get_openai_api_key()
+        if api_key:
+            try:
+                prompt = _build_identify_prompt(row)
+                id_result = _call_openai_responses_json(api_key, prompt, max_tokens=300)
+                for f in ("artist", "title"):
+                    if f in fields:
+                        val = (id_result.get(f) or "").strip()
+                        if val:
+                            payload[f] = {
+                                "value": val,
+                                "source": "ai_identify",
+                                "confidence": round(float(id_result.get("confidence") or 0.7), 3),
+                                "was": (row.get(f) or ""),
+                            }
+                if "version_info" in fields:
+                    ver_val = (id_result.get("version") or "").strip()
+                    if ver_val:
+                        payload["version_info"] = {
+                            "value": ver_val,
+                            "source": "ai_identify",
+                            "confidence": round(float(id_result.get("confidence") or 0.7), 3),
+                            "was": (row.get("version_info") or ""),
+                        }
+            except Exception as exc:
+                _log.warning("Batch identify failed for %s: %s", tid, exc)
+
+    if payload:
+        _sidecar_set(tid, payload)
+
+    with _BATCH_JOBS_LOCK:
+        job["done"] += 1
+        job["results"][tid] = {"fields": list(payload.keys()), "ok": True}
+
+    return payload
+
+
+@app.route("/api/enrich-batch", methods=["POST"])
+def api_enrich_batch():
+    """Start an async batch enrich job for N selected tracks.
+
+    Request body (JSON):
+        { "track_ids": ["...", ...], "fields": ["genre", "year", "artist", "title", "version_info"] }
+
+    Returns:
+        { "job_id": "...", "total": N }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    track_ids: List[str] = data.get("track_ids") or []
+    fields: List[str] = data.get("fields") or ["genre", "year", "artist", "title", "version_info"]
+
+    if not track_ids:
+        return jsonify({"error": "No track_ids provided"}), 400
+
+    # Load rows once for all workers
+    with _CSV_LOCK:
+        all_rows = load_unsorted_rows(UNSORTED_CSV)
+    tid_to_row = {r.get("track_id", ""): r for r in all_rows if r.get("track_id")}
+
+    rows_to_enrich = [tid_to_row[tid] for tid in track_ids if tid in tid_to_row]
+    if not rows_to_enrich:
+        return jsonify({"error": "None of the track_ids found in unsorted.csv"}), 404
+
+    job_id = str(uuid.uuid4())
+    job: Dict[str, Any] = {
+        "id": job_id,
+        "total": len(rows_to_enrich),
+        "done": 0,
+        "cancelled": False,
+        "state": "running",
+        "results": {},
+    }
+
+    with _BATCH_JOBS_LOCK:
+        _BATCH_JOBS[job_id] = job
+
+    def _run_job() -> None:
+        futures = [
+            _BATCH_EXECUTOR.submit(_enrich_one_for_batch, row, fields, job)
+            for row in rows_to_enrich
+        ]
+        concurrent.futures.wait(futures)
+        with _BATCH_JOBS_LOCK:
+            job["state"] = "cancelled" if job.get("cancelled") else "done"
+
+    threading.Thread(target=_run_job, daemon=True, name=f"enrich-batch-{job_id[:8]}").start()
+
+    return jsonify({"job_id": job_id, "total": len(rows_to_enrich)})
+
+
+@app.route("/api/enrich-status")
+def api_enrich_status():
+    """Poll batch enrich job progress.
+
+    Query params: job_id
+    Returns: { "job_id": ..., "done": N, "total": N, "state": "running"|"done"|"cancelled",
+               "new_results": {track_id: {fields: [...], ok: bool}} }
+    """
+    job_id = request.args.get("job_id", "")
+    with _BATCH_JOBS_LOCK:
+        job = _BATCH_JOBS.get(job_id)
+
+    if not job:
+        return jsonify({"error": f"Unknown job_id: {job_id}"}), 404
+
+    with _BATCH_JOBS_LOCK:
+        snapshot = {
+            "job_id": job_id,
+            "done": job["done"],
+            "total": job["total"],
+            "state": job["state"],
+            "new_results": dict(job["results"]),
+        }
+        # Delta delivery: clear results after sending so next poll only gets new ones
+        job["results"] = {}
+
+    return jsonify(snapshot)
+
+
+@app.route("/api/enrich-cancel", methods=["POST"])
+def api_enrich_cancel():
+    """Cancel a running batch enrich job.
+
+    Request body (JSON): { "job_id": "..." }
+    """
+    data = request.get_json(silent=True)
+    job_id = (data or {}).get("job_id", "")
+    with _BATCH_JOBS_LOCK:
+        job = _BATCH_JOBS.get(job_id)
+        if job:
+            job["cancelled"] = True
+            job["state"] = "cancelled"
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/pending-suggestions")
+def api_pending_suggestions():
+    """Return current sidecar contents for the frontend to hydrate ghost rows on load.
+
+    Returns: { track_id: { field: {value, source, confidence, was}, _ts: float } }
+    """
+    return jsonify(_read_sidecar())
+
+
+@app.route("/api/apply-enrichment", methods=["POST"])
+def api_apply_enrichment():
+    """Write accepted fields from ghost-row review back to unsorted.csv.
+
+    Request body (JSON):
+        { "applications": [ { "track_id": "...", "fields": {"genre": true, "year": false, ...} } ] }
+
+    For each accepted field:
+      - Writes the proposed value to the canonical CSV column
+      - Updates field_sources JSON column with provenance
+      - Removes the track's entry from the pending-suggestions sidecar
+
+    Returns: { "ok": true, "applied": N }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    applications: List[Dict[str, Any]] = data.get("applications") or []
+    if not applications:
+        return jsonify({"error": "No applications provided"}), 400
+
+    sidecar = _read_sidecar()
+    applied_count = 0
+    applied_tids: List[str] = []
+
+    with _CSV_LOCK:
+        rows = load_unsorted_rows(UNSORTED_CSV)
+        tid_to_idx: Dict[str, int] = {
+            r.get("track_id", ""): i for i, r in enumerate(rows) if r.get("track_id")
+        }
+
+        for app_item in applications:
+            tid = app_item.get("track_id", "")
+            accepted_fields: Dict[str, bool] = app_item.get("fields") or {}
+            if not tid or tid not in tid_to_idx:
+                continue
+
+            proposals = sidecar.get(tid, {})
+            idx = tid_to_idx[tid]
+            row = rows[idx]
+
+            # Parse existing field_sources (may be JSON string or empty)
+            try:
+                fs: Dict[str, str] = json.loads(row.get("field_sources") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                fs = {}
+
+            for field, accepted in accepted_fields.items():
+                if not accepted:
+                    continue
+                proposal = proposals.get(field)
+                if not proposal:
+                    continue
+                value = proposal.get("value", "")
+                source = proposal.get("source", "manual")
+
+                row[field] = value
+                fs[field] = source
+
+                # Mirror genre → genre_suggest for the existing UI convention
+                if field == "genre":
+                    row["genre_suggest"] = value
+
+            row["field_sources"] = json.dumps(fs, ensure_ascii=False) if fs else ""
+            rows[idx] = row
+            applied_tids.append(tid)
+            applied_count += 1
+
+        write_unsorted_rows(UNSORTED_CSV, rows, [])
+
+    # Remove applied entries from sidecar outside the CSV lock
+    if applied_tids:
+        _sidecar_remove(applied_tids)
+
+    return jsonify({"ok": True, "applied": applied_count})
 
 
 # ── Server entry point ───────────────────────────────────────────────────────
