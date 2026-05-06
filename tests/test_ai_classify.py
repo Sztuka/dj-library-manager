@@ -433,28 +433,39 @@ def test_api_ai_classify_success(client, tmp_path):
         # _usage should be stripped from response
         assert "_usage" not in data
 
-    # Clean up cache
-    srv._classify_cache.pop("classify-test-1", None)
+    # Clean up cache (composite key: tid|artist_lower|title_lower)
+    srv._classify_cache.pop("classify-test-1||track", None)
 
 
-def test_api_ai_classify_uses_cache(client):
-    """Second request for same track returns cached result."""
+def test_api_ai_classify_uses_cache(client, tmp_path):
+    """Second request for same track returns cached result (no classify_track call)."""
     import djlib.review.server as srv
 
-    srv._classify_cache["cached-classify"] = {
-        "artist": "Cached",
-        "title": "Track",
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "cached-classify",
+        "file_path": "/tmp/cached.mp3",
+        "artist": "Cached Artist",
+        "title": "Cached Title",
+    }])
+    # Composite key: "tid|artist_lower|title_lower"
+    cache_key = "cached-classify|cached artist|cached title"
+    srv._classify_cache[cache_key] = {
+        "artist": "Cached Artist",
+        "title": "Cached Title",
         "version": ["Remix"],
         "genre": "Tech House",
         "confidence": 0.95,
         "reasoning": "cached",
     }
 
-    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.ai_classify.classify_track") as mock_ct:
         resp = client.post("/api/ai-classify", json={"track_id": "cached-classify"})
         assert resp.status_code == 200
         data = json.loads(resp.data)
-        assert data["artist"] == "Cached"
+        assert data["artist"] == "Cached Artist"
         assert data["genre"] == "Tech House"
+        mock_ct.assert_not_called()
 
-    del srv._classify_cache["cached-classify"]
+    srv._classify_cache.pop(cache_key, None)

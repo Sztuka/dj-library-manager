@@ -111,6 +111,32 @@
       <button id="batch-apply" class="batch-apply-btn">Apply to <span id="batch-apply-count">0</span></button>
     </div>
 
+    <!-- ── Ghost-row review toolbar (visible only in review mode) ── -->
+    <div id="review-toolbar" class="review-toolbar hidden">
+      <span class="review-mode-label">REVIEW</span>
+      <span id="review-progress" class="review-progress">0/0</span>
+      <div class="review-sep"></div>
+      <span class="review-bulk-label">Apply col:</span>
+      <button class="review-bulk-btn" data-field="genre">Genre</button>
+      <button class="review-bulk-btn" data-field="year">Year</button>
+      <button class="review-bulk-btn" data-field="artist">Artist</button>
+      <button class="review-bulk-btn" data-field="title">Title</button>
+      <button class="review-bulk-btn" data-field="version_info">Version</button>
+      <div class="review-sep"></div>
+      <span class="review-bulk-label">Filter:</span>
+      <button class="review-filter-btn active" data-filter="all">All</button>
+      <button class="review-filter-btn" data-filter="conflicts">Conflicts</button>
+      <button class="review-filter-btn" data-filter="low">⚠ Low conf</button>
+      <div class="review-sep"></div>
+      <label class="review-auto-label" title="Auto-tick cells with confidence ≥ this threshold">Auto ≥
+        <input type="number" id="review-auto-threshold" min="0.5" max="1.0" step="0.05" value="0.85" />
+      </label>
+      <div class="review-sep"></div>
+      <span id="review-ticked-count" class="review-ticked-count">0 ticked</span>
+      <button id="review-apply-btn" class="review-apply-btn" disabled>Apply ticked</button>
+      <button id="review-cancel-btn" class="review-cancel-btn">✕ Cancel</button>
+    </div>
+
     <!-- ── Track table ─────────────────────────────────────────── -->
     <main id="table-container">
       <table id="tracks-table">

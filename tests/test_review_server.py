@@ -1142,15 +1142,23 @@ def test_identify_track_success(client, tmp_path):
         assert data["confidence"] == 0.75
         assert "reasoning" in data
 
-    # Clean up cache
-    srv._identify_cache.pop("identify-test-1", None)
+    # Clean up cache (composite key: track_id|artist_lower|title_lower)
+    srv._identify_cache.pop("identify-test-1||september maru w dave nunes", None)
 
 
-def test_identify_track_uses_cache(client):
-    """Second request for same track_id returns cached result."""
+def test_identify_track_uses_cache(client, tmp_path):
+    """Second request for same track_id+artist+title returns cached result without API call."""
     import djlib.review.server as srv
 
-    srv._identify_cache["cached-identify"] = {
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "cached-identify",
+        "artist": "Cached Artist",
+        "title": "Cached Title",
+    }])
+
+    # Cache key is now composite: track_id|artist_lower|title_lower
+    cache_key = "cached-identify|cached artist|cached title"
+    srv._identify_cache[cache_key] = {
         "artist": "Cached Artist",
         "title": "Cached Title",
         "version": "",
@@ -1159,14 +1167,18 @@ def test_identify_track_uses_cache(client):
         "reasoning": "cached",
     }
 
-    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
         resp = client.post("/api/identify-track", json={"track_id": "cached-identify"})
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert data["artist"] == "Cached Artist"
         assert data["reasoning"] == "cached"
+        # API must NOT have been called — result came from cache
+        mock_post.assert_not_called()
 
-    del srv._identify_cache["cached-identify"]
+    del srv._identify_cache[cache_key]
 
 
 def test_identify_track_openai_error(client, tmp_path):
