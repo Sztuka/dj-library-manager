@@ -374,8 +374,14 @@ def cmd_scan(args: argparse.Namespace) -> None:
             if "fpcalc" in str(e).lower():
                 missing_fpcalc = True
 
-        is_dup = "true" if (fp and fp in known_fps) else "false"
-        
+        is_dup = fp and fp in known_fps
+
+        # Skip acoustic duplicates (same fingerprint = same audio, different path/quality)
+        if is_dup:
+            print(f"   ⊘ [DUPLICATE] {p.name} — fingerprint already known, skipping")
+            processed += 1
+            continue
+
         # ── Check rejected registry by fingerprint ──
         if fp and fp in rejected_fps:
             print(f"   🚫 [REJECTED] {p.name} (fingerprint matches previously rejected file)")
@@ -445,7 +451,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "file_hash": fhash,
             "fingerprint": fp,
             "added_date": utc_now_str(),
-            "is_duplicate": is_dup,
+            "is_duplicate": "false",
             "artist": _safe_str(tags.get("artist")).strip(),
             "title": _safe_str(tags.get("title")).strip(),
             "version_info": _safe_str(tags.get("version_info")).strip(),
@@ -503,7 +509,31 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 }
             )
 
-    if new_rows:
+    # Remove duplicates already present in staging_rows (from previous scans before this fix).
+    # Keep first occurrence by fingerprint, then by file_hash.
+    seen_fps_clean: set = set()
+    seen_hashes_clean: set = set()
+    cleaned: List[Dict[str, str]] = []
+    removed_dups = 0
+    for row in staging_rows:
+        rfp = row.get("fingerprint") or ""
+        rhash = row.get("file_hash") or ""
+        if rfp and rfp in seen_fps_clean:
+            removed_dups += 1
+            continue
+        if rhash and rhash in seen_hashes_clean:
+            removed_dups += 1
+            continue
+        if rfp:
+            seen_fps_clean.add(rfp)
+        if rhash:
+            seen_hashes_clean.add(rhash)
+        cleaned.append(row)
+    if removed_dups:
+        print(f"   ⊘ Removed {removed_dups} duplicate row(s) from unsorted.csv")
+        staging_rows = cleaned
+
+    if new_rows or removed_dups:
         _save_unsorted(staging_rows)
         print(f"Scanned {len(new_rows)} files. Saved to {UNSORTED_CSV}.")
     else:
