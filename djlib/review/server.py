@@ -17,6 +17,7 @@ import mimetypes
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -460,19 +461,22 @@ def _sidecar_remove(tids: List[str]) -> None:
 _BATCH_JOBS: Dict[str, Dict[str, Any]] = {}
 _BATCH_JOBS_LOCK = threading.Lock()
 _BATCH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="enrich-batch")
+_MB_SEMAPHORE = threading.Semaphore(1)  # MusicBrainz: max 1 concurrent request (1 req/s policy)
 
 _SEARXNG_COMPOSE = Path(__file__).resolve().parents[2] / "docker" / "docker-compose.searxng.yml"
+_SEARXNG_STARTUP_LOCK = threading.Lock()  # Prevent concurrent Docker startup races
 
 
 def _ensure_searxng_running(timeout_docker: int = 60, timeout_searxng: int = 30) -> bool:
     """Best-effort: ensure the SearXNG Docker container is up before batch enrichment.
 
     Steps:
-    1. If SearXNG already responds → done.
-    2. If Docker daemon is not running → start Docker Desktop (macOS) and wait.
-    3. Run ``docker compose up -d`` for the SearXNG service.
-    4. Wait until SearXNG responds or timeout expires.
-    5. Reset genre_classifier._searcher so the classifier re-checks availability.
+    1. If SearXNG already responds → done immediately (no lock needed).
+    2. Acquire startup lock so only one thread drives the Docker startup.
+    3. On macOS only: launch Docker Desktop and wait for the daemon.
+    4. Run ``docker compose up -d`` for the SearXNG service.
+    5. Wait until SearXNG responds or timeout expires.
+    6. Reset genre_classifier._searcher so the classifier re-checks availability.
 
     Returns True if SearXNG is available after this call, False otherwise.
     """
@@ -487,62 +491,74 @@ def _ensure_searxng_running(timeout_docker: int = 60, timeout_searxng: int = 30)
     if _searxng_up():
         return True
 
-    _log.info("SearXNG not available — attempting Docker startup")
-
-    # Check Docker daemon
-    try:
-        r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
-        docker_ok = r.returncode == 0
-    except Exception:
-        docker_ok = False
-
-    if not docker_ok:
-        _log.info("Docker daemon not running — launching Docker Desktop")
-        try:
-            subprocess.Popen(["open", "-a", "Docker"])
-        except Exception as exc:
-            _log.warning("Could not launch Docker Desktop: %s", exc)
-            return False
-        deadline = time.monotonic() + timeout_docker
-        while time.monotonic() < deadline:
-            time.sleep(2)
-            try:
-                r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
-                if r.returncode == 0:
-                    _log.info("Docker daemon ready")
-                    break
-            except Exception:
-                pass
-        else:
-            _log.warning("Docker daemon did not start within %ds", timeout_docker)
-            return False
-
-    # Start SearXNG container
-    if _SEARXNG_COMPOSE.exists():
-        try:
-            subprocess.run(
-                ["docker", "compose", "-f", str(_SEARXNG_COMPOSE), "up", "-d"],
-                capture_output=True, timeout=60,
-            )
-            _log.info("docker compose up -d finished")
-        except Exception as exc:
-            _log.warning("docker compose up failed: %s", exc)
-
-    # Wait for SearXNG to respond
-    deadline = time.monotonic() + timeout_searxng
-    while time.monotonic() < deadline:
+    with _SEARXNG_STARTUP_LOCK:
+        # Re-check inside lock — another thread may have just started it
         if _searxng_up():
-            _log.info("SearXNG is now available")
-            # Reset module-level cache so classifier picks it up
-            try:
-                import djlib.metadata.genre_classifier as _gc
-                _gc._searcher = None
-            except Exception:
-                pass
             return True
-        time.sleep(2)
 
-    _log.warning("SearXNG did not become available within %ds", timeout_searxng)
+        _log.info("SearXNG not available — attempting Docker startup")
+
+        # Check Docker daemon
+        try:
+            r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+            docker_ok = r.returncode == 0
+        except Exception:
+            docker_ok = False
+
+        if not docker_ok:
+            if sys.platform != "darwin":
+                _log.warning(
+                    "Docker daemon not running and auto-start only supported on macOS "
+                    "(current platform: %s). Start Docker manually.", sys.platform
+                )
+                return False
+            _log.info("Docker daemon not running — launching Docker Desktop")
+            try:
+                subprocess.Popen(["open", "-a", "Docker"])
+            except Exception as exc:
+                _log.warning("Could not launch Docker Desktop: %s", exc)
+                return False
+            deadline = time.monotonic() + timeout_docker
+            while time.monotonic() < deadline:
+                time.sleep(2)
+                try:
+                    r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
+                    if r.returncode == 0:
+                        _log.info("Docker daemon ready")
+                        break
+                except Exception:
+                    pass
+            else:
+                _log.warning("Docker daemon did not start within %ds", timeout_docker)
+                return False
+
+        # Start SearXNG container
+        if _SEARXNG_COMPOSE.exists():
+            try:
+                subprocess.run(
+                    ["docker", "compose", "-f", str(_SEARXNG_COMPOSE), "up", "-d"],
+                    capture_output=True, timeout=60,
+                )
+                _log.info("docker compose up -d finished")
+            except Exception as exc:
+                _log.warning("docker compose up failed: %s", exc)
+
+        # Wait for SearXNG to respond
+        deadline = time.monotonic() + timeout_searxng
+        while time.monotonic() < deadline:
+            if _searxng_up():
+                _log.info("SearXNG is now available")
+                # Reset module-level searcher cache so classifier picks up the live instance
+                try:
+                    import djlib.metadata.genre_classifier as _gc
+                    with _gc._searcher_lock:
+                        _gc._searcher = None
+                except Exception:
+                    pass
+                return True
+            time.sleep(2)
+
+        _log.warning("SearXNG did not become available within %ds", timeout_searxng)
     return False
 
 
@@ -1807,17 +1823,16 @@ def _enrich_one_for_batch(
 
     payload: Dict[str, Any] = {}
 
-    # genre + year — always available from classifier
-    if "genre" not in fields or "genre" in fields:
-        if "genre" in fields:
-            genre_val = (cls.get("genre") or "").strip()
-            if genre_val:
-                payload["genre"] = {
-                    "value": genre_val,
-                    "source": f"ai_classifier:{cls.get('source', 'nano+WS+LF')}",
-                    "confidence": round(float(cls.get("confidence") or 0), 3),
-                    "was": (row.get("genre") or ""),
-                }
+    # genre
+    if "genre" in fields:
+        genre_val = (cls.get("genre") or "").strip()
+        if genre_val:
+            payload["genre"] = {
+                "value": genre_val,
+                "source": f"ai_classifier:{cls.get('source', 'nano+WS+LF')}",
+                "confidence": round(float(cls.get("confidence") or 0), 3),
+                "was": (row.get("genre") or ""),
+            }
 
     if "year" in fields:
         year_val = ""
@@ -1825,26 +1840,33 @@ def _enrich_one_for_batch(
         year_conf = 0.0
 
         # 1. MusicBrainz — most reliable, skip for remixes/edits (like enrich.py does)
+        # Rate-limited via _MB_SEMAPHORE: MusicBrainz enforces max 1 req/s
         if not version:
-            try:
-                from djlib.metadata import mb_client
-                mb_info = mb_client.get_original_release_info(artist, title)
-                if mb_info:
-                    mb_year, _album, _rg = mb_info
-                    if mb_year:
-                        year_val = mb_year
-                        year_src = "musicbrainz"
-                        year_conf = 0.92
-            except Exception as exc:
-                _log.debug("MB year lookup failed for %s: %s", tid, exc)
+            with _MB_SEMAPHORE:
+                try:
+                    from djlib.metadata import mb_client
+                    mb_info = mb_client.get_original_release_info(artist, title)
+                    if mb_info:
+                        mb_year, _album, _rg = mb_info
+                        if mb_year:
+                            year_val = mb_year
+                            year_src = "musicbrainz"
+                            year_conf = 0.92
+                except Exception as exc:
+                    _log.debug("MB year lookup failed for %s: %s", tid, exc)
+                finally:
+                    time.sleep(1.1)  # ensure 1 req/s across all workers
 
-        # 2. nano classifier (already called above)
+        # 2. nano classifier (already called above).
+        # When SearXNG was unavailable, the classifier used training knowledge —
+        # cap confidence lower to signal uncertainty vs. web-backed results.
         if not year_val:
             cls_year = (cls.get("year") or "").strip()
+            ws_was_used = bool(cls.get("lastfm_tags") or cls.get("year_evidence"))
             if cls_year:
                 year_val = cls_year
                 year_src = f"ai_classifier:{cls.get('source', 'nano+WS+LF')}"
-                year_conf = 0.8
+                year_conf = 0.8 if ws_was_used else 0.6
 
         # 3. Last.fm fallback — skip for remixes (unreliable for remix release dates)
         if not year_val and not version:
@@ -1934,6 +1956,12 @@ def api_enrich_batch():
     rows_to_enrich = [tid_to_row[tid] for tid in track_ids if tid in tid_to_row]
     if not rows_to_enrich:
         return jsonify({"error": "None of the track_ids found in unsorted.csv"}), 404
+
+    # GC: remove finished jobs to prevent unbounded memory growth
+    with _BATCH_JOBS_LOCK:
+        finished = [jid for jid, j in _BATCH_JOBS.items() if j.get("state") in ("done", "cancelled")]
+        for jid in finished:
+            del _BATCH_JOBS[jid]
 
     job_id = str(uuid.uuid4())
     job: Dict[str, Any] = {

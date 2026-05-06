@@ -1074,9 +1074,13 @@
     applyGhostApplications([{ track_id: tid, fields: ticked }]);
   }
 
+  var _applyInFlight = false;
+
   // Send accepted fields to backend and clean up ghost row(s)
   function applyGhostApplications(applications) {
     if (!applications.length) return;
+    if (_applyInFlight) return;
+    _applyInFlight = true;
     fetch("/api/apply-enrichment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1084,6 +1088,7 @@
     })
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        _applyInFlight = false;
         if (data.error) { showToast("Apply error: " + data.error, ""); return; }
         applications.forEach(function (app) {
           var tid = app.track_id;
@@ -1107,7 +1112,7 @@
           delete ghostReview.ticked[tid];
           delete ghostReview.proposals[tid];
         });
-        // Refresh table rows for applied tracks so values show up
+        // Refresh table rows: update cell values in-place, then flash animation
         var changedTids = new Set(applications.map(function (a) { return a.track_id; }));
         reRenderDataRows(changedTids);
         updateReviewToolbar();
@@ -1116,17 +1121,31 @@
           exitReviewMode(false);
         }
       })
-      .catch(function () { showToast("Apply request failed", ""); });
+      .catch(function () { _applyInFlight = false; showToast("Apply request failed", ""); });
   }
 
-  // Re-render specific data rows in-place (fade-in effect)
+  // Re-render specific data rows in-place: update cell values + flash animation
   function reRenderDataRows(tids) {
+    var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
     for (var i = 0; i < filteredTracks.length; i++) {
       var t = filteredTracks[i];
       var tid = t.track_id || t.file_hash || "";
       if (!tids.has(tid)) continue;
       var dataRow = getDataRow(i);
       if (!dataRow) continue;
+      // Update cell values in-place without rebuilding the row (preserves event listeners)
+      var tds = dataRow.querySelectorAll("td");
+      for (var ci = 0; ci < cols.length && ci < tds.length; ci++) {
+        var col = cols[ci];
+        var td = tds[ci];
+        if (col.type === "editable") {
+          td.textContent = t[col.key] || "";
+          td.title = t[col.key] || "";
+        } else if (col.type === "genre-select" || col.type === "dest-select") {
+          var sel = td.querySelector("select");
+          if (sel) sel.value = t[col.key] || "";
+        }
+      }
       dataRow.classList.add("ghost-applied");
       setTimeout((function (dr) {
         return function () { dr.classList.remove("ghost-applied"); };

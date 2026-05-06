@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -54,18 +55,20 @@ def _genre_labels() -> List[str]:
 
 # Module-level SearXNG searcher: created lazily, reused across calls.
 _searcher = None
+_searcher_lock = threading.Lock()
 
 
 def _get_searcher():
     global _searcher
-    if _searcher is None:
-        try:
-            s = create_searcher("searxng")
-            _searcher = s if s.is_available() else False
-        except Exception as e:
-            log.warning("SearXNG unavailable: %s", e)
-            _searcher = False
-    return _searcher or None
+    with _searcher_lock:
+        if _searcher is None:
+            try:
+                s = create_searcher("searxng")
+                _searcher = s if s.is_available() else False
+            except Exception as e:
+                log.warning("SearXNG unavailable: %s", e)
+                _searcher = False
+        return _searcher or None
 
 
 def _fetch_web_search(artist: str, title: str, version: str, filename: str = "") -> str:
