@@ -108,13 +108,6 @@
   const aiBannerAccept = document.getElementById("ai-banner-accept");
   const aiBannerDismiss = document.getElementById("ai-banner-dismiss");
   const ctxAiSuggest = document.getElementById("ctx-ai-suggest");
-  const enrichBanner = document.getElementById("enrich-banner");
-  const enrichBannerGenre = document.getElementById("enrich-banner-genre");
-  const enrichBannerConf = document.getElementById("enrich-banner-confidence");
-  const enrichBannerSources = document.getElementById("enrich-banner-sources");
-  const enrichBannerAccept = document.getElementById("enrich-banner-accept");
-  const enrichBannerDismiss = document.getElementById("enrich-banner-dismiss");
-  const enrichBannerSwap = document.getElementById("enrich-banner-swap");
   const identifyBanner = document.getElementById("identify-banner");
   const identifyBannerArtist = document.getElementById(
     "identify-banner-artist",
@@ -218,8 +211,6 @@
   let aiAvailable = false;
   let aiPending = false; // prevents double-clicks
   let aiBannerTrack = null; // track the banner is showing for
-  let enrichPending = false;
-  let enrichBannerTrack = null;
   let identifyPending = false;
   let identifyBannerTrack = null;
   let classifyPending = false;
@@ -2233,7 +2224,8 @@
         openAiChat(contextTrack);
         break;
       case "enrich-track":
-        requestEnrichTrack(contextTrack);
+        if (currentSource === "unsorted" && !ghostReview.locked)
+          startBatchEnrich([trackId(contextTrack)]);
         break;
       case "swap-artist-title":
         requestSwapArtistTitle(contextTrack);
@@ -2341,191 +2333,6 @@
     aiBannerTrack = null;
   }
 
-  // -- Re-enrich (context menu) ---------------------------------
-
-  function requestEnrichTrack(track) {
-    if (!track || enrichPending) return;
-    if (currentSource !== "unsorted") {
-      showToast("Enrich only works on Unsorted tab", "");
-      return;
-    }
-
-    enrichPending = true;
-    enrichBannerTrack = track;
-
-    // Show loading state
-    enrichBanner.classList.remove("hidden");
-    enrichBanner.classList.add("enrich-loading");
-    enrichBannerGenre.textContent = "Enriching…";
-    enrichBannerConf.textContent = "";
-    enrichBannerSources.textContent = "";
-    enrichBannerAccept.style.display = "none";
-    enrichBannerSwap.style.display = "none";
-    enrichBannerDismiss.style.display = "inline-block";
-
-    fetch("/api/enrich-track", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ track_id: trackId(track) }),
-    })
-      .then(function (r) {
-        return r.json();
-      })
-      .then(function (data) {
-        enrichPending = false;
-        enrichBanner.classList.remove("enrich-loading");
-
-        if (data.error) {
-          showToast("Enrich error: " + data.error, "");
-          hideEnrichBanner();
-          return;
-        }
-
-        if (!data.genre) {
-          enrichBannerGenre.textContent = "No results found";
-          enrichBannerConf.textContent = "";
-          enrichBannerSources.textContent =
-            "Try editing artist/title and re-enriching";
-        } else {
-          var displayGenre = data.genre_full || data.genre;
-          if (data.year) {
-            displayGenre += " (" + data.year + ")";
-          }
-          enrichBannerGenre.textContent = displayGenre;
-          var conf = data.confidence
-            ? Math.round(data.confidence * 100) + "%"
-            : "";
-          enrichBannerConf.textContent = conf;
-          // Show source details
-          var srcParts = [];
-          if (data.source_details) {
-            for (var src in data.source_details) {
-              srcParts.push(src + ": " + data.source_details[src]);
-            }
-          }
-          enrichBannerSources.textContent = srcParts.join(" | ");
-          enrichBannerSources.title = srcParts.join("\n");
-          enrichBannerAccept.style.display = "inline-block";
-          enrichBannerAccept.dataset.genre = data.genre_full || data.genre;
-          enrichLastData = data;
-        }
-
-        // Show swap suggestion if detected
-        if (data.swap_suggestion && data.swap_suggestion.swapped) {
-          enrichBannerSwap.style.display = "inline-block";
-          enrichBannerSwap.title =
-            data.swap_suggestion.reason || "Artist and title may be swapped";
-        }
-      })
-      .catch(function (err) {
-        enrichPending = false;
-        enrichBanner.classList.remove("enrich-loading");
-        showToast("Enrich request failed", "");
-        hideEnrichBanner();
-      });
-  }
-
-  function hideEnrichBanner() {
-    enrichBanner.classList.add("hidden");
-    enrichBanner.classList.remove("enrich-loading");
-    enrichBannerTrack = null;
-    enrichLastData = null;
-  }
-
-  // Accept enrich result
-  // Store last enrich response data for Accept to use
-  var enrichLastData = null;
-
-  enrichBannerAccept.addEventListener("click", function () {
-    var genre = enrichBannerAccept.dataset.genre;
-    if (!genre || !enrichBannerTrack) return;
-
-    // Save MAIN genre (single canonical name) to genre column (dropdown-compatible)
-    var mainGenre = matchGenreLabel(
-      (enrichLastData && enrichLastData.genre) || genre,
-    );
-    enrichBannerTrack.genre = mainGenre;
-    saveTrackField(enrichBannerTrack, "genre", mainGenre);
-
-    // Save genre_full (main + subs) to genre_suggest (text field, not dropdown)
-    var genreFull =
-      (enrichLastData && (enrichLastData.genre_full || enrichLastData.genre)) ||
-      genre;
-    enrichBannerTrack.genre_suggest = genreFull;
-    saveTrackField(enrichBannerTrack, "genre_suggest", genreFull);
-
-    // Save per-source genre tags (SC, BP, Last.fm, MB) to CSV
-    if (enrichLastData && enrichLastData.source_genres) {
-      var sg = enrichLastData.source_genres;
-      for (var col in sg) {
-        enrichBannerTrack[col] = sg[col];
-        saveTrackField(enrichBannerTrack, col, sg[col]);
-      }
-    }
-
-    // Save meta_source
-    if (enrichLastData && enrichLastData.meta_source) {
-      enrichBannerTrack.meta_source = enrichLastData.meta_source;
-      saveTrackField(
-        enrichBannerTrack,
-        "meta_source",
-        enrichLastData.meta_source,
-      );
-    }
-
-    // Save year if returned by enrich
-    if (enrichLastData && enrichLastData.year) {
-      enrichBannerTrack.year = enrichLastData.year;
-      saveTrackField(enrichBannerTrack, "year", enrichLastData.year);
-    }
-
-    // Update dropdown in table if visible
-    if (currentSource === "unsorted") {
-      var idx = filteredTracks.indexOf(enrichBannerTrack);
-      if (idx >= 0) {
-        var cols = COLUMNS.unsorted;
-        var genreColIdx = cols.findIndex(function (c) {
-          return c.key === "genre";
-        });
-        var idxRow = getDataRow(idx);
-        if (genreColIdx >= 0 && idxRow) {
-          var cell = idxRow.children[genreColIdx];
-          var sel = cell.querySelector("select");
-          if (sel) sel.value = mainGenre;
-        }
-        // Update year cell if visible
-        var yearColIdx = cols.findIndex(function (c) {
-          return c.key === "year";
-        });
-        if (enrichLastData && enrichLastData.year && yearColIdx >= 0 && idxRow) {
-          var yearCell = idxRow.children[yearColIdx];
-          if (yearCell) yearCell.textContent = enrichLastData.year;
-        }
-      }
-    }
-
-    // Refresh genre sources panel (SC, BP, etc. at bottom)
-    updateGenreSources(enrichBannerTrack);
-
-    var toastMsg = "Genre: " + mainGenre;
-    if (enrichLastData && enrichLastData.year) {
-      toastMsg += " | Year: " + enrichLastData.year;
-    }
-    showToast(toastMsg, "");
-    hideEnrichBanner();
-  });
-
-  // Dismiss enrich banner
-  enrichBannerDismiss.addEventListener("click", function () {
-    hideEnrichBanner();
-  });
-
-  // Swap button in enrich banner
-  enrichBannerSwap.addEventListener("click", function () {
-    if (!enrichBannerTrack) return;
-    requestSwapArtistTitle(enrichBannerTrack);
-    hideEnrichBanner();
-  });
 
   function requestSwapArtistTitle(track) {
     if (!track) return;
@@ -3904,26 +3711,18 @@
       case "KeyE":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          if (e.shiftKey) {
-            // Shift+E: batch enrich selected tracks
-            if (currentSource === "unsorted" && !ghostReview.locked) {
-              var batchTids = [];
-              if (selectedSet.size > 0) {
-                filteredTracks.forEach(function (t) {
-                  var tid2 = t.track_id || t.file_hash || "";
-                  if (selectedSet.has(tid2)) batchTids.push(tid2);
-                });
-              } else if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
-                var t2 = filteredTracks[currentIndex];
-                batchTids.push(t2.track_id || t2.file_hash || "");
-              }
-              startBatchEnrich(batchTids);
+          if (currentSource === "unsorted" && !ghostReview.locked) {
+            var batchTids = [];
+            if (selectedSet.size > 0) {
+              filteredTracks.forEach(function (t) {
+                var tid2 = t.track_id || t.file_hash || "";
+                if (selectedSet.has(tid2)) batchTids.push(tid2);
+              });
+            } else if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+              var t2 = filteredTracks[currentIndex];
+              batchTids.push(t2.track_id || t2.file_hash || "");
             }
-          } else {
-            // e: single-track enrich (existing behaviour)
-            if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
-              if (!ghostReview.locked) requestEnrichTrack(filteredTracks[currentIndex]);
-            }
+            if (batchTids.length > 0) startBatchEnrich(batchTids);
           }
         }
         break;
