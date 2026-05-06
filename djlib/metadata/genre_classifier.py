@@ -114,9 +114,19 @@ def _normalize_release_year(value: Any) -> str:
 
 
 def _year_supported_by_web_context(year: str, web_search_context: str) -> bool:
-    """Accept a year only when it appears in the fetched web-search context."""
-    if not year or not web_search_context or web_search_context.startswith("(No web search"):
+    """Accept a year from the model when it is consistent with web-search context.
+
+    Logic:
+    - WS unavailable (empty / "(No web search…)"): trust model training knowledge —
+      we cannot verify but also cannot contradict, so accept.
+    - WS available: require the year to appear literally in the snippets —
+      if WS data was fetched but doesn't mention the year, the model is likely
+      hallucinating against the evidence it was given.
+    """
+    if not year:
         return False
+    if not web_search_context or web_search_context.startswith("(No web search"):
+        return True  # no WS data → trust model
     return bool(re.search(rf"\b{re.escape(year)}\b", web_search_context))
 
 

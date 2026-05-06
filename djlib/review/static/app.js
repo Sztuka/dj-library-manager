@@ -967,7 +967,7 @@
         }
         var confPct = Math.round(maxConf * 100);
         var confCls = maxConf >= 0.85 ? "ghost-conf-high" : maxConf >= 0.6 ? "ghost-conf-mid" : "ghost-conf-low";
-        td.innerHTML = '<span class="ghost-lead">↳</span> <span class="ghost-conf ' + confCls + '">' + confPct + '%</span>';
+        td.innerHTML = '<div class="ghost-inner"><span class="ghost-lead">↳</span> <span class="ghost-conf ' + confCls + '">' + confPct + '%</span></div>';
         tr.appendChild(td);
         return;
       }
@@ -1015,7 +1015,7 @@
       var srcSpan = ghostSourceBadge(proposal.source);
       var wasSpan = isOverwrite ? '<span class="ghost-was">(was: ' + escapeHtml(proposal.was) + ')</span>' : (isSame ? '<span class="ghost-was dim">=</span>' : "");
 
-      td.innerHTML = toggleSpan + " " + valSpan + " " + srcSpan + " " + wasSpan;
+      td.innerHTML = '<div class="ghost-inner">' + toggleSpan + " " + valSpan + " " + srcSpan + " " + wasSpan + '</div>';
       td.querySelector(".ghost-toggle").addEventListener("click", function (e) {
         e.stopPropagation();
         toggleGhostCell(tid, field);
