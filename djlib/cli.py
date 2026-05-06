@@ -263,6 +263,16 @@ def cmd_scan(args: argparse.Namespace) -> None:
     # Also track known file paths to prevent duplicates when tags change
     known_paths = {r.get("file_path", "") for r in library_rows if r.get("file_path")}
     known_paths.update({r.get("file_path", "") for r in staging_rows if r.get("file_path")})
+
+    # Map fingerprint → winner row (mutable dict ref) so we can record duplicate
+    # paths on the winner's row when skipping acoustic duplicates.
+    # Only staging rows are tracked — library rows are already applied and
+    # their duplicate_paths field cannot be updated here.
+    fp_to_row: Dict[str, Dict[str, str]] = {
+        r["fingerprint"]: r
+        for r in staging_rows
+        if r.get("fingerprint")
+    }
     
     # Get current Rekordbox track IDs for auto-tagging
     from djlib.external_sync import get_rekordbox_track_ids, get_traktor_track_ids
@@ -378,6 +388,18 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
         # Skip acoustic duplicates (same fingerprint = same audio, different path/quality)
         if is_dup:
+            # Record this path on the winner's row so cmd_apply can merge cues later
+            winner = fp_to_row.get(fp)
+            if winner is not None:
+                try:
+                    existing = winner.get("duplicate_paths") or "[]"
+                    dup_list: list = json.loads(existing) if existing.strip() else []
+                    dup_str = str(p)
+                    if dup_str not in dup_list:
+                        dup_list.append(dup_str)
+                        winner["duplicate_paths"] = json.dumps(dup_list)
+                except Exception:
+                    pass
             print(f"   ⊘ [DUPLICATE] {p.name} — fingerprint already known, skipping")
             processed += 1
             continue
@@ -471,6 +493,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "pop_playcount": _safe_str(sugg.get("pop_playcount")),
             "pop_listeners": _safe_str(sugg.get("pop_listeners")),
             "meta_source": _safe_str(sugg.get("meta_source")),
+            "duplicate_paths": "",
             "done": "FALSE",
         }
         for key in [
@@ -491,6 +514,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
         known_hashes.add(fhash)
         if fp:
             known_fps.add(fp)
+            fp_to_row[fp] = rec  # allow duplicates later in this scan to find winner
         added += 1
         processed += 1
         
@@ -1430,7 +1454,45 @@ def cmd_apply(args: argparse.Namespace) -> None:
         shutil.move(str(src), str(dest_path))
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
-        
+
+        # ── Merge cue points from acoustic duplicates into winner ──────────────
+        # Only for library destination; winner's pre-move path (str(src)) is still
+        # in the Rekordbox/Traktor DB at this point.
+        if destination == "library":
+            from djlib.cue_merge import parse_duplicate_paths, merge_and_remove_duplicate
+            _dup_paths = parse_duplicate_paths(r.get("duplicate_paths") or "")
+            if _dup_paths:
+                _rb_running = False
+                try:
+                    from pyrekordbox.utils import get_rekordbox_pid
+                    _rb_running = bool(get_rekordbox_pid())
+                except Exception:
+                    pass
+                if _rb_running:
+                    print(f"   ⚠️  Rekordbox is running — cue merge skipped for duplicates. "
+                          f"Close Rekordbox and re-run apply to merge.")
+                else:
+                    _tk_path = _get_traktor_collection_path()
+                    for _dup in _dup_paths:
+                        print(f"   🔀 Merging cues from duplicate: {Path(_dup).name}")
+                        try:
+                            _mr = merge_and_remove_duplicate(
+                                winner_path=str(src),
+                                dup_path=_dup,
+                                traktor_collection_path=_tk_path,
+                                delete_file=True,
+                            )
+                            for _err in _mr.get("errors", []):
+                                print(f"   ⚠️  {_err}")
+                            _flags = [
+                                f"rb={'✓' if _mr['rb_merged'] else '✗'}",
+                                f"tk={'✓' if _mr['tk_merged'] else '✗'}",
+                                f"del={'✓' if _mr['file_deleted'] else '✗'}",
+                            ]
+                            print(f"   ✅ Cue merge: {' '.join(_flags)}")
+                        except Exception as _e:
+                            print(f"   ⚠️  Cue merge failed for {Path(_dup).name}: {_e} — continuing")
+
         # ── Update library_index so next files in this batch are caught ──
         if destination in ("library", "archive"):
             _mk = normalize_for_match(artist, title)

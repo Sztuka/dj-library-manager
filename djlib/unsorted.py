@@ -26,6 +26,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("fingerprint", hidden=True, width=26, locked=True),
     ColumnSpec("added_date", hidden=True, width=18, locked=True),
     ColumnSpec("is_duplicate", hidden=True, width=12, locked=True),
+    ColumnSpec("duplicate_paths", hidden=True, width=60, locked=True),
     ColumnSpec("tag_artist_original", width=26, locked=True),  # Visible
     ColumnSpec("tag_title_original", width=26, locked=True),   # Visible
     ColumnSpec("tag_genre_original", width=22, locked=True),   # Visible
