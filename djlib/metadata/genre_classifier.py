@@ -117,20 +117,16 @@ def _normalize_release_year(value: Any) -> str:
 
 
 def _year_supported_by_web_context(year: str, web_search_context: str) -> bool:
-    """Accept a year from the model when it is consistent with web-search context.
+    """Accept a year from the model.
 
-    Logic:
-    - WS unavailable (empty / "(No web search…)"): trust model training knowledge —
-      we cannot verify but also cannot contradict, so accept.
-    - WS available: require the year to appear literally in the snippets —
-      if WS data was fetched but doesn't mention the year, the model is likely
-      hallucinating against the evidence it was given.
+    Validation is intentionally lax: we let the model decide based on its
+    instructions in the prompt (use WS evidence first, fall back to training
+    knowledge). Confidence calibration happens at the call site (e.g. batch
+    enrichment caps confidence to 0.6 for years not backed by WS or MB).
+
+    The only hard rule kept here is: empty year string → False.
     """
-    if not year:
-        return False
-    if not web_search_context or web_search_context.startswith("(No web search"):
-        return True  # no WS data → trust model
-    return bool(re.search(rf"\b{re.escape(year)}\b", web_search_context))
+    return bool(year)
 
 
 def _build_prompt(
@@ -248,13 +244,16 @@ def _build_prompt(
         f"Reggae, Punk, Indie Pop, Synthpop, etc.). For these genres, artist identity is the "
         f"primary signal. Do NOT let BPM override artist knowledge — a hip-hop track at 170 BPM "
         f"is still Hip-Hop (BPM detector may have measured double-time).\n\n"
-        f"Also extract the release year for THIS exact track/version. "
-        f"Prefer web search results if available. "
-        f"If no web results are available, use your training knowledge — return a year if you "
-        f"recognize this track or artist and have a reasonable estimate; return null only if "
-        f"genuinely unsure. "
-        f"For remixes/edits, use the remix/edit release year, NOT the original song's year. "
-        f"If the year is truly ambiguous, return null.\n\n"
+        f"Also extract the release year for THIS exact track/version, in this priority order:\n"
+        f"  (a) If web search results explicitly mention a year for THIS track → use that year.\n"
+        f"  (b) Otherwise, if you recognize this track/artist from training knowledge and have "
+        f"a reasonable estimate of the release year → return that year. Web search snippets "
+        f"often omit the release year even when the track is found, so absence of a year in "
+        f"snippets does NOT mean you should return null — fall back to training knowledge.\n"
+        f"  (c) Other years mentioned in web snippets (compilation dates, 'Top Artists 2023' "
+        f"lists, unrelated releases) are NOT this track's year — ignore them.\n"
+        f"  (d) Return null only if you genuinely have no estimate.\n"
+        f"For remixes/edits, use the remix/edit release year, NOT the original song's year.\n\n"
         f"If signals are weak or conflicting, choose the broadest matching genre family "
         f"and set confidence below 0.5.\n\n"
         f"Respond with JSON: {{\"genre\": \"...\", \"confidence\": 0.0-1.0, "

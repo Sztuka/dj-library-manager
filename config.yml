@@ -26,6 +26,11 @@ musicbrainz:
   soundcloud_client_id: ""
   youtube_api_key: ""
 
+# Optional Discogs personal access token — bumps rate limit from 25 to 60 req/min
+# Anonymous works fine for low-volume use. Generate at:
+# https://www.discogs.com/settings/developers
+discogs_token: ""
+
 preferences:
   auto_format_new_labels: false
   label_style: as_is

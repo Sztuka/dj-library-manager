@@ -462,6 +462,7 @@ _BATCH_JOBS: Dict[str, Dict[str, Any]] = {}
 _BATCH_JOBS_LOCK = threading.Lock()
 _BATCH_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="enrich-batch")
 _MB_SEMAPHORE = threading.Semaphore(1)  # MusicBrainz: max 1 concurrent request (1 req/s policy)
+_DISCOGS_SEMAPHORE = threading.Semaphore(1)  # Discogs: 25 req/min anon → ~2.5s gap is safe
 
 _SEARXNG_COMPOSE = Path(__file__).resolve().parents[2] / "docker" / "docker-compose.searxng.yml"
 _SEARXNG_STARTUP_LOCK = threading.Lock()  # Prevent concurrent Docker startup races
@@ -1857,7 +1858,23 @@ def _enrich_one_for_batch(
                 finally:
                     time.sleep(1.1)  # ensure 1 req/s across all workers
 
-        # 2. nano classifier (already called above).
+        # 2. Discogs — strong for electronic/dance music, skip for remixes
+        # Rate-limited via _DISCOGS_SEMAPHORE: 25 req/min anon → 2.5s gap
+        if not year_val and not version:
+            with _DISCOGS_SEMAPHORE:
+                try:
+                    from djlib.metadata import discogs
+                    dc_year = discogs.get_release_year(artist, title)
+                    if dc_year:
+                        year_val = dc_year
+                        year_src = "discogs"
+                        year_conf = 0.88
+                except Exception as exc:
+                    _log.debug("Discogs year lookup failed for %s: %s", tid, exc)
+                finally:
+                    time.sleep(2.5)  # ensure 25 req/min across all workers
+
+        # 3. nano classifier (already called above).
         # When SearXNG was unavailable, the classifier used training knowledge —
         # cap confidence lower to signal uncertainty vs. web-backed results.
         if not year_val:
@@ -1868,7 +1885,7 @@ def _enrich_one_for_batch(
                 year_src = f"ai_classifier:{cls.get('source', 'nano+WS+LF')}"
                 year_conf = 0.8 if ws_was_used else 0.6
 
-        # 3. Last.fm fallback — skip for remixes (unreliable for remix release dates)
+        # 4. Last.fm fallback — skip for remixes (unreliable for remix release dates)
         if not year_val and not version:
             try:
                 from djlib.metadata import lastfm

@@ -30,7 +30,10 @@ def test_classify_genre_returns_validated_year_from_web_search():
     assert result["year_evidence"] == "Discogs snippet says Released: 2024"
 
 
-def test_classify_genre_discards_year_missing_from_web_context():
+def test_classify_genre_keeps_year_when_web_snippets_lack_year():
+    """Web snippets often omit release year — we trust the model's training-knowledge
+    year as a fallback rather than discarding it. Confidence calibration happens
+    at the call site (batch enrichment caps conf to 0.6 for non-WS-backed years)."""
     ws_ctx = """
 [DISCOGS] Test Artist - Test Title
   URL: https://www.discogs.com/release/123
@@ -46,10 +49,10 @@ def test_classify_genre_discards_year_missing_from_web_context():
              "confidence": 0.6,
              "reasoning": "Weak signals",
              "year": "2024",
-             "year_evidence": "Model guessed 2024",
+             "year_evidence": "Training knowledge: artist's debut era",
          }):
         result = gc.classify_genre("Test Artist", "Test Title")
 
     assert result["genre"] == "House"
-    assert result["year"] == ""
-    assert result["year_evidence"] == ""
+    assert result["year"] == "2024"
+    assert result["year_evidence"] == "Training knowledge: artist's debut era"

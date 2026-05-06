@@ -498,6 +498,29 @@ def get_lastfm_api_key() -> str:
             pass
     return ""
 
+# Discogs (optional token — anonymous works at 25 req/min, with token 60 req/min)
+def get_discogs_token() -> str:
+    env = os.getenv("DJLIB_DISCOGS_TOKEN") or os.getenv("DISCOGS_TOKEN")
+    if env:
+        return env.strip()
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("discogs_token", "") or "").strip()
+        if val:
+            return val
+    repo_cfg = _REPO / "config.yml"
+    if repo_cfg.exists():
+        try:
+            d = _read_yaml(repo_cfg)
+            val = str(d.get("discogs_token", "") or "").strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    return ""
+
+
 # SoundCloud (public, client_id-based)
 def get_soundcloud_client_id() -> str:
     # ENV first
