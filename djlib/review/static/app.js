@@ -1289,7 +1289,15 @@
           ghostReview.proposals[tid] = proposals;
           ghostInitTicked(tid, proposals);
         });
-        // Ghost rows will be rendered after table is built (deferred in renderTable)
+        // Table is already rendered at this point (hydration is async) — insert ghost rows now
+        tids.forEach(function (tid) {
+          for (var i = 0; i < filteredTracks.length; i++) {
+            if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+              renderGhostRow(filteredTracks[i], ghostReview.proposals[tid]);
+              break;
+            }
+          }
+        });
         updateReviewToolbar();
       });
   }
