@@ -2156,7 +2156,7 @@ def api_dedup_staging():
     """
     import json as _json
     data = request.get_json(silent=True) or {}
-    dry_run = bool(data.get("dry_run", False))
+    dry_run = bool(data.get("dry_run", False)) or request.args.get("dry_run") == "true"
 
     rows = _load_unsorted()
     total_before = len(rows)

@@ -160,6 +160,36 @@
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Dedup staging (dry-run, UI stopped)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dedup-staging --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Dedup staging (write, UI stopped)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dedup-staging",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Dedup staging (dry-run, UI running)",
+      "type": "shell",
+      "command": "curl -s -X POST http://localhost:8899/api/dedup-staging?dry_run=true | python3 -m json.tool",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Dedup staging (write, UI running)",
+      "type": "shell",
+      "command": "curl -s -X POST http://localhost:8899/api/dedup-staging | python3 -m json.tool",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }
