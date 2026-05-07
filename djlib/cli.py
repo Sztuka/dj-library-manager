@@ -579,6 +579,79 @@ def cmd_scan(args: argparse.Namespace) -> None:
 # Legacy bucketing system (CLUB/OPEN FORMAT) has been replaced with LIBRARY/Artist/Album structure.
 # Auto-bucketing logic is no longer relevant. Use manual genre selection in unsorted.csv instead.
 
+
+def cmd_dedup_staging(args: argparse.Namespace) -> None:
+    """Deduplicate unsorted.csv by acoustic fingerprint / file hash.
+
+    Scans existing unsorted.csv rows for duplicates (same fingerprint or same
+    file hash), keeps the first occurrence as the winner, records the others
+    in the winner's duplicate_paths field, and removes the duplicate rows.
+    Run this once after upgrading to fix entries scanned before duplicate
+    tracking was added.
+
+    Use --dry-run to preview without writing.
+    """
+    dry_run = getattr(args, "dry_run", False)
+    rows = _load_unsorted()
+    if not rows:
+        print("unsorted.csv is empty.")
+        return
+
+    seen_fps: Dict[str, int] = {}   # fingerprint -> index in `rows`
+    seen_hashes: Dict[str, int] = {}  # file_hash -> index in `rows`
+    to_remove: List[int] = []
+
+    def _add_dup_path(winner_row: Dict[str, str], dup_path: str) -> None:
+        existing = winner_row.get("duplicate_paths") or "[]"
+        try:
+            dup_list: list = json.loads(existing) if existing.strip() else []
+        except Exception:
+            dup_list = []
+        if dup_path and dup_path not in dup_list:
+            dup_list.append(dup_path)
+            winner_row["duplicate_paths"] = json.dumps(dup_list)
+
+    for i, row in enumerate(rows):
+        fp = row.get("fingerprint") or ""
+        fhash = row.get("file_hash") or ""
+        fp_dup = fp and fp in seen_fps
+        hash_dup = not fp_dup and fhash and fhash in seen_hashes
+
+        if fp_dup:
+            winner_idx = seen_fps[fp]
+            dup_file = row.get("file_path") or f"row#{i}"
+            _add_dup_path(rows[winner_idx], dup_file)
+            to_remove.append(i)
+            print(f"   ⊘ {Path(dup_file).name} → duplicate of {Path(rows[winner_idx].get('file_path', '')).name}")
+        elif hash_dup:
+            winner_idx = seen_hashes[fhash]
+            dup_file = row.get("file_path") or f"row#{i}"
+            _add_dup_path(rows[winner_idx], dup_file)
+            to_remove.append(i)
+            print(f"   ⊘ {Path(dup_file).name} → duplicate of {Path(rows[winner_idx].get('file_path', '')).name}")
+        else:
+            if fp:
+                seen_fps[fp] = i
+            if fhash:
+                seen_hashes[fhash] = i
+
+    if not to_remove:
+        print(f"No duplicates found in unsorted.csv ({len(rows)} rows checked).")
+        return
+
+    print(f"\nFound {len(to_remove)} duplicate(s) in {len(rows)} rows.")
+    if dry_run:
+        print("Dry-run mode — no changes written.")
+        return
+
+    for i in reversed(to_remove):
+        rows.pop(i)
+
+    _save_unsorted(rows)
+    print(f"Removed {len(to_remove)} duplicate row(s). unsorted.csv now has {len(rows)} rows.")
+    print("Run 'apply' to merge cue points and delete duplicate files.")
+
+
 def cmd_enrich_online(args: argparse.Namespace) -> None:
     """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm + WS classifier.
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
@@ -3809,6 +3882,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Require Rekordbox DB confirmation (reject tag-only files from Traktor/Serato)"
     )
     scan_parser.set_defaults(func=cmd_scan)
+
+    dedup_parser = sp.add_parser(
+        "dedup-staging",
+        help="Deduplicate unsorted.csv: merge duplicate rows scanned before automatic dedup was added",
+    )
+    dedup_parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    dedup_parser.set_defaults(func=cmd_dedup_staging)
 
     # REMOVED: auto-decide parser (legacy bucketing system)
 
