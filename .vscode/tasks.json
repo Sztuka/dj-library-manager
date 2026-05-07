@@ -180,7 +180,7 @@
     {
       "label": "TOOLS — Dedup staging (dry-run, UI running)",
       "type": "shell",
-      "command": "curl -s -X POST http://localhost:8899/api/dedup-staging?dry_run=true | python3 -m json.tool",
+      "command": "curl -s -X POST \"http://localhost:8899/api/dedup-staging?dry_run=true\" | python3 -m json.tool",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
