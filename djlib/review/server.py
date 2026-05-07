@@ -2140,6 +2140,78 @@ def api_apply_enrichment():
     return jsonify({"ok": True, "applied": applied_count})
 
 
+@app.route("/api/dedup-staging", methods=["POST"])
+def api_dedup_staging():
+    """Deduplicate unsorted.csv by fingerprint / file hash.
+
+    Safe to call while the UI is running — executes within Flask's request
+    cycle, so no external process races against the file write.
+
+    Request body (JSON, optional):
+        { "dry_run": true }   # default false
+
+    Response:
+        { "ok": true, "removed": N, "total_before": N, "total_after": N,
+          "duplicates": [{"winner": "...", "duplicate": "..."}] }
+    """
+    import json as _json
+    data = request.get_json(silent=True) or {}
+    dry_run = bool(data.get("dry_run", False))
+
+    rows = _load_unsorted()
+    total_before = len(rows)
+
+    seen_fps: Dict[str, int] = {}
+    seen_hashes: Dict[str, int] = {}
+    to_remove: List[int] = []
+    report: List[Dict[str, str]] = []
+
+    def _add_dup_path(winner_row: Dict[str, str], dup_path: str) -> None:
+        existing = winner_row.get("duplicate_paths") or "[]"
+        try:
+            dup_list: list = _json.loads(existing) if existing.strip() else []
+        except Exception:
+            dup_list = []
+        if dup_path and dup_path not in dup_list:
+            dup_list.append(dup_path)
+            winner_row["duplicate_paths"] = _json.dumps(dup_list)
+
+    for i, row in enumerate(rows):
+        fp = row.get("fingerprint") or ""
+        fhash = row.get("file_hash") or ""
+        fp_dup = fp and fp in seen_fps
+        hash_dup = (not fp_dup) and bool(fhash) and fhash in seen_hashes
+
+        if fp_dup or hash_dup:
+            winner_idx = seen_fps[fp] if fp_dup else seen_hashes[fhash]
+            dup_path = row.get("file_path") or ""
+            _add_dup_path(rows[winner_idx], dup_path)
+            to_remove.append(i)
+            report.append({
+                "winner": rows[winner_idx].get("file_path") or "",
+                "duplicate": dup_path,
+            })
+        else:
+            if fp:
+                seen_fps[fp] = i
+            if fhash:
+                seen_hashes[fhash] = i
+
+    if not dry_run and to_remove:
+        for i in reversed(to_remove):
+            rows.pop(i)
+        _save_unsorted(rows)
+
+    return jsonify({
+        "ok": True,
+        "dry_run": dry_run,
+        "removed": len(to_remove),
+        "total_before": total_before,
+        "total_after": total_before - len(to_remove),
+        "duplicates": report,
+    })
+
+
 # ── Server entry point ───────────────────────────────────────────────────────
 
 def run_server(
