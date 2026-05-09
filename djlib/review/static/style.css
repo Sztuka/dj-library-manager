@@ -111,13 +111,19 @@ body {
   font-size: 11px;
 }
 
-#stats-bar .stat-accept {
+#stats-bar .stat-lib {
   color: var(--green);
 }
 #stats-bar .stat-reject {
   color: var(--red);
 }
-#stats-bar .stat-review {
+#stats-bar .stat-archive {
+  color: #b0a0e0;
+}
+#stats-bar .stat-mixes {
+  color: #e0b060;
+}
+#stats-bar .stat-later {
   color: var(--yellow);
 }
 #stats-bar .stat-undecided {
@@ -243,22 +249,12 @@ select:focus {
   width: 140px;
 }
 
-.batch-status-select {
+.batch-disposition-select {
   width: 90px;
   cursor: pointer;
 }
 
-.batch-dest-select {
-  width: 78px;
-  cursor: pointer;
-}
-
 .batch-rating-select {
-  width: 82px;
-  cursor: pointer;
-}
-
-.batch-done-select {
   width: 82px;
   cursor: pointer;
 }
@@ -401,25 +397,33 @@ tbody tr.selected.active {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-tbody tr.status-accept {
+tbody tr.disp-library {
   background: var(--green-bg);
 }
-tbody tr.status-accept.active {
+tbody tr.disp-library.active {
   background: var(--bg-active);
   box-shadow: inset 3px 0 0 var(--green);
 }
 
-tbody tr.status-reject {
+tbody tr.disp-reject {
   opacity: 0.45;
 }
-tbody tr.status-reject.active {
+tbody tr.disp-reject.active {
   opacity: 1;
   background: var(--bg-active);
   box-shadow: inset 3px 0 0 var(--red);
 }
 
-tbody tr.is-done:not(.active) {
-  opacity: 0.3;
+tbody tr.disp-archive:not(.active) {
+  opacity: 0.6;
+}
+
+tbody tr.disp-mixes {
+  background: rgba(224, 176, 96, 0.08);
+}
+
+tbody tr.disp-later:not(.active) {
+  opacity: 0.5;
 }
 
 .col-index {
@@ -437,6 +441,23 @@ tbody tr.is-done:not(.active) {
   text-align: center;
 }
 
+.col-folder {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+}
+
+.col-group {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90px;
+}
+
 /* ── AI columns (Library Fix view) ─────────────────────────── */
 .col-ai {
   color: #7eb8da;
@@ -450,22 +471,6 @@ thead .col-ai {
   letter-spacing: 0.3px;
 }
 
-.col-status {
-  font-weight: 600;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.col-status.accept {
-  color: var(--green);
-}
-.col-status.reject {
-  color: var(--red);
-}
-.col-status.review {
-  color: var(--yellow);
-}
 
 /* ── Inline controls ───────────────────────────────────────── */
 
@@ -488,6 +493,14 @@ thead .col-ai {
 .inline-select:focus {
   border-color: var(--accent);
 }
+
+/* disposition select coloring */
+.disp-sel-library { color: var(--green); }
+.disp-sel-reject  { color: var(--red); }
+.disp-sel-archive { color: #b0a0e0; }
+.disp-sel-mixes   { color: #e0b060; }
+.disp-sel-later   { color: var(--yellow); }
+.disp-sel-empty   { color: var(--text-dim); }
 
 /* editable cells */
 .cell-editable {

@@ -23,7 +23,7 @@ from djlib.filename import build_final_filename, extension_for, split_title_and_
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 from djlib.ml.export_dataset import export_training_dataset
 from djlib.tag_cleaner import clean_tags
-from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, is_done
+from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, EXPORT_DISPOSITIONS
 from djlib.external_sync import (
     import_rekordbox_snapshot, 
     import_traktor_snapshot,
@@ -494,7 +494,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "pop_listeners": _safe_str(sugg.get("pop_listeners")),
             "meta_source": _safe_str(sugg.get("meta_source")),
             "duplicate_paths": "",
-            "done": "FALSE",
+            "disposition": "",
         }
         for key in [
             "artist_suggest",
@@ -659,7 +659,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     """
     rows = _load_unsorted()
     force_genres = bool(getattr(args, "force_genres", False))
-    todo = [r for r in rows if not is_done(r.get("done"))]
+    todo = [r for r in rows if (r.get("disposition") or "").lower().strip() not in EXPORT_DISPOSITIONS]
     total = len(todo)
     processed = 0
     changed = 0
@@ -744,7 +744,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     _flush_status()
 
     for r in rows:
-        if is_done(r.get("done")):
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS:
             continue
         p = Path(r.get("file_path",""))
         online = enrich_online_for_row(p, r)
@@ -1045,7 +1045,7 @@ def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
     rows = _load_unsorted()
     targets = []
     for r in rows:
-        if is_done(r.get("done")):
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS:
             continue
         fp = (r.get("fingerprint") or "").strip()
         if fp:
@@ -1136,7 +1136,7 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
 
     updated = 0
     for r in rows:
-        if is_done(r.get("done")):
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS:
             continue
         fp = (r.get("file_path") or "").strip()
         if not fp:
@@ -1197,9 +1197,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
         pass  # pyrekordbox not available
     
     rows = _load_unsorted()
-    ready = [r for r in rows if is_done(r.get("done"))]
+    ready = [r for r in rows if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS]
     if not ready:
-        print("Brak wierszy z oznaczeniem done=TRUE.")
+        print("Brak wierszy z ustawionym disposition (library/reject/archive/mixes).")
         return
     library_rows = load_records(CSV_PATH)
     archive_rows = load_records(ARCHIVE_CSV_PATH)  # Load archive for duplicate checking
@@ -1294,7 +1294,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     for r in ready:
         # Determine destination path (new model or legacy fallback)
-        destination = (r.get("destination") or "").lower().strip()
+        destination = (r.get("disposition") or "").lower().strip()
         target_subfolder = (r.get("target_subfolder") or "").strip()
         
         src = Path(r.get("file_path") or "")
@@ -1398,11 +1398,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
         
         artist = r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or ""
         title = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
-        
+        version = r.get("version_info") or r.get("version_suggest") or ""
+
         # Check for duplicates in library/archive when exporting
         if destination in ("library", "archive"):
             _load_library_index()  # Lazy-load on first library/archive export
-            match_key = normalize_for_match(artist, title)
+            # Include version_info in the match key so Original Mix and Extended Mix
+            # are not treated as the same track within a single export batch.
+            match_key = normalize_for_match(artist, f"{title} {version}".strip())
             
             # ── Intra-batch duplicate check ──
             if match_key in _batch_match_keys:
@@ -1485,6 +1488,13 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 if existing_hash == new_hash:
                     _skip("IDENTICAL_FILE_EXISTS",
                           f"{dest_path.name}  (exact same file already at destination)")
+                    # File already at destination from a previous interrupted run —
+                    # clean up the source and mark as processed so the row is removed.
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
+                    processed_ids.add(r.get("track_id", ""))
                     continue
                 
                 # Different file, same name — ask user
@@ -1568,7 +1578,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
         # ── Update library_index so next files in this batch are caught ──
         if destination in ("library", "archive"):
-            _mk = normalize_for_match(artist, title)
+            _mk = normalize_for_match(artist, f"{title} {version}".strip())
             new_info = get_audio_info(dest_path)
             if new_info:
                 library_index[_mk] = new_info
@@ -1778,7 +1788,12 @@ def cmd_apply(args: argparse.Namespace) -> None:
             
             # Album intentionally left empty - user manages their own artwork/album organization
             updates["album"] = ""
-            
+
+            # occasion_tags → Grouping tag (TIT1/©grp) — readable in Rekordbox and Traktor
+            occasion = (r.get("occasion_tags") or "").strip()
+            if occasion:
+                updates["grouping"] = occasion
+
             if updates:
                 write_tags(dest_path, updates)
                 tags_written += 1
@@ -1790,7 +1805,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 tags_clean_errors += 1
 
     if args.dry_run:
-        print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (oznaczone done=TRUE).")
+        print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (disposition: library/reject/archive/mixes).")
         return
 
     if log_rows:
@@ -1813,7 +1828,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         print(f"📦 Zapisano {len(archive_rows)} rekordów do library-archive.csv")
     
     # Save rejected registry (always — append-only, even if no new rejects this run)
-    _new_rejects = len([r for r in ready if (r.get("destination") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
+    _new_rejects = len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
     if _new_rejects > 0:
         save_rejected(REJECTED_CSV_PATH, rejected_registry)
         print(f"🚫 Zapisano {len(rejected_registry)} rekordów do library-rejected.csv (+{_new_rejects} nowych)")
@@ -1822,9 +1837,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
     rejected_count = len(rejected_rekordbox_ids) + len(rejected_traktor_ids)
     # Use max of rekordbox/traktor IDs for count since track may have both or one
     rejected_tracks = max(len(rejected_rekordbox_ids), len(rejected_traktor_ids), 
-                         len([r for r in ready if (r.get("destination") or "").lower().strip() == "reject"]))
+                         len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject"]))
     archived_tracks = max(len(archived_rekordbox_ids), len(archived_traktor_ids),
-                         len([r for r in ready if (r.get("destination") or "").lower().strip() == "archive"]))
+                         len([r for r in ready if (r.get("disposition") or "").lower().strip() == "archive"]))
     library_added = len(processed_ids) - rejected_tracks - archived_tracks
     print(f"Przeniesiono: {library_added} do biblioteki, {archived_tracks} do archiwum, {rejected_tracks} do odrzuconych.")
     print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")

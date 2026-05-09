@@ -233,12 +233,13 @@ def write_tags(path: Path, updates: Dict[str, str]) -> None:
     # Mapuj nasze klucze na mutagen easy tags
     mapping = {
         "artist": "artist",
-        "title": "title", 
+        "title": "title",
         "bpm": "bpm",
         "genre": "genre",
         "comment": "comment",
         "year": "date",  # Use 'date' for year in easy mode
         "album": "album",
+        "grouping": "grouping",  # TIT1 (ID3) / ©grp (M4A) — for occasion/collection tags
     }
     
     for our_key, mutagen_key in mapping.items():

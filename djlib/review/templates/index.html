@@ -26,17 +26,14 @@
           placeholder="Search artist, title, genre…"
           autocomplete="off"
         />
-        <select id="filter-status">
+        <select id="filter-disposition">
           <option value="">All</option>
-          <option value="review">Review</option>
-          <option value="accept">Accepted</option>
-          <option value="reject">Rejected</option>
+          <option value="library">Library</option>
+          <option value="reject">Reject</option>
+          <option value="archive">Archive</option>
+          <option value="mixes">Mixes</option>
+          <option value="later">Later</option>
           <option value="undecided">Undecided</option>
-        </select>
-        <select id="filter-done">
-          <option value="">Done: All</option>
-          <option value="FALSE">Not done</option>
-          <option value="TRUE">Done</option>
         </select>
         <!-- Library-specific filters (hidden when not on library) -->
         <select id="filter-bpm" style="display: none">
@@ -79,20 +76,15 @@
       </select>
       <input type="text" id="batch-year" class="batch-input batch-year-input" placeholder="Year" maxlength="4" pattern="\d{4}" inputmode="numeric" title="4-digit year (1900–2099)" />
       <input type="text" id="batch-artist" class="batch-input batch-artist-input" placeholder="Artist…" />
+      <input type="text" id="batch-group" class="batch-input batch-group-input" placeholder="Group…" title="Collection tag (written to Grouping in Rekordbox/Traktor)" />
       <div class="batch-sep"></div>
-      <select id="batch-status" class="batch-input batch-status-select">
-        <option value="">Status…</option>
-        <option value="accept">Accept</option>
-        <option value="reject">Reject</option>
-        <option value="review">Review</option>
-        <option value="undecided">Undecided</option>
-      </select>
-      <select id="batch-dest" class="batch-input batch-dest-select">
-        <option value="">Dest…</option>
+      <select id="batch-disposition" class="batch-input batch-disposition-select">
+        <option value="">Disposition…</option>
         <option value="library">Library</option>
         <option value="reject">Reject</option>
         <option value="archive">Archive</option>
         <option value="mixes">Mixes</option>
+        <option value="later">Later</option>
       </select>
       <select id="batch-rating" class="batch-input batch-rating-select">
         <option value="">Rating…</option>
@@ -102,11 +94,6 @@
         <option value="3">★★★</option>
         <option value="4">★★★★</option>
         <option value="5">★★★★★</option>
-      </select>
-      <select id="batch-done" class="batch-input batch-done-select">
-        <option value="">Done…</option>
-        <option value="TRUE">✓ Done</option>
-        <option value="FALSE">✗ Undone</option>
       </select>
       <button id="batch-apply" class="batch-apply-btn">Apply to <span id="batch-apply-count">0</span></button>
     </div>

@@ -64,8 +64,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("year", width=10),
     ColumnSpec("genre", width=24),  # User-selected genre (dropdown from genres.yml)
     ColumnSpec("genre_mapping_status", width=18, locked=True),  # "OK" or "UNMAPPED"
-    ColumnSpec("status", width=12),  # accept / reject / review
-    ColumnSpec("destination", width=14),  # library / reject / archive
+    ColumnSpec("disposition", width=14),  # library / reject / archive / mixes / later
     ColumnSpec("must_play", width=14),
     ColumnSpec("occasion_tags", width=24),
     ColumnSpec("notes", width=40),
@@ -82,16 +81,13 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("ai_confidence", hidden=True, width=10, locked=True),
     ColumnSpec("ai_reasoning", hidden=True, width=60, locked=True),
     ColumnSpec("ai_classify_date", hidden=True, width=18, locked=True),
-    # Status column (editable)
-    ColumnSpec("done", width=10),
 ]
 
 # Canonical fieldnames list for CSV I/O
 UNSORTED_FIELDNAMES: List[str] = [col.name for col in UNSORTED_COLUMNS]
 
-DONE_CHOICES = ("TRUE", "FALSE")
-STATUS_CHOICES = ("accept", "reject", "review", "")
-DESTINATION_CHOICES = ("library", "reject", "archive", "mixes", "")
+DISPOSITION_CHOICES = ("library", "reject", "archive", "mixes", "later", "")
+EXPORT_DISPOSITIONS: frozenset = frozenset({"library", "reject", "archive", "mixes"})
 
 
 def _as_str(val: object | None) -> str:
@@ -102,13 +98,34 @@ def _as_str(val: object | None) -> str:
     return str(val)
 
 
+def _migrate_disposition(row: Mapping[str, str | None]) -> str:
+    """Derive disposition from legacy status/destination/done fields (one-time migration)."""
+    dest = _as_str(row.get("destination")).lower().strip()
+    status = _as_str(row.get("status")).lower().strip()
+    done = _as_str(row.get("done")).upper().strip()
+
+    if dest in EXPORT_DISPOSITIONS:
+        return dest
+    if status == "reject":
+        return "reject"
+    if done == "TRUE":
+        return "library"
+    if status == "review":
+        return "later"
+    return ""
+
+
 def normalize_unsorted_row(row: Mapping[str, str | None]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for col in UNSORTED_COLUMNS:
         out[col.name] = _as_str(row.get(col.name, ""))
-    if not out.get("done"):
-        out["done"] = "FALSE"
-    
+
+    # Auto-migrate from legacy status/destination/done on first read
+    if not out.get("disposition"):
+        legacy = _as_str(row.get("status")) or _as_str(row.get("destination")) or _as_str(row.get("done"))
+        if legacy:
+            out["disposition"] = _migrate_disposition(row)
+
     # Compute final_filename preview
     artist = out.get("artist", "")
     title = out.get("title", "")
