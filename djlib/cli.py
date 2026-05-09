@@ -2587,19 +2587,72 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             # library, no longer returned by RB/Traktor) are kept with their
             # external IDs cleared.
             existing_rows = load_library_csv(CSV_PATH)
+
+            # Build lookup of existing cue_points by track_id so we can
+            # preserve them when the fresh sync didn't produce data (e.g.
+            # read error, or track temporarily not in RB).
+            existing_cues_by_tid: Dict[str, Dict[str, str]] = {
+                str(r.get("track_id", "")): {
+                    "rb": str(r.get("cue_points_rb", "")),
+                    "tk": str(r.get("cue_points_tk", "")),
+                }
+                for r in existing_rows
+                if r.get("track_id")
+            }
+            # Build lookup of live_location by track_id to guard the sync:
+            # tracks currently on a MacBook gig must not be overwritten with
+            # stale NAS data (NAS RB won't report accurate play_count / cues).
+            existing_live_by_tid: Dict[str, str] = {
+                str(r.get("track_id", "")): str(r.get("live_location", "") or "nas")
+                for r in existing_rows
+                if r.get("track_id")
+            }
+
             new_rows = df.fillna("").to_dict(orient="records")
             merged_rows = merge_with_existing_library(new_rows, existing_rows)
+
+            # Post-merge: handle cue_points and live_location guards.
+            live_skipped = 0
+            for row in merged_rows:
+                tid = str(row.get("track_id", ""))
+                live_loc = existing_live_by_tid.get(tid, "nas")
+
+                if live_loc and live_loc != "nas":
+                    # Track is on a MacBook for an active gig — restore the
+                    # full existing row to avoid overwriting with stale NAS data.
+                    if tid in {str(r.get("track_id", "")) for r in existing_rows}:
+                        prev = next(
+                            r for r in existing_rows
+                            if str(r.get("track_id", "")) == tid
+                        )
+                        row.update(prev)
+                        live_skipped += 1
+                    continue
+
+                # Preserve existing cue_points when the fresh sync produced
+                # no data (read error or track genuinely absent from RB/Traktor).
+                ex = existing_cues_by_tid.get(tid, {})
+                if not row.get("cue_points_rb") and ex.get("rb"):
+                    row["cue_points_rb"] = ex["rb"]
+                if not row.get("cue_points_tk") and ex.get("tk"):
+                    row["cue_points_tk"] = ex["tk"]
+
+            if live_skipped:
+                print(f"   ⚠️  Skipped DJ-software update for {live_skipped} track(s) "
+                      f"currently on an active gig (live_location != nas).")
 
             # Preserve any columns pandas produced that aren't in the
             # canonical schema yet. The canonical writer drops unknowns by
             # default; `extra_fieldnames` is the escape hatch for transient
             # legacy columns.
             extra = [c for c in df.columns if c not in _CANONICAL]
-            save_library_csv(
+            backup_path = save_library_csv(
                 CSV_PATH,
                 merged_rows,
                 extra_fieldnames=extra,
             )
+            if backup_path:
+                log.info("library.csv backed up to %s", backup_path)
             orphan_count = sum(
                 1 for r in merged_rows
                 if not r.get("rekordbox_id") and not r.get("traktor_id")

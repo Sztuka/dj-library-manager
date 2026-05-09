@@ -24,6 +24,17 @@ Field ownership (who is source-of-truth after PR2b merge-by-track_id lands):
   `color`, `duration_seconds`, `play_count`, `last_played`, `cue_count`,
   `artist`, `title`.
 
+- **djlib gig-tracking** — set by gig-prep, preserved across syncs:
+  `live_location` (`nas` | `gig:<gig_id>`), `live_path` (current MacBook
+  path while gig is active). Sync skips DJ-software update for tracks
+  where `live_location != "nas"` to avoid overwriting with stale NAS data.
+
+- **Cue points** — populated from DJ software on every sync, not djlib-owned
+  (fresh data overwrites existing on each sync):
+  `cue_points_rb` (JSON, Rekordbox cues), `cue_points_tk` (JSON, Traktor cues).
+  Format: `{"v":1,"cues":[...]}`. Empty string means "not yet synced".
+  `[]` means synced and track genuinely has no cues.
+
 - **Reserved for future PR2b/PR3** (declared so writers can start emitting
   them without further schema changes):
   `key_original` (pre-normalization form), `key_source` (where the key came
@@ -37,6 +48,7 @@ in PR2b — without it, djlib-owned fields are still wiped on every sync.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -89,6 +101,12 @@ LIBRARY_FIELDNAMES: List[str] = [
     "field_sources",    # JSON: {"genre": "ai_classifier:nano+WS+LF", "year": "manual", ...}
     # ── Duplicate tracking (scan→apply cue merge) ─────────────────────
     "duplicate_paths",  # JSON array: paths of acoustic duplicates skipped during scan
+    # ── Gig tracking (set by gig-prep, preserved across syncs) ─────────
+    "live_location",    # "nas" | "gig:<gig_id>" — where the file currently lives
+    "live_path",        # absolute path on MacBook while gig is active
+    # ── Cue points (populated from DJ software on every sync) ──────────
+    "cue_points_rb",    # JSON: {"v":1,"cues":[...]} from Rekordbox
+    "cue_points_tk",    # JSON: {"v":1,"cues":[...]} from Traktor
 ]
 
 # Default retention for the backup folder. Syncs can happen several times a
@@ -175,6 +193,10 @@ DJLIB_OWNED_FIELDS: List[str] = [
     "analysis_source",
     "field_sources",
     "duplicate_paths",
+    # Gig tracking: set by gig-prep, must survive re-syncs from RB/Traktor.
+    # Default empty string = track is on NAS (nominal state).
+    "live_location",
+    "live_path",
 ]
 
 
@@ -324,4 +346,42 @@ def save_library_csv(
         raise
 
     _write_schema_sidecar(csv_path, row_count=len(rows))
+    _write_sha256_sidecar(csv_path)
     return backup_path  # type: ignore[return-value]
+
+
+def _write_sha256_sidecar(csv_path: Path) -> None:
+    """Write SHA-256 checksum of csv_path to csv_path.sha256.
+
+    Written after every save so load_library_csv can verify integrity.
+    Uses atomic tmp+rename so the sidecar is never half-written.
+    """
+    digest = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    sidecar = csv_path.with_suffix(".csv.sha256")
+    tmp = sidecar.with_suffix(".sha256.tmp")
+    tmp.write_text(digest + "\n", encoding="utf-8")
+    os.replace(tmp, sidecar)
+
+
+def verify_library_sha256(csv_path: Path) -> bool:
+    """Return True if library.csv matches its .sha256 sidecar.
+
+    Returns True (passes) when the sidecar doesn't exist yet — first-ever
+    write before the sidecar was introduced. Logs a warning on mismatch.
+    """
+    sidecar = csv_path.with_suffix(".csv.sha256")
+    if not sidecar.exists():
+        return True
+    if not csv_path.exists():
+        return True
+    expected = sidecar.read_text(encoding="utf-8").strip()
+    actual = hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    if actual != expected:
+        logger.warning(
+            "library.csv SHA-256 mismatch — file may be corrupted. "
+            "Expected %s, got %s. Check data/backups/ to restore.",
+            expected[:12] + "…",
+            actual[:12] + "…",
+        )
+        return False
+    return True
