@@ -1,4 +1,4 @@
-"""Tests for djlib.gig — Phase 2 slice 1: dry-run gig-prep."""
+"""Tests for djlib.gig — Phase 2: dry-run + copy protocol."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,12 +6,19 @@ from pathlib import Path
 import pytest
 
 from djlib.gig import (
+    GigDir,
+    GigPrepLock,
+    PrepState,
     ResolveResult,
     ValidationError,
+    copy_track_atomic,
+    estimate_total_bytes,
     parse_m3u,
     resolve_tracks,
+    run_gig_prep_copy,
     validate_gig_prep,
-    estimate_total_bytes,
+    PREP_COMMITTED,
+    PREP_VERIFIED,
 )
 
 
@@ -202,3 +209,188 @@ def test_cli_gig_prep_no_dry_run_flag():
     parser = build_parser()
     args = parser.parse_args(["gig-prep", "friday", "--from-m3u", "/tmp/set.m3u"])
     assert args.dry_run is False
+
+
+def test_cli_gig_prep_resume_flag():
+    from djlib.cli import build_parser
+    parser = build_parser()
+    args = parser.parse_args(["gig-prep", "friday", "--from-m3u", "/tmp/set.m3u", "--resume"])
+    assert args.resume is True
+
+
+# ── GigDir ───────────────────────────────────────────────────────────────────
+
+
+def test_gig_dir_paths(tmp_path):
+    gd = GigDir(gig_id="friday", root=tmp_path)
+    assert gd.path == tmp_path / "friday"
+    assert gd.audio_dir == tmp_path / "friday" / "audio"
+    assert gd.prep_state_path == tmp_path / "friday" / "prep.state"
+    assert gd.manifest_path == tmp_path / "friday" / "manifest.json"
+
+
+def test_gig_dir_ensure_creates_dirs(tmp_path):
+    gd = GigDir(gig_id="saturday", root=tmp_path)
+    gd.ensure()
+    assert gd.audio_dir.exists()
+
+
+def test_gig_dir_audio_dest_uses_track_id(tmp_path):
+    gd = GigDir(gig_id="friday", root=tmp_path)
+    dest = gd.audio_dest("track-abc", "/Music/artist/song.flac")
+    assert dest.name == "track-abc.flac"
+    assert dest.parent == gd.audio_dir
+
+
+# ── PrepState ────────────────────────────────────────────────────────────────
+
+
+def test_prep_state_append_and_read(tmp_path):
+    ps = PrepState(tmp_path / "prep.state")
+    ps.append_event("tid-1", "copy_start", src="/a.mp3")
+    ps.append_event("tid-1", "verified", sha256="abc123")
+    ps.append_event("tid-2", "copy_start", src="/b.mp3")
+
+    states = ps.get_track_states()
+    assert states["tid-1"] == "verified"
+    assert states["tid-2"] == "copy_start"
+
+
+def test_prep_state_empty_file(tmp_path):
+    ps = PrepState(tmp_path / "prep.state")
+    assert ps.get_track_states() == {}
+
+
+def test_prep_state_missing_file(tmp_path):
+    ps = PrepState(tmp_path / "nonexistent.state")
+    assert ps.get_track_states() == {}
+
+
+# ── copy_track_atomic ────────────────────────────────────────────────────────
+
+
+def test_copy_track_atomic_copies_file(tmp_path):
+    src = tmp_path / "src.mp3"
+    src.write_bytes(b"audio data" * 100)
+    dest = tmp_path / "dest" / "output.mp3"
+
+    sha = copy_track_atomic(src, dest)
+    assert dest.exists()
+    assert dest.read_bytes() == src.read_bytes()
+    assert len(sha) == 64  # sha256 hex
+
+
+def test_copy_track_atomic_no_partial_after_success(tmp_path):
+    src = tmp_path / "src.mp3"
+    src.write_bytes(b"data")
+    dest = tmp_path / "out.mp3"
+    copy_track_atomic(src, dest)
+    assert not (tmp_path / "out.mp3.partial").exists()
+
+
+def test_copy_track_atomic_creates_parent_dirs(tmp_path):
+    src = tmp_path / "src.mp3"
+    src.write_bytes(b"data")
+    dest = tmp_path / "a" / "b" / "c" / "out.mp3"
+    copy_track_atomic(src, dest)
+    assert dest.exists()
+
+
+# ── GigPrepLock ──────────────────────────────────────────────────────────────
+
+
+def test_gig_prep_lock_acquire_release(tmp_path):
+    lock = GigPrepLock(tmp_path / ".prep.lock")
+    assert lock.acquire() is True
+    lock.release()
+
+
+def test_gig_prep_lock_double_acquire_fails(tmp_path):
+    lock1 = GigPrepLock(tmp_path / ".prep.lock")
+    lock2 = GigPrepLock(tmp_path / ".prep.lock")
+    assert lock1.acquire() is True
+    assert lock2.acquire() is False
+    lock1.release()
+
+
+# ── run_gig_prep_copy (integration) ──────────────────────────────────────────
+
+
+def _make_library_csv(tmp_path: Path, rows: list) -> Path:
+    import csv as csv_mod
+    csv_path = tmp_path / "data" / "library.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    if rows:
+        fieldnames = list(rows[0].keys())
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv_mod.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(rows)
+    else:
+        csv_path.write_text("track_id,live_location,live_path,old_full_path\n")
+    return csv_path
+
+
+def test_run_gig_prep_copy_happy_path(tmp_path):
+    src1 = tmp_path / "src" / "a.mp3"
+    src2 = tmp_path / "src" / "b.mp3"
+    src1.parent.mkdir(parents=True)
+    src1.write_bytes(b"audio1" * 500)
+    src2.write_bytes(b"audio2" * 500)
+
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas", "live_path": "", "old_full_path": str(src1)},
+        {"track_id": "t2", "live_location": "nas", "live_path": "", "old_full_path": str(src2)},
+    ])
+
+    resolved = [
+        ResolveResult(str(src1), "t1", {"track_id": "t1", "live_location": "nas"}, "exact"),
+        ResolveResult(str(src2), "t2", {"track_id": "t2", "live_location": "nas"}, "exact"),
+    ]
+
+    gig_dir = GigDir(gig_id="test-gig", root=tmp_path / "Gigs")
+    result = run_gig_prep_copy("test-gig", resolved, csv_path, gig_dir)
+
+    assert result.copied == 2
+    assert result.failed == 0
+    assert result.committed == 2
+
+    # Audio files present
+    assert (gig_dir.audio_dir / "t1.mp3").exists()
+    assert (gig_dir.audio_dir / "t2.mp3").exists()
+
+    # manifest written
+    import json
+    manifest = json.loads(gig_dir.manifest_path.read_text())
+    assert manifest["gig_id"] == "test-gig"
+    assert len(manifest["tracks"]) == 2
+
+    # library.csv updated
+    import csv as csv_mod
+    with csv_path.open() as f:
+        rows = list(csv_mod.DictReader(f))
+    by_tid = {r["track_id"]: r for r in rows}
+    assert by_tid["t1"]["live_location"] == "gig:test-gig"
+    assert by_tid["t1"]["live_path"] == str(gig_dir.audio_dir / "t1.mp3")
+
+
+def test_run_gig_prep_copy_resume_skips_verified(tmp_path):
+    src = tmp_path / "src" / "a.mp3"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"audio")
+
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas", "live_path": "", "old_full_path": str(src)},
+    ])
+
+    resolved = [ResolveResult(str(src), "t1", {"track_id": "t1", "live_location": "nas"}, "exact")]
+    gig_dir = GigDir(gig_id="resume-gig", root=tmp_path / "Gigs")
+    gig_dir.ensure()
+
+    # Pre-seed prep.state as if previous run already verified t1
+    ps = PrepState(gig_dir.prep_state_path)
+    ps.append_event("t1", PREP_VERIFIED, sha256="fakehash", dest=str(gig_dir.audio_dest("t1", str(src))))
+
+    result = run_gig_prep_copy("resume-gig", resolved, csv_path, gig_dir, resume=True)
+    assert result.skipped == 1
+    assert result.copied == 0

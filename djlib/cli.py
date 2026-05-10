@@ -3797,13 +3797,15 @@ def cmd_review(args: argparse.Namespace) -> None:
 # ============ GIG PREP ============
 
 def cmd_gig_prep(args: argparse.Namespace) -> None:
-    """Dry-run: parse playlist, resolve tracks, validate, print plan."""
+    """Parse playlist, validate, print plan (--dry-run) or copy tracks."""
     from djlib.gig import (
-        ResolveResult,
+        GigDir,
+        GigPrepLock,
         _fmt_bytes,
         estimate_total_bytes,
         parse_m3u,
         resolve_tracks,
+        run_gig_prep_copy,
         validate_gig_prep,
     )
     from djlib.library_schema import load_library_csv
@@ -3816,7 +3818,7 @@ def cmd_gig_prep(args: argparse.Namespace) -> None:
     playlist_paths = parse_m3u(m3u_path)
     library_rows = load_library_csv(CSV_PATH)
     resolved = resolve_tracks(playlist_paths, library_rows)
-    errors = validate_gig_prep(args.gig_id, resolved)
+    errors = validate_gig_prep(args.gig_id, resolved, check_files_exist=True)
 
     found = [r for r in resolved if r.track_id]
     not_found = [r for r in resolved if r.match_type == "not_found"]
@@ -3828,9 +3830,9 @@ def cmd_gig_prep(args: argparse.Namespace) -> None:
     print(f"  Playlist : {m3u_path} ({len(playlist_paths)} tracks)")
     print(f"  Resolved : {len(found)} found in library.csv")
     if not_found:
-        print(f"  Not in library    : {len(not_found)}")
+        print(f"  Not in library      : {len(not_found)}")
     if on_gig:
-        print(f"  On another gig    : {len(on_gig)}")
+        print(f"  On another gig      : {len(on_gig)}")
     if missing_file:
         print(f"  File missing on disk: {len(missing_file)}")
     print(f"  Est. size: {_fmt_bytes(total_bytes)}")
@@ -3843,7 +3845,40 @@ def cmd_gig_prep(args: argparse.Namespace) -> None:
         print()
         raise SystemExit(1)
 
-    print(f"\n  Plan is clean — {len(found)} tracks ready to copy.\n")
+    if args.dry_run:
+        print(f"\n  Plan is clean — {len(found)} tracks ready to copy.\n")
+        return
+
+    # ── Live copy ─────────────────────────────────────────────────────────
+    gig_dir = GigDir(gig_id=args.gig_id)
+    gig_dir.ensure()
+
+    lock = GigPrepLock(gig_dir.lock_path)
+    if not lock.acquire():
+        print(f"\nERROR: another gig-prep is already running for '{args.gig_id}'.")
+        print(f"  Lock file: {gig_dir.lock_path}")
+        raise SystemExit(1)
+
+    try:
+        print(f"\n  Copying {len(found)} tracks to {gig_dir.audio_dir} …")
+        result = run_gig_prep_copy(
+            gig_id=args.gig_id,
+            resolved=resolved,
+            csv_path=CSV_PATH,
+            gig_dir=gig_dir,
+            resume=getattr(args, "resume", False),
+            source_playlist=str(m3u_path),
+        )
+        print(f"\n  Done.")
+        print(f"    Copied   : {result.copied}")
+        if result.skipped:
+            print(f"    Skipped  : {result.skipped} (already verified)")
+        print(f"    Committed: {result.committed}")
+        if result.failed:
+            print(f"    FAILED   : {result.failed}")
+            raise SystemExit(1)
+    finally:
+        lock.release()
 
 
 # ============ PARSER ============
@@ -4036,7 +4071,8 @@ def build_parser() -> argparse.ArgumentParser:
     gig = sp.add_parser("gig-prep", help="Prepare a gig: copy tracks from NAS to MacBook (Phase 2)")
     gig.add_argument("gig_id", help="Unique gig identifier, e.g. friday-2026-05-15")
     gig.add_argument("--from-m3u", required=True, metavar="PATH", help="Path to M3U/M3U8 playlist file")
-    gig.add_argument("--dry-run", action="store_true", help="Print plan without copying anything (required for now)")
+    gig.add_argument("--dry-run", action="store_true", help="Print plan without copying anything")
+    gig.add_argument("--resume", action="store_true", help="Resume interrupted prep (skips already-verified tracks)")
     gig.set_defaults(func=cmd_gig_prep)
 
     # ========== REVIEW UI ==========
