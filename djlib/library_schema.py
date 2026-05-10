@@ -59,6 +59,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from djlib.locks import csv_lock
+
 logger = logging.getLogger(__name__)
 
 LIBRARY_SCHEMA_VERSION = 1
@@ -313,40 +315,43 @@ def save_library_csv(
                 fieldnames.append(name)
                 seen.add(name)
 
-    backup_path = _backup_existing(csv_path, backup_retention)
+    # Lock for the duration of backup + write + sidecar. Re-entrant: callers
+    # doing read-modify-write may already hold the lock; that's fine.
+    with csv_lock(csv_path):
+        backup_path = _backup_existing(csv_path, backup_retention)
 
-    # Atomic write: tmp in same dir (so os.replace is atomic on same FS),
-    # fsync before rename so the kernel has durably persisted the bytes.
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{csv_path.name}.",
-        suffix=".tmp",
-        dir=str(csv_path.parent),
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            for row in rows:
-                # DictWriter handles missing keys only if we pre-fill, so
-                # normalize now.
-                clean = {k: ("" if row.get(k) is None else row.get(k, "")) for k in fieldnames}
-                writer.writerow(clean)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, csv_path)
-    except Exception:
-        # Leave no junk behind on failure; original file is untouched
-        # because we only replace after fsync.
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-        raise
+        # Atomic write: tmp in same dir (so os.replace is atomic on same FS),
+        # fsync before rename so the kernel has durably persisted the bytes.
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{csv_path.name}.",
+            suffix=".tmp",
+            dir=str(csv_path.parent),
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                for row in rows:
+                    # DictWriter handles missing keys only if we pre-fill, so
+                    # normalize now.
+                    clean = {k: ("" if row.get(k) is None else row.get(k, "")) for k in fieldnames}
+                    writer.writerow(clean)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, csv_path)
+        except Exception:
+            # Leave no junk behind on failure; original file is untouched
+            # because we only replace after fsync.
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
 
-    _write_schema_sidecar(csv_path, row_count=len(rows))
-    _write_sha256_sidecar(csv_path)
+        _write_schema_sidecar(csv_path, row_count=len(rows))
+        _write_sha256_sidecar(csv_path)
     return backup_path  # type: ignore[return-value]
 
 

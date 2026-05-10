@@ -39,6 +39,7 @@ from djlib.config import (
 )
 from djlib.filename import parse_from_filename
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
+from djlib.locks import csv_lock
 
 # ── Flask app ────────────────────────────────────────────────────────────────
 
@@ -293,21 +294,25 @@ def api_update_track():
     # Determine which CSV to update
     csv_file = LIBRARY_REVIEW_CSV if source in ("library-review", "library-fix") else UNSORTED_CSV
 
+    # Lock order: in-process (_CSV_LOCK) → cross-process (csv_lock).
+    # The cross-process lock prevents a CLI sync from writing between our
+    # read and write. Re-entrant: write_unsorted_rows internally re-acquires.
     with _CSV_LOCK:
-        rows = load_unsorted_rows(csv_file)
-        updated = False
-        for row in rows:
-            if row.get("track_id") == tid or row.get("file_hash") == tid:
-                for key, value in fields.items():
-                    if key in row:
-                        row[key] = str(value)
-                updated = True
-                break
+        with csv_lock(csv_file):
+            rows = load_unsorted_rows(csv_file)
+            updated = False
+            for row in rows:
+                if row.get("track_id") == tid or row.get("file_hash") == tid:
+                    for key, value in fields.items():
+                        if key in row:
+                            row[key] = str(value)
+                    updated = True
+                    break
 
-        if not updated:
-            return jsonify({"error": f"Track not found: {tid}"}), 404
+            if not updated:
+                return jsonify({"error": f"Track not found: {tid}"}), 404
 
-        write_unsorted_rows(csv_file, rows, [])
+            write_unsorted_rows(csv_file, rows, [])
     return jsonify({"ok": True})
 
 
@@ -334,31 +339,32 @@ def api_batch_update_tracks():
     id_set = set(track_ids)
 
     with _CSV_LOCK:
-        rows = load_unsorted_rows(csv_file)
-        # Detect which requested fields actually exist in this CSV's schema
-        schema_keys = set(rows[0].keys()) if rows else set()
-        applied_fields = {k: v for k, v in fields.items() if k in schema_keys}
-        dropped_fields = [k for k in fields.keys() if k not in schema_keys]
+        with csv_lock(csv_file):
+            rows = load_unsorted_rows(csv_file)
+            # Detect which requested fields actually exist in this CSV's schema
+            schema_keys = set(rows[0].keys()) if rows else set()
+            applied_fields = {k: v for k, v in fields.items() if k in schema_keys}
+            dropped_fields = [k for k in fields.keys() if k not in schema_keys]
 
-        if not applied_fields:
-            return jsonify({
-                "ok": False,
-                "error": "None of the requested fields exist in this CSV",
-                "dropped_fields": dropped_fields,
-            }), 400
+            if not applied_fields:
+                return jsonify({
+                    "ok": False,
+                    "error": "None of the requested fields exist in this CSV",
+                    "dropped_fields": dropped_fields,
+                }), 400
 
-        updated = 0
-        for row in rows:
-            tid = row.get("track_id") or row.get("file_hash")
-            if tid in id_set:
-                for key, value in applied_fields.items():
-                    row[key] = str(value)
-                updated += 1
+            updated = 0
+            for row in rows:
+                tid = row.get("track_id") or row.get("file_hash")
+                if tid in id_set:
+                    for key, value in applied_fields.items():
+                        row[key] = str(value)
+                    updated += 1
 
-        if updated == 0:
-            return jsonify({"error": "No matching tracks found"}), 404
+            if updated == 0:
+                return jsonify({"error": "No matching tracks found"}), 404
 
-        write_unsorted_rows(csv_file, rows, [])
+            write_unsorted_rows(csv_file, rows, [])
     return jsonify({"ok": True, "updated": updated, "dropped_fields": dropped_fields})
 
 
@@ -1509,7 +1515,7 @@ def api_scrape_url():
 
     # If track_id provided, save scraped data to CSV
     if tid and (result.get("artist") or result.get("title")):
-        with _CSV_LOCK:
+        with _CSV_LOCK, csv_lock(UNSORTED_CSV):
             rows = load_unsorted_rows(UNSORTED_CSV)
             for r in rows:
                 if r.get("track_id") == tid:
@@ -1710,7 +1716,7 @@ def api_swap_artist_title():
     if not tid:
         return jsonify({"error": "Missing track_id"}), 400
 
-    with _CSV_LOCK:
+    with _CSV_LOCK, csv_lock(UNSORTED_CSV):
         rows = load_unsorted_rows(UNSORTED_CSV)
         found = False
         new_artist = ""
@@ -2088,7 +2094,7 @@ def api_apply_enrichment():
     applied_count = 0
     applied_tids: List[str] = []
 
-    with _CSV_LOCK:
+    with _CSV_LOCK, csv_lock(UNSORTED_CSV):
         rows = load_unsorted_rows(UNSORTED_CSV)
         tid_to_idx: Dict[str, int] = {
             r.get("track_id", ""): i for i, r in enumerate(rows) if r.get("track_id")

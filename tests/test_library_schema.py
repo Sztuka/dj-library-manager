@@ -117,15 +117,23 @@ def test_write_failure_does_not_corrupt_existing(tmp_path: Path) -> None:
             save_library_csv(dest, [{"track_id": "corrupted"}])
 
     # Original file untouched, no .tmp junk left lying around.
+    # `.library.csv.lock` is expected (csv_lock sidecar, intentional).
     assert dest.read_bytes() == original_bytes
-    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".library.csv.")]
+    leftovers = [
+        p for p in tmp_path.iterdir()
+        if p.name.startswith(".library.csv.") and not p.name.endswith(".lock")
+    ]
     assert leftovers == []
 
 
 def test_no_tmp_file_leaks_on_success(tmp_path: Path) -> None:
     dest = tmp_path / "library.csv"
     save_library_csv(dest, [{"track_id": "x"}])
-    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".library.csv.")]
+    # `.library.csv.lock` is expected (csv_lock sidecar, intentional).
+    leftovers = [
+        p.name for p in tmp_path.iterdir()
+        if p.name.startswith(".library.csv.") and not p.name.endswith(".lock")
+    ]
     assert leftovers == []
 
 

@@ -3,6 +3,8 @@ import csv
 from pathlib import Path
 from typing import List, Dict
 
+from djlib.locks import csv_lock
+
 FIELDNAMES = [
     "track_id",
     "rekordbox_id",
@@ -65,13 +67,14 @@ def load_rejected(csv_path: Path) -> List[Dict[str, str]]:
 
 
 def save_rejected(csv_path: Path, rows: List[Dict[str, str]]) -> None:
-    """Save rejected registry CSV."""
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=REJECTED_FIELDNAMES)
-        w.writeheader()
-        for r in rows:
-            clean = {k: r.get(k, "") for k in REJECTED_FIELDNAMES}
-            w.writerow(clean)
+    """Save rejected registry CSV. Acquires csv_lock for serialization."""
+    with csv_lock(csv_path):
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=REJECTED_FIELDNAMES)
+            w.writeheader()
+            for r in rows:
+                clean = {k: r.get(k, "") for k in REJECTED_FIELDNAMES}
+                w.writerow(clean)
 
 
 def load_records(csv_path: Path) -> List[Dict[str, str]]:
@@ -81,9 +84,12 @@ def load_records(csv_path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 def save_records(csv_path: Path, rows: List[Dict[str, str]]) -> None:
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        w.writeheader()
-        for r in rows:
-            clean = {k: r.get(k, "") for k in FIELDNAMES}
-            w.writerow(clean)
+    """Write records to library.csv. Acquires csv_lock for serialization
+    against concurrent Review UI saves and sync-dj-libraries runs."""
+    with csv_lock(csv_path):
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=FIELDNAMES)
+            w.writeheader()
+            for r in rows:
+                clean = {k: r.get(k, "") for k in FIELDNAMES}
+                w.writerow(clean)
