@@ -43,7 +43,6 @@ def test_config_and_folders(tmp_path, monkeypatch):
     config.ensure_base_dirs()
     assert (lib / "LIBRARY").exists()
     assert (lib / "REJECT").exists()
-    assert (lib / "ARCHIVE").exists()
 
     # Test logistics path structure - create a sample artist folder
     artist_folder = lib / "LIBRARY" / "Test Artist"

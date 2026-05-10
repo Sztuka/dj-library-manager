@@ -52,7 +52,7 @@
   };
 
   // Auto-destination mapping
-  const EXPORT_DISPOSITIONS = new Set(["library", "reject", "archive", "mixes"]);
+  const EXPORT_DISPOSITIONS = new Set(["library", "reject", "mixes"]);
 
   // Batch selection
   let selectedSet = new Set();
@@ -431,8 +431,6 @@
     const v = (val || "").toLowerCase();
     if (v === "library")
       return '<span class="badge-dest dest-library">library</span>';
-    if (v === "archive")
-      return '<span class="badge-dest dest-archive">archive</span>';
     if (v === "rejected")
       return '<span class="badge-dest dest-rejected">rejected</span>';
     if (v === "mixes")
@@ -691,13 +689,12 @@
   // -- Stats bar ----------------------------------------------
   function updateStats() {
     if (currentSource === "unsorted") {
-      var lib = 0, rej = 0, arch = 0, mix = 0, later = 0, und = 0;
+      var lib = 0, rej = 0, mix = 0, later = 0, und = 0;
       for (var i = 0; i < allTracks.length; i++) {
         var t = allTracks[i];
         var d = (t.disposition || "").toLowerCase();
         if (d === "library") lib++;
         else if (d === "reject") rej++;
-        else if (d === "archive") arch++;
         else if (d === "mixes") mix++;
         else if (d === "later") later++;
         else und++;
@@ -705,7 +702,6 @@
       var parts = [];
       if (lib) parts.push('<span class="stat-lib">' + lib + " lib</span>");
       if (rej) parts.push('<span class="stat-reject">' + rej + " rej</span>");
-      if (arch) parts.push('<span class="stat-archive">' + arch + " arch</span>");
       if (mix) parts.push('<span class="stat-mixes">' + mix + " mix</span>");
       if (later) parts.push('<span class="stat-later">' + later + " later</span>");
       parts.push('<span class="stat-undecided">' + und + " todo</span>");
@@ -754,7 +750,6 @@
       var inLib = 0,
         prRated = 0,
         prLib = 0,
-        prArch = 0,
         prRej = 0;
       for (var i = 0; i < allTracks.length; i++) {
         var t = allTracks[i];
@@ -763,7 +758,6 @@
         if (rat > 0) prRated++;
         var dest = (t.destination || "").toLowerCase();
         if (dest === "library") prLib++;
-        else if (dest === "archive") prArch++;
         else if (dest === "rejected") prRej++;
       }
       var prParts = [];
@@ -775,10 +769,6 @@
       prParts.push(
         '<span class="badge-dest dest-library">' + prLib + " library</span>",
       );
-      if (prArch)
-        prParts.push(
-          '<span class="badge-dest dest-archive">' + prArch + " archive</span>",
-        );
       if (prRej)
         prParts.push(
           '<span class="badge-dest dest-rejected">' +
@@ -1624,8 +1614,8 @@
     }
     return sel;
   }
-  const DISPOSITION_OPTIONS = ["", "library", "reject", "archive", "mixes", "later"];
-  const DISPOSITION_LABELS = { "": "\u2014", library: "Library", reject: "Reject", archive: "Archive", mixes: "Mixes", later: "Later" };
+  const DISPOSITION_OPTIONS = ["", "library", "reject", "mixes", "later"];
+  const DISPOSITION_LABELS = { "": "\u2014", library: "Library", reject: "Reject", mixes: "Mixes", later: "Later" };
 
   function _applyDispositionSelectClass(sel) {
     sel.className = "inline-select";
@@ -3669,13 +3659,6 @@
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
           setDisposition("reject");
-        }
-        break;
-
-      case "KeyA":
-        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-          e.preventDefault();
-          setDisposition("archive");
         }
         break;
 

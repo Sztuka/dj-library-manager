@@ -1,7 +1,6 @@
 INBOX_UNSORTED: ~/Music Unsorted # Inbox for new tracks
 LIB_ROOT: ~/Music Library # Main library - approved tracks (Artist/file.ext)
 REJECT_ROOT: ~/Music Rejected # Rejected tracks (flat structure)
-ARCHIVE_ROOT: ~/Music Archive # Archived tracks (Artist/file.ext)
 MIXES_ROOT: ~/Music Library/MIXES # DJ mixes (flat structure, no metadata)
 LOGS_DIR: ./LOGS # Application logs (inside project repo)
 UNSORTED_CSV: ./data/unsorted.csv # Staging CSV file (inside repo)
