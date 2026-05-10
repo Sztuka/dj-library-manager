@@ -65,7 +65,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("year", width=10),
     ColumnSpec("genre", width=24),  # User-selected genre (dropdown from genres.yml)
     ColumnSpec("genre_mapping_status", width=18, locked=True),  # "OK" or "UNMAPPED"
-    ColumnSpec("disposition", width=14),  # library / reject / archive / mixes / later
+    ColumnSpec("disposition", width=14),  # library / reject / mixes / later
     ColumnSpec("must_play", width=14),
     ColumnSpec("occasion_tags", width=24),
     ColumnSpec("notes", width=40),
@@ -87,8 +87,8 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
 # Canonical fieldnames list for CSV I/O
 UNSORTED_FIELDNAMES: List[str] = [col.name for col in UNSORTED_COLUMNS]
 
-DISPOSITION_CHOICES = ("library", "reject", "archive", "mixes", "later", "")
-EXPORT_DISPOSITIONS: frozenset = frozenset({"library", "reject", "archive", "mixes"})
+DISPOSITION_CHOICES = ("library", "reject", "mixes", "later", "")
+EXPORT_DISPOSITIONS: frozenset = frozenset({"library", "reject", "mixes"})
 
 
 def _as_str(val: object | None) -> str:

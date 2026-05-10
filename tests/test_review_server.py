@@ -275,7 +275,6 @@ def fake_dest_roots(tmp_path, monkeypatch):
     roots = [
         ("mixes", lib / "MIXES"),
         ("rejected", base / "Music Rejected"),
-        ("archive", base / "Music Archive"),
         ("library", lib),
     ]
     monkeypatch.setattr(srv, "_get_processed_dest_roots", lambda: roots)
@@ -299,10 +298,6 @@ def test_tracks_processed_from_library_csv(client, tmp_path, fake_dest_roots):
         "rekordbox,rb1,tid-aaa-111,"
         f"{lib_base}/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
         "DJ Test,Track One,128,5A,4,,200,2025-12-15,,5,,rb1,,0\n"
-        # Track in Music Archive (should appear)
-        "traktor,,tid-bbb-222,"
-        f"{lib_base}/Music Archive/Unknown/Unknown.mp3,"
-        "Unknown Artist,Unknown Track,120,3B,0,,180,2025-11-01,,0,,,,0\n"
         # Track in ~/Music (NOT processed — DJ software import, should be excluded)
         "rekordbox+traktor,rb2,tid-ccc-333,"
         "/Users/test/Music/Some DJ Track.mp3,"
@@ -316,7 +311,7 @@ def test_tracks_processed_from_library_csv(client, tmp_path, fake_dest_roots):
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert isinstance(data, list)
-        assert len(data) == 2  # Only Music Library + Music Archive
+        assert len(data) == 1  # Only Music Library track (archive removed)
 
         # Library track
         lib_track = [t for t in data if t["track_id"] == "tid-aaa-111"][0]
@@ -329,11 +324,6 @@ def test_tracks_processed_from_library_csv(client, tmp_path, fake_dest_roots):
         assert lib_track["destination"] == "library"
         assert lib_track["in_dj_software"] == "yes"
         assert lib_track["date_added"] == "2025-12-15"
-
-        # Archive track
-        arch_track = [t for t in data if t["track_id"] == "tid-bbb-222"][0]
-        assert arch_track["destination"] == "archive"
-        assert arch_track["in_dj_software"] == "yes"  # has external_source=traktor
     finally:
         srv._REPO = old_repo
 

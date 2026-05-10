@@ -13,15 +13,14 @@ def resolve_target_path(target: str) -> Path | None:
     Supported destinations:
         - "library" → Music Library root (artist subfolders)
         - "reject" → DJ Reject folder
-        - "archive" → DJ Archive folder
         - "mixes" → MIXES subfolder (flat structure)
-    
+
     Returns:
         Path to destination directory, or None if target is invalid
     """
     target_lower = (target or "").lower().strip()
-    
-    if target_lower in ("library", "reject", "archive", "mixes"):
+
+    if target_lower in ("library", "reject", "mixes"):
         p = get_destination_path(target_lower)  # type: ignore[arg-type]
         if p:
             p.mkdir(parents=True, exist_ok=True)

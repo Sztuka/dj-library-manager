@@ -2,9 +2,8 @@
 from pathlib import Path
 import pytest
 from djlib.logistics import (
-    build_library_path, 
-    build_reject_path, 
-    build_archive_path, 
+    build_library_path,
+    build_reject_path,
     build_mixes_path,
     sanitize_dir_segment
 )
@@ -48,15 +47,6 @@ def test_build_reject_path():
     assert path.name == "duplicate_track.mp3"
     # Reject is now outside library (separate root)
     assert "Reject" in str(path)
-
-
-def test_build_archive_path():
-    """Test archive path construction: {ARCHIVE_ROOT}/{Artist}/{filename}"""
-    path = build_archive_path("Old Artist", "old_track.mp3")
-    assert path.name == "old_track.mp3"
-    assert path.parent.name == "Old Artist"
-    # Archive is now outside library (separate root)
-    assert "Archive" in str(path)
 
 
 def test_build_mixes_path():

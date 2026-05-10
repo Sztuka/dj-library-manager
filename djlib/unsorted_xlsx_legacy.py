@@ -86,7 +86,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
 
 DONE_CHOICES = ("TRUE", "FALSE")
 STATUS_CHOICES = ("accept", "reject", "review", "")
-DESTINATION_CHOICES = ("library", "reject", "archive", "mixes", "")
+DESTINATION_CHOICES = ("library", "reject", "mixes", "")
 
 
 def _as_str(val: object | None) -> str:

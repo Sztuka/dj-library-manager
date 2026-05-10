@@ -38,7 +38,7 @@ class AppConfig:
     library_root: Path          # Main library folder (~/Music Library)
     inbox_dir: Path             # Inbox for new files (~/Music Unsorted)
     # Removed: library_subdir, reject_subdir, archive_subdir
-    # New model: separate root paths (REJECT_ROOT, ARCHIVE_ROOT) in config.yml
+    # New model: separate root paths (REJECT_ROOT) in config.yml
 
 def _expand(p: str | Path) -> Path:
     return Path(str(p)).expanduser().resolve()
@@ -322,9 +322,6 @@ LOGS_DIR = _get_logs_dir()
 # library.csv stored in repo data/ folder (not in Music Library)
 CSV_PATH = _REPO / "data" / "library.csv"
 
-# library-archive.csv for archived tracks (separate from active library)
-ARCHIVE_CSV_PATH = _REPO / "data" / "library-archive.csv"
-
 # library-rejected.csv — persistent registry of rejected files (hash/fp)
 # Used by cmd_scan to skip files that were previously rejected
 REJECTED_CSV_PATH = _REPO / "data" / "library-rejected.csv"
@@ -369,16 +366,15 @@ def ensure_base_dirs() -> None:
     inbox = Path(cfg["INBOX_UNSORTED"])
     library_dir = Path(cfg.get("LIBRARY_DIR", str(lib / "LIBRARY")))
     reject = Path(cfg.get("REJECT_ROOT", str(lib / "REJECT")))
-    archive = Path(cfg.get("ARCHIVE_ROOT", str(lib / "ARCHIVE")))
     mixes = Path(cfg.get("MIXES_ROOT", str(lib / "MIXES")))
     logs = Path(cfg.get("LOGS_DIR", "./LOGS")).resolve()
-    
+
     # Ensure top-level roots first
     for p in [lib, inbox, logs]:
         p.mkdir(parents=True, exist_ok=True)
 
     # New logistics layout – create subfolders under LIB_ROOT
-    for p in [library_dir, reject, archive, mixes]:
+    for p in [library_dir, reject, mixes]:
         p.mkdir(parents=True, exist_ok=True)
     
     # Legacy bucket directories (create if they exist for backward compatibility)
@@ -405,7 +401,6 @@ def load_config() -> Dict[str, Any]:
         "LIB_ROOT": str(cfg.library_root),
         "INBOX_UNSORTED": str(cfg.inbox_dir),
         "REJECT_ROOT": config_dict.get("REJECT_ROOT", str(cfg.library_root.parent / "Music Rejected")),
-        "ARCHIVE_ROOT": config_dict.get("ARCHIVE_ROOT", str(cfg.library_root.parent / "Music Archive")),
         "MIXES_ROOT": config_dict.get("MIXES_ROOT", str(cfg.library_root / "MIXES")),
         "LOGS_DIR": config_dict.get("LOGS_DIR", "./LOGS"),
         "UNSORTED_CSV": config_dict.get("UNSORTED_CSV", config_dict.get("UNSORTED_XLSX", "./data/unsorted.csv")),

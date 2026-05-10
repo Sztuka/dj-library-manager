@@ -54,7 +54,6 @@ def test_processed_exposes_analysis_source_and_readiness(client, tmp_path, monke
     roots = [
         ("mixes", lib / "MIXES"),
         ("rejected", base / "Music Rejected"),
-        ("archive", base / "Music Archive"),
         ("library", lib),
     ]
     monkeypatch.setattr(srv, "_get_processed_dest_roots", lambda: roots)

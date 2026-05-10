@@ -11,7 +11,7 @@ import re
 from djlib.config import load_config
 
 # Valid destination types
-DestinationType = Literal["library", "reject", "archive", "mixes"]
+DestinationType = Literal["library", "reject", "mixes"]
 
 
 def sanitize_dir_segment(name: str) -> str:
@@ -66,32 +66,20 @@ def sanitize_dir_segment(name: str) -> str:
 
 def get_destination_path(dest_type: DestinationType) -> Path:
     """Get base path for a destination type.
-    
+
     Args:
-        dest_type: One of "library", "reject", "archive", "mixes"
-        
+        dest_type: One of "library", "reject", "mixes"
+
     Returns:
         Path to the destination directory
-        
-    Example:
-        >>> get_destination_path("library")
-        Path("/Users/sztuka/Music Library")
-        >>> get_destination_path("reject")
-        Path("/Users/sztuka/DJ Reject")
     """
     cfg = load_config()
-    
+
     if dest_type == "library":
-        # Main library: directly under LIB_ROOT (no LIBRARY/ subfolder)
         return Path(cfg["LIB_ROOT"])
     elif dest_type == "reject":
-        # Rejected files: separate folder outside library
         return Path(cfg.get("REJECT_ROOT", str(Path(cfg["LIB_ROOT"]).parent / "DJ Reject")))
-    elif dest_type == "archive":
-        # Archived files: separate folder outside library
-        return Path(cfg.get("ARCHIVE_ROOT", str(Path(cfg["LIB_ROOT"]).parent / "DJ Archive")))
     elif dest_type == "mixes":
-        # DJ mixes: flat structure in MIXES subfolder
         return Path(cfg.get("MIXES_ROOT", str(Path(cfg["LIB_ROOT"]) / "MIXES")))
     else:
         raise ValueError(f"Invalid dest_type: {dest_type}")
@@ -135,28 +123,6 @@ def build_reject_path(filename: str) -> Path:
     return reject_dir / filename
 
 
-def build_archive_path(artist: str, filename: str) -> Path:
-    """Build path for archived track.
-    
-    Structure: {ARCHIVE_ROOT}/{Artist}/{filename}
-    Example: ~/DJ Archive/Old Artist/track.flac
-    
-    Note: Artist name is sanitized for filesystem safety (e.g., "AC/DC" → "AC-DC")
-    but the original artist name is preserved in tags and metadata.
-    
-    Args:
-        artist: Artist name
-        filename: Final filename
-        
-    Returns:
-        Full path to destination file
-    """
-    archive_dir = get_destination_path("archive")
-    artist_clean = artist.strip() or "Unknown Artist"
-    artist_folder = sanitize_dir_segment(artist_clean)
-    return archive_dir / artist_folder / filename
-
-
 def build_mixes_path(filename: str) -> Path:
     """Build path for DJ mix file.
     
@@ -177,7 +143,7 @@ def build_mixes_path(filename: str) -> Path:
 
 
 def ensure_logistics_dirs() -> None:
-    """Create all logistics directories (library, reject, archive, mixes)."""
-    for dest_type in ["library", "reject", "archive", "mixes"]:
+    """Create all logistics directories (library, reject, mixes)."""
+    for dest_type in ["library", "reject", "mixes"]:
         path = get_destination_path(dest_type)  # type: ignore[arg-type]
         path.mkdir(parents=True, exist_ok=True)

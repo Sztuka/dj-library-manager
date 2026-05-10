@@ -115,7 +115,6 @@ def _get_processed_dest_roots() -> List[tuple[str, Path]]:
     return [
         ("mixes", logistics.get_destination_path("mixes").resolve()),
         ("rejected", logistics.get_destination_path("reject").resolve()),
-        ("archive", logistics.get_destination_path("archive").resolve()),
         ("library", logistics.get_destination_path("library").resolve()),
     ]
 

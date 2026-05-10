@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_CSV
+    INBOX_DIR, LOGS_DIR, CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_CSV
 )
 from djlib.csvdb import load_records, save_records, load_rejected, save_rejected
 from djlib.tags import read_tags, write_tags
@@ -1178,11 +1178,11 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
 
 def cmd_apply(args: argparse.Namespace) -> None:
     """Apply approved changes from unsorted.csv.
-    
-    New model: Uses status/destination columns (library/reject/archive/mixes).
-    Legacy model: Falls back to target_subfolder if destination is empty.
+
+    Dispositions: library (→ LIB_ROOT/Artist/), reject (→ REJECT_ROOT/),
+    mixes (→ MIXES_ROOT/). Legacy fallback: target_subfolder if disposition empty.
     """
-    from djlib.logistics import build_library_path, build_reject_path, build_archive_path, build_mixes_path
+    from djlib.logistics import build_library_path, build_reject_path, build_mixes_path
     
     # Check if Rekordbox is running before starting
     try:
@@ -1199,17 +1199,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
     rows = _load_unsorted()
     ready = [r for r in rows if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS]
     if not ready:
-        print("Brak wierszy z ustawionym disposition (library/reject/archive/mixes).")
+        print("Brak wierszy z ustawionym disposition (library/reject/mixes).")
         return
     library_rows = load_records(CSV_PATH)
-    archive_rows = load_records(ARCHIVE_CSV_PATH)  # Load archive for duplicate checking
     rejected_registry = load_rejected(REJECTED_CSV_PATH)  # Load rejected registry for appending
     processed_ids: set[str] = set()
-    # Track DJ software IDs to remove for rejected/archived files
+    # Track DJ software IDs to remove for rejected files
     rejected_rekordbox_ids: List[str] = []
     rejected_traktor_ids: List[str] = []
-    archived_rekordbox_ids: List[str] = []
-    archived_traktor_ids: List[str] = []
     tags_written = 0
     tags_errors = 0
     tags_cleaned = 0
@@ -1229,35 +1226,23 @@ def cmd_apply(args: argparse.Namespace) -> None:
     traktor_mapping = get_traktor_track_ids()
     
     # Build library index for duplicate detection when exporting to library
-    # Includes both active library AND archive
     # OPTIMIZATION: Only build index if there are files destined for "library"
     from djlib.dedup import get_audio_info, normalize_for_match, format_quality, format_duration
     from djlib.config import load_config
     _cfg = load_config()
     _library_path = Path(_cfg.get("LIB_ROOT", "")).expanduser()
-    _archive_path = Path(_cfg.get("ARCHIVE_ROOT", "")).expanduser()
     library_index: Dict[str, Any] = {}  # match_key -> AudioInfo
     _library_index_loaded = False
     _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
-    
+
     def _load_library_index():
         """Lazy-load library index for duplicate detection."""
         nonlocal _library_index_loaded
         if _library_index_loaded:
             return
         _library_index_loaded = True
-        
-        # Scan library folder (single rglob with extension filter)
         if _library_path and _library_path.exists():
             for _path in _library_path.rglob("*"):
-                if _path.suffix.lower() in _audio_exts:
-                    _info = get_audio_info(_path)
-                    if _info and _info.artist and _info.title:
-                        library_index[_info.match_key] = _info
-        
-        # Scan archive folder for duplicates too
-        if _archive_path and _archive_path.exists():
-            for _path in _archive_path.rglob("*"):
                 if _path.suffix.lower() in _audio_exts:
                     _info = get_audio_info(_path)
                     if _info and _info.artist and _info.title:
@@ -1400,9 +1385,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
         title = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
         version = r.get("version_info") or r.get("version_suggest") or ""
 
-        # Check for duplicates in library/archive when exporting
-        if destination in ("library", "archive"):
-            _load_library_index()  # Lazy-load on first library/archive export
+        # Check for duplicates in library when exporting
+        if destination == "library":
+            _load_library_index()  # Lazy-load on first library export
             # Include version_info in the match key so Original Mix and Extended Mix
             # are not treated as the same track within a single export batch.
             match_key = normalize_for_match(artist, f"{title} {version}".strip())
@@ -1413,7 +1398,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                       f"{artist} - {title}  (already in this export batch from {_batch_match_keys[match_key]})")
                 continue
             
-            # ── Library/archive duplicate check ──
+            # ── Library duplicate check ──
             if match_key in library_index:
                 existing = library_index[match_key]
                 src_info = get_audio_info(src)
@@ -1452,8 +1437,6 @@ def cmd_apply(args: argparse.Namespace) -> None:
             dest_path = build_library_path(artist, final_name)
         elif destination == "reject":
             dest_path = build_reject_path(final_name)
-        elif destination == "archive":
-            dest_path = build_archive_path(artist, final_name)
         elif destination == "mixes":
             # DJ mixes: flat structure, no artist folders
             dest_path = build_mixes_path(final_name)
@@ -1477,8 +1460,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
         
         # ── Handle file-already-exists at destination ──
         if dest_path.exists():
-            if destination in ("library", "archive", "mixes"):
-                # NEVER silently create (2) copies in library/archive/mixes
+            if destination in ("library", "mixes"):
+                # NEVER silently create (2) copies in library/mixes
                 # This means a duplicate slipped past the artist+title check
                 # (e.g. same file re-exported, or metadata-level dedup missed it)
                 from djlib.fingerprint import file_sha256 as _fsha
@@ -1577,7 +1560,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                             print(f"   ⚠️  Cue merge failed for {Path(_dup).name}: {_e} — continuing")
 
         # ── Update library_index so next files in this batch are caught ──
-        if destination in ("library", "archive"):
+        if destination == "library":
             _mk = normalize_for_match(artist, f"{title} {version}".strip())
             new_info = get_audio_info(dest_path)
             if new_info:
@@ -1606,14 +1589,6 @@ def cmd_apply(args: argparse.Namespace) -> None:
             
             print(f"   🚫 Rejected: {dest_path.name} (moved to reject folder, no further processing)")
             continue
-        
-        if destination == "archive":
-            if r.get("rekordbox_id"):
-                archived_rekordbox_ids.append(str(r.get("rekordbox_id") or ""))
-                print(f"   📌 Will remove from Rekordbox: {r.get('rekordbox_id')}")
-            if r.get("traktor_id"):
-                archived_traktor_ids.append(str(r.get("traktor_id") or ""))
-                print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
         
         # Provenance of BPM+Key. Consumers (REVIEW UI, ML export) use this to
         # tell an analyzed track from a tag-only import. Rekordbox wins when
@@ -1667,34 +1642,17 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "target_subfolder": target_subfolder or "",
         }
         
-        # Decide which CSV to update based on destination
-        if destination == "archive":
-            # Archive goes to library-archive.csv, not library.csv
-            existing_idx = None
-            for idx, arch_row in enumerate(archive_rows):
-                if arch_row.get("track_id") == record["track_id"]:
-                    existing_idx = idx
-                    break
-            
-            if existing_idx is not None:
-                archive_rows[existing_idx] = record
-            else:
-                archive_rows.append(record)
-            print(f"   📦 Archived: {dest_path.name} (will be saved to library-archive.csv)")
+        # Update library.csv record (library/mixes destinations)
+        existing_idx = None
+        for idx, lib_row in enumerate(library_rows):
+            if lib_row.get("track_id") == record["track_id"]:
+                existing_idx = idx
+                break
+
+        if existing_idx is not None:
+            library_rows[existing_idx] = record
         else:
-            # Library/mixes goes to library.csv
-            existing_idx = None
-            for idx, lib_row in enumerate(library_rows):
-                if lib_row.get("track_id") == record["track_id"]:
-                    existing_idx = idx
-                    break
-            
-            if existing_idx is not None:
-                # Update existing record (file was moved/renamed)
-                library_rows[existing_idx] = record
-            else:
-                # Add new record
-                library_rows.append(record)
+            library_rows.append(record)
         
         # Po udanym przeniesieniu wyczyść spam tagi i zapisz zaakceptowane metadane
         print(f"\n🔧 Processing tags for: {dest_path.name}")
@@ -1820,28 +1778,17 @@ def cmd_apply(args: argparse.Namespace) -> None:
     remaining = [r for r in rows if r.get("track_id") not in processed_ids]
     _save_unsorted(remaining)
     save_records(CSV_PATH, library_rows)
-    
-    # Save archive records if any were added
-    archived_count = len(archived_rekordbox_ids) + len(archived_traktor_ids)
-    if archived_rekordbox_ids or archived_traktor_ids:
-        save_records(ARCHIVE_CSV_PATH, archive_rows)
-        print(f"📦 Zapisano {len(archive_rows)} rekordów do library-archive.csv")
-    
+
     # Save rejected registry (always — append-only, even if no new rejects this run)
     _new_rejects = len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
     if _new_rejects > 0:
         save_rejected(REJECTED_CSV_PATH, rejected_registry)
         print(f"🚫 Zapisano {len(rejected_registry)} rekordów do library-rejected.csv (+{_new_rejects} nowych)")
-    
-    # Count actual library additions (not archive/reject)
-    rejected_count = len(rejected_rekordbox_ids) + len(rejected_traktor_ids)
-    # Use max of rekordbox/traktor IDs for count since track may have both or one
-    rejected_tracks = max(len(rejected_rekordbox_ids), len(rejected_traktor_ids), 
+
+    rejected_tracks = max(len(rejected_rekordbox_ids), len(rejected_traktor_ids),
                          len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject"]))
-    archived_tracks = max(len(archived_rekordbox_ids), len(archived_traktor_ids),
-                         len([r for r in ready if (r.get("disposition") or "").lower().strip() == "archive"]))
-    library_added = len(processed_ids) - rejected_tracks - archived_tracks
-    print(f"Przeniesiono: {library_added} do biblioteki, {archived_tracks} do archiwum, {rejected_tracks} do odrzuconych.")
+    library_added = len(processed_ids) - rejected_tracks
+    print(f"Przeniesiono: {library_added} do biblioteki, {rejected_tracks} do odrzuconych.")
     print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")
     print(f"🎨 Okładki: applied={covers_applied}, skipped={covers_skipped}, failed={covers_failed}")
     print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
@@ -1853,14 +1800,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
         for reason, count in sorted(skipped_reasons.items()):
             print(f"   {reason}: {count}")
     
-    # Remove rejected/archived tracks from DJ software
-    all_rekordbox_to_remove = rejected_rekordbox_ids + archived_rekordbox_ids
-    all_traktor_to_remove = rejected_traktor_ids + archived_traktor_ids
-    
+    # Remove rejected tracks from DJ software
+    all_rekordbox_to_remove = rejected_rekordbox_ids
+    all_traktor_to_remove = rejected_traktor_ids
+
     if not args.dry_run and (all_rekordbox_to_remove or all_traktor_to_remove):
         print()
         print("=" * 60)
-        print("🗑️  REMOVING REJECTED/ARCHIVED FROM DJ SOFTWARE")
+        print("🗑️  REMOVING REJECTED FROM DJ SOFTWARE")
         print("=" * 60)
         print()
         

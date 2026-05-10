@@ -117,9 +117,6 @@ body {
 #stats-bar .stat-reject {
   color: var(--red);
 }
-#stats-bar .stat-archive {
-  color: #b0a0e0;
-}
 #stats-bar .stat-mixes {
   color: #e0b060;
 }
@@ -414,10 +411,6 @@ tbody tr.disp-reject.active {
   box-shadow: inset 3px 0 0 var(--red);
 }
 
-tbody tr.disp-archive:not(.active) {
-  opacity: 0.6;
-}
-
 tbody tr.disp-mixes {
   background: rgba(224, 176, 96, 0.08);
 }
@@ -497,7 +490,6 @@ thead .col-ai {
 /* disposition select coloring */
 .disp-sel-library { color: var(--green); }
 .disp-sel-reject  { color: var(--red); }
-.disp-sel-archive { color: #b0a0e0; }
 .disp-sel-mixes   { color: #e0b060; }
 .disp-sel-later   { color: var(--yellow); }
 .disp-sel-empty   { color: var(--text-dim); }
@@ -864,10 +856,6 @@ kbd {
 .badge-dest.dest-library {
   background: rgba(39, 174, 96, 0.2);
   color: #2ecc71;
-}
-.badge-dest.dest-archive {
-  background: rgba(149, 165, 166, 0.2);
-  color: #95a5a6;
 }
 .badge-dest.dest-rejected {
   background: rgba(231, 76, 60, 0.2);
