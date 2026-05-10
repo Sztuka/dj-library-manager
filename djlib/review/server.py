@@ -2225,6 +2225,13 @@ def run_server(
     no_browser: bool = False,
 ) -> None:
     """Start the review UI server."""
+    from djlib.library_schema import verify_library_sha256
+    if not verify_library_sha256(CSV_PATH):
+        print(
+            f"\n⚠️  WARNING: library.csv SHA-256 mismatch — file may be corrupted.\n"
+            f"   Check data/backups/ and restore if needed before using the Review UI.\n"
+        )
+
     url = f"http://{host}:{port}"
     print(f"\n🎧  Review UI: {url}")
     print(f"   Source:  unsorted.csv → {UNSORTED_CSV}")
