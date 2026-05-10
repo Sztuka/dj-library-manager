@@ -6,6 +6,7 @@ from typing import Dict, Iterable, Iterator, List, Mapping, Sequence
 import csv
 
 from djlib.filename import build_final_filename
+from djlib.locks import csv_lock
 
 
 @dataclass(frozen=True)
@@ -227,10 +228,13 @@ def write_unsorted_rows(
     normalized_rows = [normalize_unsorted_row(r) for r in rows]
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=UNSORTED_FIELDNAMES, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(normalized_rows)
+    # Lock to serialize against concurrent Review UI saves and CLI runs.
+    # Re-entrant: callers doing read-modify-write can hold the lock externally.
+    with csv_lock(path):
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=UNSORTED_FIELDNAMES, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(normalized_rows)
 
 
 def is_done(value: str | None) -> bool:

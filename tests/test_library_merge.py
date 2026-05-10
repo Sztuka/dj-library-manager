@@ -126,6 +126,10 @@ def test_djlib_owned_fields_list_is_stable():
         "analysis_source",
         "field_sources",
         "duplicate_paths",
+        # Gig tracking: set by gig-prep, must survive DJ-software re-syncs
+        # so a sync during an active gig doesn't overwrite the live_location.
+        "live_location",
+        "live_path",
     }
 
 

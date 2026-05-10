@@ -16,6 +16,7 @@ from djlib.library_schema import (
     LIBRARY_SCHEMA_VERSION,
     merge_with_existing_library,
     save_library_csv,
+    verify_library_sha256,
 )
 
 
@@ -117,15 +118,23 @@ def test_write_failure_does_not_corrupt_existing(tmp_path: Path) -> None:
             save_library_csv(dest, [{"track_id": "corrupted"}])
 
     # Original file untouched, no .tmp junk left lying around.
+    # `.library.csv.lock` is expected (csv_lock sidecar, intentional).
     assert dest.read_bytes() == original_bytes
-    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".library.csv.")]
+    leftovers = [
+        p for p in tmp_path.iterdir()
+        if p.name.startswith(".library.csv.") and not p.name.endswith(".lock")
+    ]
     assert leftovers == []
 
 
 def test_no_tmp_file_leaks_on_success(tmp_path: Path) -> None:
     dest = tmp_path / "library.csv"
     save_library_csv(dest, [{"track_id": "x"}])
-    leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".library.csv.")]
+    # `.library.csv.lock` is expected (csv_lock sidecar, intentional).
+    leftovers = [
+        p.name for p in tmp_path.iterdir()
+        if p.name.startswith(".library.csv.") and not p.name.endswith(".lock")
+    ]
     assert leftovers == []
 
 
@@ -154,6 +163,35 @@ def test_sidecar_updated_on_rewrite(tmp_path: Path) -> None:
     meta2 = json.loads(dest.with_suffix(".schema.json").read_text(encoding="utf-8"))
     assert meta1["row_count"] == 1
     assert meta2["row_count"] == 2
+
+
+def test_sha256_sidecar_created_and_valid(tmp_path: Path) -> None:
+    dest = tmp_path / "library.csv"
+    save_library_csv(dest, [{"track_id": "x", "artist": "Burial"}])
+    sha_file = dest.parent / "library.csv.sha256"
+    assert sha_file.exists(), "SHA-256 sidecar must be created alongside library.csv"
+    digest = sha_file.read_text(encoding="utf-8").strip()
+    assert len(digest) == 64, f"Expected 64-char hex digest, got {len(digest)}"
+    assert verify_library_sha256(dest) is True
+
+
+def test_sha256_sidecar_updated_on_rewrite(tmp_path: Path) -> None:
+    dest = tmp_path / "library.csv"
+    save_library_csv(dest, [{"track_id": "v1"}])
+    sha_file = dest.parent / "library.csv.sha256"
+    digest1 = sha_file.read_text(encoding="utf-8").strip()
+    save_library_csv(dest, [{"track_id": "v1"}, {"track_id": "v2"}])
+    digest2 = sha_file.read_text(encoding="utf-8").strip()
+    assert digest1 != digest2, "SHA-256 must change when content changes"
+    assert verify_library_sha256(dest) is True
+
+
+def test_sha256_mismatch_detected(tmp_path: Path) -> None:
+    dest = tmp_path / "library.csv"
+    save_library_csv(dest, [{"track_id": "x"}])
+    # Corrupt the CSV without going through save_library_csv
+    dest.write_text("garbage", encoding="utf-8")
+    assert verify_library_sha256(dest) is False
 
 
 def test_default_retention_is_sane() -> None:

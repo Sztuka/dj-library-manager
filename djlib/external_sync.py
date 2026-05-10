@@ -481,7 +481,18 @@ def import_rekordbox_snapshot(
             'play_count': str(getattr(content, 'DJPlayCount', '')),  # Fixed: was PlayCount
             'snapshot_date': snapshot_date,
         }
-        
+
+        # READ-ONLY: serialize cue points — never calls db.commit()
+        try:
+            from djlib.cues.schema import serialize_rb_cues
+            track_data['cue_points_rb'] = serialize_rb_cues(
+                getattr(content, 'Cues', None)
+            )
+            cue_list = list(getattr(content, 'Cues', None) or [])
+            track_data['cue_count'] = str(len(cue_list))
+        except Exception as _exc:
+            log.warning("Could not read RB cues for %s: %s", full_path, _exc)
+
         tracks.append(track_data)
         
         # Collect files to tag
@@ -668,7 +679,7 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
             if entry.info.last_played:
                 last_played = str(entry.info.last_played)
         
-        # Count cue points (indicates track usage)
+        # READ-ONLY: count and serialize cue points — does not modify collection
         cue_count = len(entry.cue_v2) if entry.cue_v2 else 0
         
         # PRIORITY: Read existing DJLIB_TRACK_ID from file tags (if file exists)
@@ -706,9 +717,16 @@ def import_traktor_snapshot(collection_nml_path: Path, output_path: Path, tag_fi
             'cue_count': str(cue_count),
             'snapshot_date': snapshot_date,
         }
-        
+
+        # READ-ONLY: serialize cue points — does not modify Traktor collection
+        try:
+            from djlib.cues.schema import serialize_tk_cues
+            track_data['cue_points_tk'] = serialize_tk_cues(entry.cue_v2)
+        except Exception as _exc:
+            log.warning("Could not read Traktor cues for %s: %s", full_path, _exc)
+
         tracks.append(track_data)
-        
+
         # Collect files to tag
         if tag_files and file_path_obj.exists():
             tracks_to_tag.append({
