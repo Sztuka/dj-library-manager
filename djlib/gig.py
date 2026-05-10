@@ -41,7 +41,7 @@ def parse_m3u(path: Path) -> List[str]:
     """
     playlist_dir = path.parent
     paths: List[str] = []
-    with path.open(encoding="utf-8", errors="replace") as f:
+    with path.open(encoding="utf-8-sig", errors="replace") as f:
         for raw in f:
             line = raw.strip()
             if not line or line.startswith("#"):
@@ -143,7 +143,8 @@ def validate_gig_prep(
             continue
 
         live_loc = (r.library_row or {}).get("live_location", "") or ""
-        if live_loc and live_loc != "nas" and live_loc != f"gig:{gig_id}":
+        safe_locs = ("nas", f"gig:{gig_id}", f"gig:{gig_id}:preparing")
+        if live_loc and live_loc not in safe_locs:
             errors.append(ValidationError(
                 kind="ON_ANOTHER_GIG",
                 path=r.playlist_path,
@@ -298,12 +299,15 @@ def _sha256_file(path: Path) -> str:
 def copy_track_atomic(src: Path, dest: Path) -> str:
     """Copy src → dest atomically. Returns sha256 of the copied file.
 
-    Protocol: copy to dest.partial → fsync → rename to dest.
-    Raises OSError on failure. The .partial file is left on disk if we
-    crash mid-copy so callers can detect and clean it on resume.
+    Protocol: hash src → copy to dest.partial → fsync → rename → verify.
+    Cross-checks src and dest hashes to catch bit flips during transfer.
+    Raises OSError or ValueError on failure. The .partial file is left on
+    disk if we crash mid-copy so callers can detect and clean it on resume.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_suffix(dest.suffix + ".partial")
+
+    src_sha = _sha256_file(src)
 
     with src.open("rb") as fsrc, partial.open("wb") as fdest:
         shutil.copyfileobj(fsrc, fdest)
@@ -311,7 +315,14 @@ def copy_track_atomic(src: Path, dest: Path) -> str:
         os.fsync(fdest.fileno())
 
     partial.rename(dest)
-    return _sha256_file(dest)
+    dest_sha = _sha256_file(dest)
+
+    if src_sha != dest_sha:
+        dest.unlink(missing_ok=True)
+        raise ValueError(
+            f"SHA-256 mismatch after copy: src={src_sha[:12]}… dest={dest_sha[:12]}…"
+        )
+    return dest_sha
 
 
 # ── Single-instance lock ──────────────────────────────────────────────────────
@@ -376,6 +387,42 @@ def run_gig_prep_copy(
     from djlib.locks import csv_lock
 
     gig_dir.ensure()
+
+    proc_lock = GigPrepLock(gig_dir.lock_path)
+    if not proc_lock.acquire():
+        raise RuntimeError(
+            f"Another gig-prep is already running for '{gig_id}'. "
+            f"Lock: {gig_dir.lock_path}"
+        )
+
+    try:
+        return _run_gig_prep_copy_locked(
+            gig_id=gig_id,
+            resolved=resolved,
+            csv_path=csv_path,
+            gig_dir=gig_dir,
+            resume=resume,
+            source_playlist=source_playlist,
+            load_library_csv=load_library_csv,
+            save_library_csv=save_library_csv,
+            csv_lock=csv_lock,
+        )
+    finally:
+        proc_lock.release()
+
+
+def _run_gig_prep_copy_locked(
+    gig_id: str,
+    resolved: List[ResolveResult],
+    csv_path: Path,
+    gig_dir: GigDir,
+    resume: bool,
+    source_playlist: str,
+    load_library_csv,
+    save_library_csv,
+    csv_lock,
+) -> "GigPrepResult":
+    """Inner implementation — called only when GigPrepLock is held."""
     prep = PrepState(gig_dir.prep_state_path)
     result = GigPrepResult()
 
@@ -452,13 +499,6 @@ def run_gig_prep_copy(
             if tid in by_tid:
                 by_tid[tid]["live_location"] = committed_loc
                 by_tid[tid]["live_path"] = vt["local_path"]
-        # Also update tracks from previous resume sessions
-        if resume:
-            states = prep.get_track_states()
-            for tid, evt in states.items():
-                if evt == PREP_VERIFIED and tid in by_tid:
-                    # find local path from last verified event
-                    pass  # already committed in prior run, live_location already set
         save_library_csv(csv_path, rows)
 
     for vt in verified_tracks:
