@@ -273,6 +273,37 @@ def merge_with_existing_library(
     return merged
 
 
+def apply_gig_track_guard(
+    merged_rows: List[Dict[str, object]],
+    existing_rows: List[Dict[str, object]],
+) -> tuple[List[Dict[str, object]], int]:
+    """Restore the full pre-sync row for any track currently on an active gig.
+
+    `merge_with_existing_library` preserves DJLIB_OWNED_FIELDS (including
+    `live_location`) but still updates DJ-software-owned fields (bpm, key,
+    artist, title …) from the fresh snapshot. For gig-tracks that is wrong:
+    the NAS copy seen by Rekordbox is stale — the MacBook copy is live. We
+    must not overwrite anything with data from the NAS-side DJ software.
+
+    Returns (patched_rows, skip_count).
+    """
+    existing_full_by_tid: Dict[str, Dict[str, object]] = {
+        str(r.get("track_id", "")): r
+        for r in existing_rows
+        if r.get("track_id")
+    }
+
+    skipped = 0
+    for row in merged_rows:
+        tid = str(row.get("track_id", ""))
+        live_loc = str(row.get("live_location", "") or "")
+        if live_loc and live_loc != "nas":
+            if tid in existing_full_by_tid:
+                row.update(existing_full_by_tid[tid])
+                skipped += 1
+    return merged_rows, skipped
+
+
 def load_library_csv(csv_path: Path) -> List[Dict[str, str]]:
     """Read existing library.csv. Returns [] if absent or empty."""
     if not csv_path.exists():

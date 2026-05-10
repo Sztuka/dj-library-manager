@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from djlib.library_schema import (
     DJLIB_OWNED_FIELDS,
+    apply_gig_track_guard,
     merge_with_existing_library,
 )
 
@@ -154,3 +155,54 @@ def test_added_date_preserved_over_date_added_from_sync():
     assert out[0]["added_date"] == "2024-01-01"
     # date_added from new row still passes through
     assert out[0]["date_added"] == "2025-12-31"
+
+
+# ── apply_gig_track_guard ────────────────────────────────────────────────────
+
+
+def test_gig_track_not_updated_by_sync():
+    """A track with live_location='gig:friday' must not have its
+    DJ-software-owned fields (bpm, artist, …) overwritten during sync."""
+    existing = [
+        {
+            "track_id": "gig-tid",
+            "live_location": "gig:friday",
+            "artist": "Original Artist",
+            "bpm": "128",
+            "rating": "5",
+        }
+    ]
+    # Sync brought back different DJ-software values
+    merged = [
+        {
+            "track_id": "gig-tid",
+            "live_location": "gig:friday",  # preserved by merge_with_existing_library
+            "artist": "Stale NAS Artist",
+            "bpm": "130",
+            "rating": "3",
+        }
+    ]
+    patched, skipped = apply_gig_track_guard(merged, existing)
+    assert skipped == 1
+    assert patched[0]["artist"] == "Original Artist"
+    assert patched[0]["bpm"] == "128"
+    assert patched[0]["rating"] == "5"
+
+
+def test_nas_track_not_affected_by_guard():
+    """Tracks with live_location='nas' (or empty) pass through unchanged."""
+    existing = [{"track_id": "nas-tid", "live_location": "nas", "bpm": "120"}]
+    merged = [{"track_id": "nas-tid", "live_location": "nas", "bpm": "124"}]
+    patched, skipped = apply_gig_track_guard(merged, existing)
+    assert skipped == 0
+    assert patched[0]["bpm"] == "124"
+
+
+def test_guard_skips_tracks_with_no_existing_row():
+    """If a gig-track appears in merged but not in existing (shouldn't happen
+    in practice), guard skips it gracefully without raising."""
+    existing: list = []
+    merged = [{"track_id": "ghost", "live_location": "gig:xyz", "artist": "X"}]
+    patched, skipped = apply_gig_track_guard(merged, existing)
+    assert skipped == 0  # no existing row to restore from
+    assert patched[0]["artist"] == "X"
