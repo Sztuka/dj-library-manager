@@ -2537,6 +2537,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             
             from djlib.library_schema import (
                 LIBRARY_FIELDNAMES as _CANONICAL,
+                apply_gig_track_guard,
                 load_library_csv,
                 merge_with_existing_library,
                 save_library_csv,
@@ -2567,40 +2568,15 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     for r in existing_rows
                     if r.get("track_id")
                 }
-                # Build lookup of live_location by track_id to guard the sync:
-                # tracks currently on a MacBook gig must not be overwritten with
-                # stale NAS data (NAS RB won't report accurate play_count / cues).
-                existing_live_by_tid: Dict[str, str] = {
-                    str(r.get("track_id", "")): str(r.get("live_location", "") or "nas")
-                    for r in existing_rows
-                    if r.get("track_id")
-                }
-                # Full-row lookup for live-gig restore (O(1) per track instead of O(n²)).
-                existing_full_by_tid: Dict[str, Dict] = {
-                    str(r.get("track_id", "")): r
-                    for r in existing_rows
-                    if r.get("track_id")
-                }
 
                 new_rows = df.fillna("").to_dict(orient="records")
                 merged_rows = merge_with_existing_library(new_rows, existing_rows)
+                merged_rows, live_skipped = apply_gig_track_guard(merged_rows, existing_rows)
 
-                # Post-merge: handle cue_points and live_location guards.
-                live_skipped = 0
+                # Preserve existing cue_points when the fresh sync produced
+                # no data (read error or track genuinely absent from RB/Traktor).
                 for row in merged_rows:
                     tid = str(row.get("track_id", ""))
-                    live_loc = existing_live_by_tid.get(tid, "nas")
-
-                    if live_loc and live_loc != "nas":
-                        # Track is on a MacBook for an active gig — restore the
-                        # full existing row to avoid overwriting with stale NAS data.
-                        if tid in existing_full_by_tid:
-                            row.update(existing_full_by_tid[tid])
-                            live_skipped += 1
-                        continue
-
-                    # Preserve existing cue_points when the fresh sync produced
-                    # no data (read error or track genuinely absent from RB/Traktor).
                     ex = existing_cues_by_tid.get(tid, {})
                     if not row.get("cue_points_rb") and ex.get("rb"):
                         row["cue_points_rb"] = ex["rb"]
