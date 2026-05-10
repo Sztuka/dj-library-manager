@@ -3794,6 +3794,58 @@ def cmd_review(args: argparse.Namespace) -> None:
     )
 
 
+# ============ GIG PREP ============
+
+def cmd_gig_prep(args: argparse.Namespace) -> None:
+    """Dry-run: parse playlist, resolve tracks, validate, print plan."""
+    from djlib.gig import (
+        ResolveResult,
+        _fmt_bytes,
+        estimate_total_bytes,
+        parse_m3u,
+        resolve_tracks,
+        validate_gig_prep,
+    )
+    from djlib.library_schema import load_library_csv
+
+    m3u_path = Path(args.from_m3u)
+    if not m3u_path.exists():
+        print(f"ERROR: playlist not found: {m3u_path}")
+        raise SystemExit(1)
+
+    playlist_paths = parse_m3u(m3u_path)
+    library_rows = load_library_csv(CSV_PATH)
+    resolved = resolve_tracks(playlist_paths, library_rows)
+    errors = validate_gig_prep(args.gig_id, resolved)
+
+    found = [r for r in resolved if r.track_id]
+    not_found = [r for r in resolved if r.match_type == "not_found"]
+    on_gig = [e for e in errors if e.kind == "ON_ANOTHER_GIG"]
+    missing_file = [e for e in errors if e.kind == "FILE_MISSING"]
+    total_bytes = estimate_total_bytes(resolved)
+
+    print(f"\nGig prep plan: {args.gig_id}")
+    print(f"  Playlist : {m3u_path} ({len(playlist_paths)} tracks)")
+    print(f"  Resolved : {len(found)} found in library.csv")
+    if not_found:
+        print(f"  Not in library    : {len(not_found)}")
+    if on_gig:
+        print(f"  On another gig    : {len(on_gig)}")
+    if missing_file:
+        print(f"  File missing on disk: {len(missing_file)}")
+    print(f"  Est. size: {_fmt_bytes(total_bytes)}")
+
+    if errors:
+        print("\n  ERRORS:")
+        for e in errors:
+            detail = f" ({e.detail})" if e.detail else ""
+            print(f"    [{e.kind}]{detail} {e.path}")
+        print()
+        raise SystemExit(1)
+
+    print(f"\n  Plan is clean — {len(found)} tracks ready to copy.\n")
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3979,6 +4031,13 @@ def build_parser() -> argparse.ArgumentParser:
     icd.add_argument("--dump", required=False, help="Path to .tar.zst dump file (auto-detect if not provided)")
     icd.add_argument("--force", action="store_true", help="Rebuild database even if it exists")
     icd.set_defaults(func=cmd_import_canonical_dump)
+
+    # ========== GIG PREP ==========
+    gig = sp.add_parser("gig-prep", help="Prepare a gig: copy tracks from NAS to MacBook (Phase 2)")
+    gig.add_argument("gig_id", help="Unique gig identifier, e.g. friday-2026-05-15")
+    gig.add_argument("--from-m3u", required=True, metavar="PATH", help="Path to M3U/M3U8 playlist file")
+    gig.add_argument("--dry-run", action="store_true", help="Print plan without copying anything (required for now)")
+    gig.set_defaults(func=cmd_gig_prep)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")
