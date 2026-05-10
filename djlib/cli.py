@@ -1567,7 +1567,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 library_index[_mk] = new_info
             _batch_match_keys[_mk] = src.name
         
-        # Track rejected/archived files for DJ software removal
+        # Track rejected files for DJ software removal
         if destination == "reject":
             if r.get("rekordbox_id"):
                 rejected_rekordbox_ids.append(str(r.get("rekordbox_id") or ""))
@@ -1610,7 +1610,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         else:
             analysis_source = ""
 
-        # Update record (only for library/mixes destinations OR archive for archive CSV)
+        # Update library.csv with final record metadata
         record = {
             "track_id": r.get("track_id", ""),
             "file_path": str(dest_path),
@@ -1763,7 +1763,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 tags_clean_errors += 1
 
     if args.dry_run:
-        print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (disposition: library/reject/archive/mixes).")
+        print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (disposition: library/reject/mixes).")
         return
 
     if log_rows:
