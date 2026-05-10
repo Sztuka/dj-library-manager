@@ -207,6 +207,10 @@ def parse_from_filename(path: Path) -> tuple[str, str, str]:
     Jeśli nie znajdzie artysty — fallback: ("", <basename>, "")."""
     name = path.stem
 
+    # Strip our own [KEY BPM] suffix before parsing (e.g. "[8A 128]", "[?? ??]").
+    # build_final_filename appends this; without stripping it re-enters as part of title.
+    name = re.sub(r"\s*\[(?:\d{1,2}[AB]|\?\?)\s+(?:\d+|\?\?)\]\s*$", "", name)
+
     # 1) wstępne czyszczenie nazwy pliku
     # - zamień podkreślenia na spacje
     # - usuń śmieciowe wstawki w nawiasach zawierające URL/domene (np. (www.mp3vip.org))

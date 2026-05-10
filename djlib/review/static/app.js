@@ -52,7 +52,7 @@
   };
 
   // Auto-destination mapping
-  const AUTO_DEST = { accept: "library", reject: "reject" };
+  const EXPORT_DISPOSITIONS = new Set(["library", "reject", "archive", "mixes"]);
 
   // Batch selection
   let selectedSet = new Set();
@@ -79,8 +79,7 @@
   const emptyState = document.getElementById("empty-state");
   const sourceSelect = document.getElementById("source-select");
   const searchInput = document.getElementById("search-input");
-  const filterStatus = document.getElementById("filter-status");
-  const filterDone = document.getElementById("filter-done");
+  const filterDisposition = document.getElementById("filter-disposition");
   const filterBpm = document.getElementById("filter-bpm");
   const filterKey = document.getElementById("filter-key");
   const filterRating = document.getElementById("filter-rating");
@@ -200,10 +199,9 @@
   const batchGenre = document.getElementById("batch-genre");
   const batchYear = document.getElementById("batch-year");
   const batchArtist = document.getElementById("batch-artist");
-  const batchStatus = document.getElementById("batch-status");
-  const batchDest = document.getElementById("batch-dest");
+  const batchGroup = document.getElementById("batch-group");
+  const batchDisposition = document.getElementById("batch-disposition");
   const batchRating = document.getElementById("batch-rating");
-  const batchDone = document.getElementById("batch-done");
   const batchApply = document.getElementById("batch-apply");
   const batchApplyCount = document.getElementById("batch-apply-count");
 
@@ -229,7 +227,22 @@
       { key: "title", label: "Title", width: "16%", type: "editable" },
       { key: "version_info", label: "Version", width: "10%", type: "editable" },
       { key: "_in_library", label: "Lib", width: "36px", type: "in-library" },
+      {
+        key: "file_path",
+        label: "Folder",
+        width: "110px",
+        cls: "col-folder",
+        fmt: function (fp) {
+          if (!fp) return "—";
+          var parts = fp.replace(/\\/g, "/").split("/");
+          var dirs = parts.slice(0, -1).filter(Boolean);
+          if (!dirs.length) return "—";
+          return dirs.slice(-2).join("/");
+        },
+      },
       { key: "genre", label: "Genre", width: "11%", type: "genre-select" },
+      { key: "occasion_tags", label: "Group", width: "90px", type: "editable", cls: "col-group" },
+      { key: "disposition", label: "Disp", width: "88px", type: "disposition-select" },
       {
         key: "year",
         label: "Year",
@@ -240,9 +253,6 @@
       { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
       { key: "key_camelot", label: "Key", width: "40px", cls: "col-key" },
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
-      { key: "destination", label: "Dest", width: "72px", type: "dest-select" },
-      { key: "status", label: "Status", width: "68px", type: "status-display" },
-      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
     ],
     library: [
       { key: "_index", label: "#", width: "36px" },
@@ -305,7 +315,7 @@
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
       { key: "rekordbox_id", label: "RB", width: "36px", cls: "col-bpm" },
       { key: "traktor_id", label: "TK", width: "36px", cls: "col-bpm" },
-      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+      { key: "disposition", label: "Disp", width: "88px", type: "disposition-select" },
     ],
     "library-fix": [
       { key: "_select", label: "", width: "28px", type: "row-select" },
@@ -322,8 +332,7 @@
       { key: "ai_version", label: "AI Ver", width: "8%", cls: "col-ai" },
       { key: "ai_genre", label: "AI Genre", width: "8%", cls: "col-ai" },
       { key: "ai_confidence", label: "Conf", width: "40px", cls: "col-ai col-bpm" },
-      { key: "status", label: "Status", width: "60px", type: "status-badge" },
-      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+      { key: "disposition", label: "Disp", width: "88px", type: "disposition-select" },
     ],
   };
 
@@ -490,10 +499,9 @@
     if (batchGenre) batchGenre.value = "";
     if (batchYear) batchYear.value = "";
     if (batchArtist) batchArtist.value = "";
-    if (batchStatus) batchStatus.value = "";
-    if (batchDest) batchDest.value = "";
+    if (batchGroup) batchGroup.value = "";
+    if (batchDisposition) batchDisposition.value = "";
     if (batchRating) batchRating.value = "";
-    if (batchDone) batchDone.value = "";
     updateBatchBar();
     applyFilters();
     // Auto-select first row
@@ -547,8 +555,7 @@
     const isLib = currentSource === "library";
     const isUnsorted = currentSource === "unsorted";
     // Unsorted-only filters (hidden on library & processed)
-    filterStatus.style.display = isUnsorted ? "" : "none";
-    filterDone.style.display = isUnsorted ? "" : "none";
+    filterDisposition.style.display = isUnsorted ? "" : "none";
     // Library-only filters
     filterBpm.style.display = isLib ? "" : "none";
     filterKey.style.display = isLib ? "" : "none";
@@ -558,8 +565,7 @@
   // -- Filtering & sorting ------------------------------------
   function applyFilters() {
     const q = searchInput.value.toLowerCase().trim();
-    const sf = filterStatus.value;
-    const df = filterDone.value;
+    const sf = filterDisposition.value;
     const bf = filterBpm.value;
     const kf = filterKey.value;
     const rf = filterRating.value;
@@ -586,13 +592,10 @@
       if (!isLib) {
         if (sf) {
           if (sf === "undecided") {
-            if (t.status && t.status !== "") return false;
+            if (t.disposition && t.disposition !== "") return false;
           } else {
-            if (t.status !== sf) return false;
+            if (t.disposition !== sf) return false;
           }
-        }
-        if (df) {
-          if (t.done !== df) return false;
         }
       }
       // Library-specific filters
@@ -688,30 +691,25 @@
   // -- Stats bar ----------------------------------------------
   function updateStats() {
     if (currentSource === "unsorted") {
-      var acc = 0,
-        rej = 0,
-        rev = 0,
-        und = 0;
+      var lib = 0, rej = 0, arch = 0, mix = 0, later = 0, und = 0;
       for (var i = 0; i < allTracks.length; i++) {
         var t = allTracks[i];
-        if (t.status === "accept") acc++;
-        else if (t.status === "reject") rej++;
-        else if (t.status === "review") rev++;
+        var d = (t.disposition || "").toLowerCase();
+        if (d === "library") lib++;
+        else if (d === "reject") rej++;
+        else if (d === "archive") arch++;
+        else if (d === "mixes") mix++;
+        else if (d === "later") later++;
         else und++;
       }
-      statsBar.innerHTML =
-        '<span class="stat-accept">' +
-        acc +
-        " acc</span> \u00b7 " +
-        '<span class="stat-reject">' +
-        rej +
-        " rej</span> \u00b7 " +
-        '<span class="stat-review">' +
-        rev +
-        " rev</span> \u00b7 " +
-        '<span class="stat-undecided">' +
-        und +
-        " todo</span>";
+      var parts = [];
+      if (lib) parts.push('<span class="stat-lib">' + lib + " lib</span>");
+      if (rej) parts.push('<span class="stat-reject">' + rej + " rej</span>");
+      if (arch) parts.push('<span class="stat-archive">' + arch + " arch</span>");
+      if (mix) parts.push('<span class="stat-mixes">' + mix + " mix</span>");
+      if (later) parts.push('<span class="stat-later">' + later + " later</span>");
+      parts.push('<span class="stat-undecided">' + und + " todo</span>");
+      statsBar.innerHTML = parts.join(" \u00b7 ");
     } else if (currentSource === "library") {
       // Library stats: source breakdown, rated, BPM range
       var srcBoth = 0,
@@ -1391,9 +1389,8 @@
       if (trackTid) tr.dataset.tid = trackTid; // used by ghost-row querySelector
       if (i === currentIndex) tr.classList.add("active");
       if (selectedSet.has(trackTid)) tr.classList.add("selected");
-      if (track.status === "accept") tr.classList.add("status-accept");
-      else if (track.status === "reject") tr.classList.add("status-reject");
-      if (track.done === "TRUE") tr.classList.add("is-done");
+      var disp = (track.disposition || "").toLowerCase();
+      if (disp) tr.classList.add("disp-" + disp);
 
       for (const col of cols) {
         const td = document.createElement("td");
@@ -1436,7 +1433,6 @@
                 e.stopPropagation();
                 track[col.key] = cb.checked ? "TRUE" : "FALSE";
                 saveTrackField(track, col.key, track[col.key]);
-                tr.classList.toggle("is-done", cb.checked);
               };
             })(track, col, cb, tr),
           );
@@ -1457,17 +1453,23 @@
             e.stopPropagation();
           });
           td.appendChild(sel);
-        } else if (col.type === "dest-select") {
-          const sel = buildDestSelect(track[col.key]);
+        } else if (col.type === "disposition-select") {
+          const sel = buildDispositionSelect(track[col.key]);
           sel.addEventListener(
             "change",
-            (function (track, col, sel) {
+            (function (track, col, sel, tr) {
               return function (e) {
                 e.stopPropagation();
+                var prev = track[col.key];
                 track[col.key] = sel.value;
                 saveTrackField(track, col.key, sel.value);
+                // Update row class
+                if (prev) tr.classList.remove("disp-" + prev);
+                if (sel.value) tr.classList.add("disp-" + sel.value);
+                _applyDispositionSelectClass(sel);
+                updateStats();
               };
-            })(track, col, sel),
+            })(track, col, sel, tr),
           );
           sel.addEventListener("mousedown", function (e) {
             e.stopPropagation();
@@ -1486,10 +1488,6 @@
               };
             })(td, track, col),
           );
-        } else if (col.type === "status-display") {
-          td.textContent = track[col.key] || "\u2014";
-          td.classList.add("col-status");
-          if (track[col.key]) td.classList.add(track[col.key]);
         } else if (col.type === "rating") {
           td.classList.add("col-rating");
           td.innerHTML = ratingToStars(track[col.key]);
@@ -1626,18 +1624,24 @@
     }
     return sel;
   }
-  const DEST_OPTIONS = ["", "library", "reject", "archive", "mixes"];
+  const DISPOSITION_OPTIONS = ["", "library", "reject", "archive", "mixes", "later"];
+  const DISPOSITION_LABELS = { "": "\u2014", library: "Library", reject: "Reject", archive: "Archive", mixes: "Mixes", later: "Later" };
 
-  function buildDestSelect(currentValue) {
+  function _applyDispositionSelectClass(sel) {
+    sel.className = "inline-select";
+    if (sel.value) sel.classList.add("disp-sel-" + sel.value);
+  }
+
+  function buildDispositionSelect(currentValue) {
     const sel = document.createElement("select");
-    sel.classList.add("inline-select");
-    for (const d of DEST_OPTIONS) {
+    for (const d of DISPOSITION_OPTIONS) {
       const o = document.createElement("option");
       o.value = d;
-      o.textContent = d || "\u2014";
+      o.textContent = DISPOSITION_LABELS[d] || d;
       if (d === currentValue) o.selected = true;
       sel.appendChild(o);
     }
+    _applyDispositionSelectClass(sel);
     return sel;
   }
 
@@ -1724,10 +1728,9 @@
     const genreVal = batchGenre.value.trim();
     const yearVal = batchYear.value.trim();
     const artistVal = batchArtist.value.trim();
-    const statusVal = batchStatus.value;
-    const destVal = batchDest.value;
+    const groupVal = batchGroup.value.trim();
+    const dispositionVal = batchDisposition.value;
     const ratingVal = batchRating.value;
-    const doneVal = batchDone.value;
 
     // Year validation: 4 digits in plausible DJ-music range
     if (yearVal) {
@@ -1743,10 +1746,9 @@
     if (genreVal) fields.genre = genreVal;
     if (yearVal) fields.year = yearVal;
     if (artistVal) fields.artist = artistVal;
-    if (statusVal) fields.status = statusVal;
-    if (destVal) fields.destination = destVal;
+    if (groupVal !== "") fields.occasion_tags = groupVal;
+    if (dispositionVal) fields.disposition = dispositionVal;
     if (ratingVal !== "") fields.rating = ratingVal;  // "0" is valid for clearing
-    if (doneVal) fields.done = doneVal;
 
     if (selectedSet.size === 0) {
       showToast("Nothing selected", "reject");
@@ -1829,10 +1831,9 @@
     batchGenre.value = "";
     batchYear.value = "";
     batchArtist.value = "";
-    batchStatus.value = "";
-    batchDest.value = "";
+    batchGroup.value = "";
+    batchDisposition.value = "";
     batchRating.value = "";
-    batchDone.value = "";
     // Selection preserved (#4)
     showToast("Applying to " + n + " tracks…", "");
   }
@@ -3524,13 +3525,12 @@
     showToast("Undo: " + Object.keys(entry.prev).join(", "), "");
   }
 
-  // -- Status / actions ---------------------------------------
-  function setStatus(status) {
+  // -- Disposition / actions ----------------------------------
+  function setDisposition(disposition) {
     if (!isEditableSource()) return;
 
     const targets = [];
     if (selectedSet.size > 0) {
-      // Map track_ids to current indices in filteredTracks
       for (let i = 0; i < filteredTracks.length; i++) {
         if (selectedSet.has(trackId(filteredTracks[i]))) {
           targets.push({ idx: i, track: filteredTracks[i] });
@@ -3543,83 +3543,34 @@
     if (targets.length === 0) return;
 
     for (const { idx, track } of targets) {
-      const undoFields = { status: status };
-      if (AUTO_DEST[status]) undoFields.destination = AUTO_DEST[status];
-      pushUndo(track, undoFields);
+      pushUndo(track, { disposition: disposition });
 
-      track.status = status;
-      saveTrackField(track, "status", status);
-
-      if (AUTO_DEST[status]) {
-        track.destination = AUTO_DEST[status];
-        saveTrackField(track, "destination", AUTO_DEST[status]);
-      }
+      var prev = track.disposition || "";
+      track.disposition = disposition;
+      saveTrackField(track, "disposition", disposition);
 
       const row = getDataRow(idx);
       if (row) {
-        row.classList.remove("status-accept", "status-reject");
-        if (status === "accept") row.classList.add("status-accept");
-        else if (status === "reject") row.classList.add("status-reject");
+        if (prev) row.classList.remove("disp-" + prev);
+        if (disposition) row.classList.add("disp-" + disposition);
 
         const cols = COLUMNS[currentSource];
-        const statusColIdx = cols.findIndex(function (c) {
-          return c.key === "status";
-        });
-        if (statusColIdx >= 0 && row.children[statusColIdx]) {
-          const td = row.children[statusColIdx];
-          td.textContent = status || "\u2014";
-          td.className = "col-status" + (status ? " " + status : "");
-        }
-
-        if (AUTO_DEST[status]) {
-          const destColIdx = cols.findIndex(function (c) {
-            return c.key === "destination";
-          });
-          if (destColIdx >= 0 && row.children[destColIdx]) {
-            const sel = row.children[destColIdx].querySelector("select");
-            if (sel) sel.value = AUTO_DEST[status];
-          }
+        const dispColIdx = cols.findIndex(function (c) { return c.key === "disposition"; });
+        if (dispColIdx >= 0 && row.children[dispColIdx]) {
+          const sel = row.children[dispColIdx].querySelector("select");
+          if (sel) { sel.value = disposition; _applyDispositionSelectClass(sel); }
         }
       }
     }
 
-    const label =
-      targets.length > 1
-        ? status.toUpperCase() + " \u00d7" + targets.length
-        : status.toUpperCase();
-    showToast(label, status);
+    const label = (DISPOSITION_LABELS[disposition] || disposition).toUpperCase();
+    const toastClass = disposition === "reject" ? "reject" : disposition === "library" ? "accept" : "";
+    showToast(targets.length > 1 ? label + " \u00d7" + targets.length : label, toastClass);
     updateStats();
-
     clearSelection();
 
     if (targets.length === 1 && currentIndex < filteredTracks.length - 1) {
-      setTimeout(function () {
-        navigateRow(1, false);
-      }, 150);
-    }
-  }
-
-  function toggleDone() {
-    if (currentIndex < 0 || !isEditableSource()) return;
-    const track = filteredTracks[currentIndex];
-    const newVal = track.done === "TRUE" ? "FALSE" : "TRUE";
-    track.done = newVal;
-    saveTrackField(track, "done", newVal);
-    showToast(newVal === "TRUE" ? "Done \u2713" : "Not done", "");
-
-    const row = getDataRow(currentIndex);
-    if (row) {
-      row.classList.toggle("is-done", newVal === "TRUE");
-      const cols = COLUMNS[currentSource];
-      const doneColIdx = cols.findIndex(function (c) {
-        return c.key === "done";
-      });
-      if (doneColIdx >= 0 && row.children[doneColIdx]) {
-        const cb = row.children[doneColIdx].querySelector(
-          'input[type="checkbox"]',
-        );
-        if (cb) cb.checked = newVal === "TRUE";
-      }
+      setTimeout(function () { navigateRow(1, false); }, 150);
     }
   }
 
@@ -3630,7 +3581,7 @@
     for (let offset = 0; offset < filteredTracks.length; offset++) {
       const idx = (start + offset) % filteredTracks.length;
       const t = filteredTracks[idx];
-      if (!t.status || t.status === "") {
+      if (!t.disposition || t.disposition === "" || t.disposition === "later") {
         selectRow(idx);
         if (autoPlay) playTrack(idx);
         return;
@@ -3707,24 +3658,38 @@
         stopPlayback();
         break;
 
-      case "KeyA":
+      case "KeyL":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          setStatus("accept");
+          setDisposition("library");
         }
         break;
 
       case "KeyR":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          setStatus("reject");
+          setDisposition("reject");
         }
         break;
 
-      case "KeyV":
+      case "KeyA":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          setStatus("review");
+          setDisposition("archive");
+        }
+        break;
+
+      case "KeyM":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          setDisposition("mixes");
+        }
+        break;
+
+      case "Period":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          setDisposition("later");
         }
         break;
 
@@ -3758,13 +3723,6 @@
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
           jumpNextUndecided();
-        }
-        break;
-
-      case "KeyD":
-        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-          e.preventDefault();
-          toggleDone();
         }
         break;
 
@@ -3824,8 +3782,7 @@
     selectionAnchor = -1;
     undoStack = [];
     // Reset all filters
-    filterStatus.value = "";
-    filterDone.value = "";
+    filterDisposition.value = "";
     filterBpm.value = "";
     filterKey.value = "";
     filterRating.value = "";
@@ -3842,12 +3799,7 @@
     if (filteredTracks.length > 0 && currentIndex < 0) selectRow(0);
   });
 
-  filterStatus.addEventListener("change", function () {
-    applyFilters();
-    if (filteredTracks.length > 0) selectRow(0);
-  });
-
-  filterDone.addEventListener("change", function () {
+  filterDisposition.addEventListener("change", function () {
     applyFilters();
     if (filteredTracks.length > 0) selectRow(0);
   });
@@ -3888,12 +3840,6 @@
     if (e.key === "Enter") applyBatchFields();
   });
 
-  // Status -> Dest mirror (matches AUTO_DEST behavior in setStatus)
-  batchStatus.addEventListener("change", function () {
-    if (AUTO_DEST[batchStatus.value]) {
-      batchDest.value = AUTO_DEST[batchStatus.value];
-    }
-  });
 
   // -- Init ---------------------------------------------------
   // Check AI availability (non-blocking)

@@ -163,9 +163,8 @@ def test_batch_update_updates_multiple_tracks(client, tmp_path, monkeypatch):
 
     csv_file = tmp_path / "unsorted.csv"
     ids = [str(uuid.uuid4()) for _ in range(3)]
-    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "status",
-                  "destination", "done", "rating", "year", "bpm", "key_camelot",
-                  "version_info", "file_path"]
+    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "disposition",
+                  "rating", "year", "bpm", "key_camelot", "version_info", "file_path"]
     rows = [
         {k: "" for k in fieldnames} | {"track_id": tid, "genre": "House", "artist": "Test"}
         for tid in ids
@@ -203,8 +202,8 @@ def test_batch_update_reports_dropped_fields(client, tmp_path, monkeypatch):
 
     csv_file = tmp_path / "unsorted.csv"
     tid = str(uuid.uuid4())
-    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "status",
-                  "destination", "done", "rating", "year", "bpm", "key_camelot"]
+    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "disposition",
+                  "rating", "year", "bpm", "key_camelot"]
     rows = [{k: "" for k in fieldnames} | {"track_id": tid, "genre": "House"}]
     with open(csv_file, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)

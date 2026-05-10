@@ -7,8 +7,32 @@ def test_parse_preserves_hyphenated_artist():
     artist, title, version = parse_from_filename(Path("AC-DC - T.N.T. [12B 128].mp3"))
     assert artist == "AC-DC"
     assert "T.N.T." in title
-    assert "12B 128" in title
+    assert "12B" not in title  # [KEY BPM] suffix must be stripped before parsing
     assert version == ""
+
+
+def test_parse_strips_key_bpm_suffix():
+    """Files processed by our system carry [KEY BPM]; re-scanning must not put it in the title."""
+    a, t, v = parse_from_filename(Path("Artist - Title [8A 128].mp3"))
+    assert a == "Artist"
+    assert t == "Title"
+    assert "8A" not in t
+    assert "128" not in t
+
+
+def test_parse_strips_key_bpm_with_version():
+    a, t, v = parse_from_filename(Path("Caro Emerald - Whatchugot (Pisk Remix) [8A 128].mp3"))
+    assert a == "Caro Emerald"
+    assert t == "Whatchugot"
+    assert v == "Pisk Remix"
+    assert "8A" not in t and "8A" not in v
+
+
+def test_parse_strips_unknown_key_bpm():
+    """[?? ??] (no key/bpm data) must also be stripped."""
+    a, t, v = parse_from_filename(Path("Artist - Title [?? ??].mp3"))
+    assert t == "Title"
+    assert "??" not in t
 
 
 def test_parse_artist_title_version_pattern():
