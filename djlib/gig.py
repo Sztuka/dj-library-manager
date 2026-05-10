@@ -526,4 +526,22 @@ def _run_gig_prep_copy_locked(
     with gig_dir.manifest_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
+    # Write rekordbox.xml — enrich verified tracks with library metadata
+    with csv_lock(csv_path):
+        rows = load_library_csv(csv_path)
+        by_tid = {str(r.get("track_id", "")): r for r in rows}
+
+    rb_tracks = []
+    for vt in verified_tracks:
+        row = by_tid.get(vt["track_id"], {})
+        rb_tracks.append({**row, "local_path": vt["local_path"]})
+
+    if rb_tracks:
+        try:
+            from djlib.rekordbox_xml import write_rekordbox_xml
+            xml_path = gig_dir.path / "rekordbox.xml"
+            write_rekordbox_xml(rb_tracks, gig_id, xml_path)
+        except Exception as exc:
+            print(f"  WARNING: could not write rekordbox.xml: {exc}")
+
     return result
