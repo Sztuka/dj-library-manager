@@ -151,7 +151,7 @@ def _tk_cue_to_dict(cue: Any) -> Dict[str, Any]:
         "len_s":      _safe_float(getattr(cue, "len", None)),
         "repeats":    _safe_int(getattr(cue, "repeats", -1)),
         "hotcue":     _safe_int(getattr(cue, "hotcue", -1)),
-        "color":      int(color) if color is not None else None,
+        "color":      _safe_int(color) if color is not None else None,
     }
 
 

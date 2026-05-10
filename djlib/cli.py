@@ -2613,6 +2613,12 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     for r in existing_rows
                     if r.get("track_id")
                 }
+                # Full-row lookup for live-gig restore (O(1) per track instead of O(n²)).
+                existing_full_by_tid: Dict[str, Dict] = {
+                    str(r.get("track_id", "")): r
+                    for r in existing_rows
+                    if r.get("track_id")
+                }
 
                 new_rows = df.fillna("").to_dict(orient="records")
                 merged_rows = merge_with_existing_library(new_rows, existing_rows)
@@ -2626,12 +2632,8 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     if live_loc and live_loc != "nas":
                         # Track is on a MacBook for an active gig — restore the
                         # full existing row to avoid overwriting with stale NAS data.
-                        if tid in {str(r.get("track_id", "")) for r in existing_rows}:
-                            prev = next(
-                                r for r in existing_rows
-                                if str(r.get("track_id", "")) == tid
-                            )
-                            row.update(prev)
+                        if tid in existing_full_by_tid:
+                            row.update(existing_full_by_tid[tid])
                             live_skipped += 1
                         continue
 
