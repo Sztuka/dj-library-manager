@@ -31,6 +31,7 @@ import yaml
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from djlib.config import (
+    CSV_PATH,
     LOGS_DIR,
     UNSORTED_CSV,
     get_ai_chat_model,
