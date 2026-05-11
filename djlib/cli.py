@@ -1450,6 +1450,23 @@ def cmd_apply(args: argparse.Namespace) -> None:
             print(f"[WARN] Brak destination/target_subfolder dla {src.name}")
             continue
 
+        # ── WAV/FLAC → AIFF conversion ──────────────────────────────────────────
+        # AIFF uses ID3 tags (same as MP3) — Rekordbox displays cover art and
+        # all metadata correctly. WAV/FLAC tag support in Rekordbox is unreliable.
+        _converted_tmp: Optional[Path] = None
+        from djlib.convert import needs_conversion
+        if needs_conversion(src):
+            dest_path = dest_path.with_suffix(".aiff")
+            final_name = dest_path.name
+            if not args.dry_run:
+                from djlib.convert import convert_to_aiff
+                print(f"   🔄 Converting {src.suffix.upper()} → AIFF…")
+                _converted_tmp = convert_to_aiff(src)
+                if _converted_tmp is None:
+                    print(f"   ⚠️  AIFF conversion failed — moving original {src.suffix}")
+                else:
+                    print(f"   ✅ Converted to AIFF")
+
         print(f"{'DRY-RUN ' if args.dry_run else ''}MOVE: {src} -> {dest_path}")
 
         if args.dry_run:
@@ -1517,7 +1534,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
                         break
                     i += 1
         
-        shutil.move(str(src), str(dest_path))
+        _src_to_move = _converted_tmp if _converted_tmp else src
+        shutil.move(str(_src_to_move), str(dest_path))
+        # Remove original WAV/FLAC after successful conversion+move
+        if _converted_tmp and src.exists():
+            src.unlink()
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
 
