@@ -41,6 +41,16 @@ DJ library organizer: scans unsorted audio → enriches metadata (Beatport, Musi
 
 # Gig prep — resume interrupted copy
 .venv/bin/python -m djlib.cli gig-prep friday-2026-05-15 --from-m3u ~/Playlists/friday.m3u --resume
+
+# Gig merge — merge post-gig Rekordbox state back to library.csv (Phase 3)
+.venv/bin/python -m djlib.cli gig-merge friday-2026-05-15
+.venv/bin/python -m djlib.cli gig-merge friday-2026-05-15 --dry-run
+.venv/bin/python -m djlib.cli gig-merge friday-2026-05-15 --resume
+
+# Gig cleanup — delete MacBook audio copies after merge (Phase 4)
+.venv/bin/python -m djlib.cli gig-cleanup friday-2026-05-15
+.venv/bin/python -m djlib.cli gig-cleanup friday-2026-05-15 --verify-nas
+.venv/bin/python -m djlib.cli gig-cleanup friday-2026-05-15 --dry-run
 ```
 
 ## Project Structure
@@ -50,7 +60,9 @@ djlib/              # Main package
   cli.py            # CLI commands (argparse)
   config.py         # Paths, settings, YAML config loader
   csvdb.py          # CSV read/write operations
-  gig.py            # Gig prep: M3U parsing, track resolver, three-phase copy protocol
+  gig.py            # Gig workflow: prep (Phase 2), merge (Phase 3), cleanup (Phase 4)
+  rekordbox_reader.py # Read-only Rekordbox DB fetcher for post-gig merge
+  lww_merge.py      # Last-Write-Wins per-field merge engine
   library_schema.py # library.csv field definitions, safe writer, merge + gig-track guard
   review/           # Flask Review UI
     server.py       # API endpoints + HTML serving
