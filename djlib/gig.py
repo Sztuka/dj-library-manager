@@ -207,6 +207,12 @@ class GigDir:
     gig_id: str
     root: Path = field(default_factory=_default_gig_root)
 
+    def __post_init__(self) -> None:
+        if not self.gig_id or Path(self.gig_id).parts != (self.gig_id,):
+            raise ValueError(
+                f"gig_id must be a simple non-empty name with no path separators: {self.gig_id!r}"
+            )
+
     @property
     def path(self) -> Path:
         return self.root / self.gig_id
@@ -890,5 +896,202 @@ def run_gig_merge(
                     "source":         e.source,
                     "conflict":       str(e.conflict),
                 })
+
+    return result
+
+
+# ── Gig-cleanup ───────────────────────────────────────────────────────────────
+
+
+@dataclass
+class GigCleanupResult:
+    deleted_files: int = 0
+    not_merged: int = 0      # tracks not yet on NAS — blocked cleanup
+    sha_failures: int = 0    # NAS verify failed — those files kept
+    delete_failures: int = 0  # unlink() failed (read-only FS, locked file)
+
+
+def run_gig_cleanup(
+    gig_id: str,
+    csv_path: Path,
+    gig_dir: Optional[GigDir] = None,
+    verify_nas: bool = False,
+    dry_run: bool = False,
+) -> GigCleanupResult:
+    """Remove audio/ from a fully-merged gig, freeing MacBook disk space.
+
+    Safety guards:
+      1. All tracks in gig.csv must have live_location=='nas' in library.csv.
+         Any not-yet-merged track aborts the whole operation.
+      2. (--verify-nas) SHA-256 the NAS copy against the manifest before
+         deleting each MacBook file. Mismatches skip that file only.
+
+    What survives: ~/Gigs/<gig_id>/ directory with manifest.json, gig.csv,
+    prep.state, merge.state kept as historical record. Only audio/ is removed.
+    """
+    from djlib.library_schema import load_library_csv
+    from djlib.locks import csv_lock
+
+    if gig_dir is None:
+        gig_dir = GigDir(gig_id=gig_id)
+
+    if not gig_dir.gig_csv_path.exists():
+        raise FileNotFoundError(
+            f"gig.csv not found at {gig_dir.gig_csv_path} — "
+            "was gig-prep run for this gig_id?"
+        )
+
+    with gig_dir.gig_csv_path.open(encoding="utf-8") as f:
+        gig_rows = list(csv_mod.DictReader(f))
+
+    if not gig_rows:
+        log.warning("gig.csv for %s has no tracks — nothing to clean up", gig_id)
+        return GigCleanupResult()
+
+    manifest_by_tid: Dict[str, Dict] = {}
+    if gig_dir.manifest_path.exists():
+        try:
+            with gig_dir.manifest_path.open(encoding="utf-8") as f:
+                manifest = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"manifest.json for {gig_id} is corrupt or truncated: {exc}"
+            ) from exc
+        for t in manifest.get("tracks", []):
+            tid_m = str(t.get("track_id", "") or "")
+            if tid_m in manifest_by_tid:
+                log.warning(
+                    "manifest for %s has duplicate track_id=%s — only first entry used; "
+                    "check audio/ for orphaned files",
+                    gig_id, tid_m,
+                )
+            else:
+                manifest_by_tid[tid_m] = t
+
+    result = GigCleanupResult()
+
+    # ── Guard: every track must be back on NAS ────────────────────────────────
+    # Use csv_lock to avoid reading a partially-written library.csv.
+    with csv_lock(csv_path):
+        current_rows = load_library_csv(csv_path)
+    live_by_tid: Dict[str, Dict[str, str]] = {
+        str(r.get("track_id", "")): r for r in current_rows
+    }
+
+    for row in gig_rows:
+        tid = str(row.get("track_id", "") or "")
+        if not tid:
+            continue
+        if tid not in live_by_tid:
+            # Track vanished from library.csv — cannot confirm it's on NAS
+            log.warning(
+                "track_id=%s not found in library.csv — cannot confirm it is on NAS; "
+                "run gig-merge to re-establish state",
+                tid,
+            )
+            result.not_merged += 1
+            continue
+        live_loc = str(live_by_tid[tid].get("live_location", "") or "")
+        # Empty live_location = legacy track pre-dating gig-tracking → treat as "nas"
+        if live_loc and live_loc != "nas":
+            log.warning(
+                "track_id=%s not on NAS (live_location=%r) — run gig-merge first",
+                tid, live_loc,
+            )
+            result.not_merged += 1
+
+    if result.not_merged:
+        return result
+
+    # Resolve audio_dir once for path-containment checks below
+    audio_dir_resolved = gig_dir.audio_dir.resolve()
+
+    # ── Per-track: optionally verify NAS, then delete MacBook file ────────────
+    for row in gig_rows:
+        tid = str(row.get("track_id", "") or "")
+        if not tid:
+            continue
+
+        mf = manifest_by_tid.get(tid, {})
+        local_path_str = str(mf.get("local_path", "") or "")
+        if not local_path_str:
+            log.warning("track_id=%s has no local_path in manifest — skipping", tid)
+            continue
+        local_path = Path(local_path_str)
+
+        # Security: refuse to delete anything outside gig audio_dir
+        try:
+            local_path.resolve().relative_to(audio_dir_resolved)
+        except ValueError:
+            log.warning(
+                "track_id=%s local_path %s is outside audio_dir — refusing to delete",
+                tid, local_path,
+            )
+            continue
+
+        nas_path     = Path(str(mf.get("src_path", "") or row.get("old_full_path", "")))
+        manifest_sha = str(mf.get("sha256", "") or "")
+
+        # Use is_file() not exists() — prevents Path("") == Path(".") footgun
+        if not local_path.is_file():
+            continue  # already cleaned up in a prior run
+
+        if verify_nas:
+            if not manifest_sha:
+                log.warning(
+                    "track_id=%s has no sha256 in manifest — skipping delete "
+                    "(cannot verify NAS copy without a reference hash)",
+                    tid,
+                )
+                result.sha_failures += 1
+                continue
+            # Guard against empty nas_path (== Path(".")) before hashing
+            if not nas_path.parts:
+                log.warning(
+                    "track_id=%s has no src_path/old_full_path — cannot verify NAS copy",
+                    tid,
+                )
+                result.sha_failures += 1
+                continue
+            # Guard against self-verify (src and local are the same file)
+            if nas_path.resolve() == local_path.resolve():
+                log.warning(
+                    "track_id=%s src_path and local_path resolve to the same file — "
+                    "skipping delete (would verify file against itself)",
+                    tid,
+                )
+                result.sha_failures += 1
+                continue
+            if not nas_path.exists():
+                log.warning("track_id=%s NAS file missing: %s — skipping delete", tid, nas_path)
+                result.sha_failures += 1
+                continue
+            nas_sha = _sha256_file(nas_path)
+            if nas_sha != manifest_sha:
+                log.warning(
+                    "track_id=%s NAS SHA mismatch (expected %s… got %s…) — skipping delete",
+                    tid, manifest_sha[:12], nas_sha[:12],
+                )
+                result.sha_failures += 1
+                continue
+
+        if dry_run:
+            print(f"  [dry-run] would delete: {local_path}")
+            result.deleted_files += 1
+            continue
+
+        try:
+            local_path.unlink()
+            result.deleted_files += 1
+        except OSError as exc:
+            log.warning("could not delete %s: %s", local_path, exc)
+            result.delete_failures += 1
+
+    # Remove audio/ if now empty (skip in dry_run); tolerate non-empty or OS errors
+    if not dry_run and gig_dir.audio_dir.exists():
+        try:
+            gig_dir.audio_dir.rmdir()  # fails silently if non-empty (e.g. .DS_Store)
+        except OSError:
+            pass
 
     return result
