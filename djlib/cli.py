@@ -3967,6 +3967,60 @@ def cmd_gig_cleanup(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_rewind(args: argparse.Namespace) -> None:
+    """Move WAV/FLAC from library back to unsorted as verified AIFF."""
+    from djlib.rewind import run_rewind, RewindResult
+
+    dry_run = getattr(args, "dry_run", False)
+    resume  = getattr(args, "resume", False)
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}rewind: WAV/FLAC → AIFF → unsorted")
+    print(f"  Library  : {CSV_PATH}")
+    print(f"  Unsorted : {INBOX_DIR}")
+    print(f"  Originals: {INBOX_DIR / '.originals'}")
+    print()
+
+    try:
+        result: RewindResult = run_rewind(
+            csv_path=CSV_PATH,
+            unsorted_dir=INBOX_DIR,
+            logs_dir=LOGS_DIR,
+            dry_run=dry_run,
+            resume=resume,
+        )
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"\nERROR: {type(exc).__name__}: {exc}")
+        raise SystemExit(1)
+
+    if dry_run:
+        return
+
+    print(f"\n  Done.")
+    print(f"    Rewound             : {result.rewound}")
+    if result.skipped_wal:
+        print(f"    Skipped (resumed)   : {result.skipped_wal}")
+    if result.failed_hash_mismatch:
+        print(f"    Failed (hash mismatch): {result.failed_hash_mismatch}  ← audio may be corrupt")
+    if result.failed_conversion:
+        print(f"    Failed (conversion) : {result.failed_conversion}")
+    if result.failed_other:
+        print(f"    Failed (other)      : {result.failed_other}")
+
+    if result.rewound:
+        print(f"\n  Next steps:")
+        print(f"    1. Import AIFF files from {INBOX_DIR} to Rekordbox")
+        print(f"       (let Rekordbox analyze BPM + key before scanning)")
+        print(f"    2. Run: python -m djlib.cli scan")
+        print(f"    3. Review UI → apply")
+        print(f"    4. Delete originals from {INBOX_DIR / '.originals'} when ready")
+
+    if result.failed_hash_mismatch or result.failed_conversion or result.failed_other:
+        raise SystemExit(1)
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4175,6 +4229,20 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--verify-nas", action="store_true",
                          help="SHA-256 verify NAS copy before deleting each MacBook file")
     cleanup.set_defaults(func=cmd_gig_cleanup)
+
+    rewind = sp.add_parser(
+        "rewind",
+        help="Move WAV/FLAC from library back to unsorted as verified AIFF (for re-scan)",
+    )
+    rewind.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be converted and moved without doing anything",
+    )
+    rewind.add_argument(
+        "--resume", action="store_true",
+        help="Resume an interrupted rewind using the existing WAL",
+    )
+    rewind.set_defaults(func=cmd_rewind)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")
