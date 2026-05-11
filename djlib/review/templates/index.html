@@ -26,17 +26,13 @@
           placeholder="Search artist, title, genre…"
           autocomplete="off"
         />
-        <select id="filter-status">
+        <select id="filter-disposition">
           <option value="">All</option>
-          <option value="review">Review</option>
-          <option value="accept">Accepted</option>
-          <option value="reject">Rejected</option>
+          <option value="library">Library</option>
+          <option value="reject">Reject</option>
+          <option value="mixes">Mixes</option>
+          <option value="later">Later</option>
           <option value="undecided">Undecided</option>
-        </select>
-        <select id="filter-done">
-          <option value="">Done: All</option>
-          <option value="FALSE">Not done</option>
-          <option value="TRUE">Done</option>
         </select>
         <!-- Library-specific filters (hidden when not on library) -->
         <select id="filter-bpm" style="display: none">
@@ -68,6 +64,63 @@
         </label>
       </div>
     </header>
+
+    <!-- ── Batch edit bar ────────────────────────────────────────── -->
+    <div id="batch-bar" class="batch-bar hidden">
+      <button id="batch-clear" class="batch-clear-btn" title="Clear selection">✕</button>
+      <span id="batch-count" class="batch-count">0 selected</span>
+      <div class="batch-sep"></div>
+      <select id="batch-genre" class="batch-input batch-genre-select">
+        <option value="">Genre…</option>
+      </select>
+      <input type="text" id="batch-year" class="batch-input batch-year-input" placeholder="Year" maxlength="4" pattern="\d{4}" inputmode="numeric" title="4-digit year (1900–2099)" />
+      <input type="text" id="batch-artist" class="batch-input batch-artist-input" placeholder="Artist…" />
+      <input type="text" id="batch-group" class="batch-input batch-group-input" placeholder="Group…" title="Collection tag (written to Grouping in Rekordbox/Traktor)" />
+      <div class="batch-sep"></div>
+      <select id="batch-disposition" class="batch-input batch-disposition-select">
+        <option value="">Disposition…</option>
+        <option value="library">Library</option>
+        <option value="reject">Reject</option>
+        <option value="mixes">Mixes</option>
+        <option value="later">Later</option>
+      </select>
+      <select id="batch-rating" class="batch-input batch-rating-select">
+        <option value="">Rating…</option>
+        <option value="0">Clear (0)</option>
+        <option value="1">★</option>
+        <option value="2">★★</option>
+        <option value="3">★★★</option>
+        <option value="4">★★★★</option>
+        <option value="5">★★★★★</option>
+      </select>
+      <button id="batch-apply" class="batch-apply-btn">Apply to <span id="batch-apply-count">0</span></button>
+    </div>
+
+    <!-- ── Ghost-row review toolbar (visible only in review mode) ── -->
+    <div id="review-toolbar" class="review-toolbar hidden">
+      <span class="review-mode-label">REVIEW</span>
+      <span id="review-progress" class="review-progress">0/0</span>
+      <div class="review-sep"></div>
+      <span class="review-bulk-label">Apply col:</span>
+      <button class="review-bulk-btn" data-field="genre">Genre</button>
+      <button class="review-bulk-btn" data-field="year">Year</button>
+      <button class="review-bulk-btn" data-field="artist">Artist</button>
+      <button class="review-bulk-btn" data-field="title">Title</button>
+      <button class="review-bulk-btn" data-field="version_info">Version</button>
+      <div class="review-sep"></div>
+      <span class="review-bulk-label">Filter:</span>
+      <button class="review-filter-btn active" data-filter="all">All</button>
+      <button class="review-filter-btn" data-filter="conflicts">Conflicts</button>
+      <button class="review-filter-btn" data-filter="low">⚠ Low conf</button>
+      <div class="review-sep"></div>
+      <label class="review-auto-label" title="Auto-tick cells with confidence ≥ this threshold">Auto ≥
+        <input type="number" id="review-auto-threshold" min="0.5" max="1.0" step="0.05" value="0.85" />
+      </label>
+      <div class="review-sep"></div>
+      <span id="review-ticked-count" class="review-ticked-count">0 ticked</span>
+      <button id="review-apply-btn" class="review-apply-btn" disabled>Apply ticked</button>
+      <button id="review-cancel-btn" class="review-cancel-btn">✕ Cancel</button>
+    </div>
 
     <!-- ── Track table ─────────────────────────────────────────── -->
     <main id="table-container">
@@ -127,13 +180,15 @@
       <span class="sep">·</span>
       <kbd>G</kbd> Genre suggest
       <span class="sep">·</span>
-      <kbd>E</kbd> Re-enrich
+      <kbd>E</kbd> Enrich
       <span class="sep">·</span>
       <kbd>N</kbd> Next undecided
       <span class="sep">·</span>
       <kbd>D</kbd> Done
       <span class="sep">·</span>
-      <kbd>Shift+↑↓</kbd> Batch select
+      <kbd>Shift+↑↓</kbd> Extend selection
+      <span class="sep">·</span>
+      <kbd>☐</kbd> Batch select
       <span class="sep">·</span>
       <kbd>⌘Z</kbd> Undo
       <span class="sep">·</span>
@@ -184,38 +239,6 @@
         ✓ Accept
       </button>
       <button class="ai-banner-dismiss" id="ai-banner-dismiss" title="Dismiss">
-        ✕
-      </button>
-    </div>
-    <!-- ── Enrich result banner ─────────────────────────────────────── -->
-    <div id="enrich-banner" class="enrich-banner hidden">
-      <span class="enrich-banner-icon">🔄</span>
-      <span class="enrich-banner-genre" id="enrich-banner-genre"></span>
-      <span
-        class="enrich-banner-confidence"
-        id="enrich-banner-confidence"
-      ></span>
-      <span class="enrich-banner-sources" id="enrich-banner-sources"></span>
-      <button
-        class="enrich-banner-accept"
-        id="enrich-banner-accept"
-        title="Accept genre"
-      >
-        ✓ Accept
-      </button>
-      <button
-        class="enrich-banner-swap"
-        id="enrich-banner-swap"
-        title="Swap artist ↔ title"
-        style="display: none"
-      >
-        🔀 Swap
-      </button>
-      <button
-        class="enrich-banner-dismiss"
-        id="enrich-banner-dismiss"
-        title="Dismiss"
-      >
         ✕
       </button>
     </div>

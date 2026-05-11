@@ -23,11 +23,11 @@ from djlib import external_sync
 def _write_collection(path: Path, entries: list[Entrytype]) -> None:
     nml = Nml(
         head=Headtype(company="Native Instruments", program="Traktor"),
-        musicfolders="",
+        musicfolders=None,
         collection=Collectiontype(entry=entries, entries=len(entries)),
         sets=Setstype(set=[], entries=0),
         playlists=Playliststype(node=Nodetype(type="FOLDER", name="Root")),
-        indexing="",
+        indexing=None,
         sorting_order=[],
         version=19,
     )
@@ -111,7 +111,8 @@ def test_add_tracks_to_traktor_appends_new_entry(tmp_path: Path) -> None:
     parsed = TraktorCollection(collection_path)
     assert parsed.nml.collection.entries == 1
     entry = parsed.nml.collection.entry[0]
-    assert entry.audio_id == "track-new"
+    # audio_id is intentionally None for new entries — Traktor generates fingerprint on analysis
+    assert entry.audio_id is None
     assert entry.title == "Fresh"
     assert entry.location.dir == external_sync._format_traktor_dir(fresh_file.parent)
 

@@ -509,6 +509,66 @@ All operations logged to `LOGS/`:
 
 ---
 
+## Gig Prep (Phase 2)
+
+### Purpose
+
+Before a gig the DJ needs a local copy of every track on their MacBook — the NAS is not accessible in a club. `gig-prep` automates this: it reads an M3U playlist exported from Rekordbox or Traktor, verifies every track exists in `library.csv`, and copies the audio files to `~/Gigs/<gig_id>/audio/`. The `sync-dj-libraries` command is then safe to run on the NAS without touching the laptop copies.
+
+Entry point: `djlib/gig.py`. CLI: `djlib/cli.py::cmd_gig_prep`.
+
+### Three-Phase Copy Protocol
+
+The copy is split into three short phases to survive crashes and concurrent sync runs without data loss.
+
+**Phase 1 — RESERVE (holds `csv_lock` briefly)**
+Sets `live_location = "gig:<id>:preparing"` for every track in the playlist. From this point `apply_gig_track_guard` blocks `sync-dj-libraries` from overwriting these rows, even if the process dies before the copy finishes.
+
+**Phase 2 — COPY (no lock held)**
+For each track: hash the source file (SHA-256), copy to `audio/<track_id><ext>.partial`, fsync, rename to final name, hash the destination, compare. Any mismatch deletes the destination and marks the track `failed` in `prep.state`. Each outcome (`copy_start`, `verified`, `failed`) is appended to the JSON Lines WAL at `prep.state`.
+
+**Phase 3 — COMMIT (holds `csv_lock` briefly)**
+Sets `live_location = "gig:<id>"` and `live_path = <local absolute path>` for all verified tracks. Writes `manifest.json`.
+
+### Gig Directory Layout
+
+```text
+~/Gigs/<gig_id>/
+  audio/<track_id><ext>    # copied audio files, named by track_id
+  prep.state               # JSON Lines WAL — one event per line, append-only
+  manifest.json            # summary written after COMMIT
+  .prep.lock               # flock file — prevents two gig-prep processes on same gig
+```
+
+`GIG_ROOT` in `config.local.yml` overrides the `~/Gigs` default.
+
+### CSV Fields
+
+| Field           | Owner | Values                                                          | Set by                    |
+| --------------- | ----- | --------------------------------------------------------------- | ------------------------- |
+| `live_location` | djlib | `""` / `"nas"` (default), `"gig:<id>:preparing"`, `"gig:<id>"`  | gig-prep RESERVE / COMMIT |
+| `live_path`     | djlib | absolute MacBook path; empty when on NAS                        | gig-prep COMMIT           |
+
+Both fields are in `DJLIB_OWNED_FIELDS` — `sync-dj-libraries` preserves them across re-syncs. `apply_gig_track_guard` (in `library_schema.py`) restores the full pre-sync row for any track whose `live_location` is not `"nas"` or empty, preventing stale NAS data from reaching a live laptop library.
+
+### Phase 3 Contract (what Phase 3 / merge-back needs)
+
+When the gig is over and tracks need to be merged back into the NAS library, Phase 3 will rely on:
+
+- `manifest.json` — maps `track_id` → `local_path`, `sha256`, `src_path`; schema_version 1
+- `prep.state` — full event log for crash auditing and resume
+- `live_location` / `live_path` in `library.csv` — identifies which tracks are away
+
+**TODO (Phase 3):** `gig.csv` snapshot — a frozen copy of each track's library row at prep time, so merge-back can detect fields the DJ edited on the laptop and apply them back to the NAS library. Not yet implemented.
+
+### Known Gaps (from QA review)
+
+- **`gig_id` reuse:** re-running prep for the same `gig_id` after a completed run appends to `prep.state` and may confuse state replay. Use a new `gig_id` or delete the gig directory first.
+- **NFC/NFD path collisions:** filenames that are Unicode-equivalent but byte-different (common on macOS HFS+) may produce duplicate `audio/` entries. No deduplication currently.
+- **Path-as-gig-dir:** if `gig_id` contains `/`, `GigDir` silently creates nested directories. Validate `gig_id` to slug-safe characters before use.
+
+---
+
 ## Future Enhancements
 
 See [possible_upgrades.md](possible_upgrades.md) for planned improvements:

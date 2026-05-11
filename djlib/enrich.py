@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 from djlib.filename import parse_from_filename, split_title_and_version
 from djlib.tags import read_tags
 import json
@@ -533,7 +533,7 @@ def suggest_metadata(path: Path, tags: Dict[str, str], enable_online: bool = Tru
     Priority:
       1) AcoustID fingerprint -> MusicBrainz recording
       2) MusicBrainz search (originals & live only -- skipped for remixes)
-      3) Genre resolver (Last.fm / SoundCloud / Beatport) + year/album
+      3) WS-based classifier + MusicBrainz/Last.fm year/album hints
       4) Offline fallback: filename parsing + existing tags
 
     BPM and Key are preserved from the file (outside the scope of this function).
@@ -780,18 +780,19 @@ def _resolve_via_genre_sources(
     live: bool,
     tags: Dict[str, str],
 ) -> Dict[str, str] | None:
-    """Phase 3 of suggest_metadata: genre resolver + online year/album.
+    """Phase 3 of suggest_metadata: classifier + non-API year/album hints.
 
-    Combines Last.fm, SoundCloud, Beatport and MusicBrainz release-group
-    data to produce genre, year and album suggestions.
-
-    Returns a result dict or *None* when genre confidence is too low.
+    Uses the WS-based production classifier for genre and release year, plus
+    MusicBrainz/Last.fm for album and canonical original-release metadata.
+    Beatport and SoundCloud APIs are intentionally not used here.
     """
     year_from_tags = tags.get("year", "").strip()
     album_from_tags = tags.get("album", "").strip()
     year_online = ""
     album_online = ""
     release_group_id = None
+    classifier_result: Dict[str, Any] | None = None
+    genre_suggest = ""
 
     # For originals: use MusicBrainz release-group for first-release date + album
     if not version:
@@ -803,115 +804,72 @@ def _resolve_via_genre_sources(
             pass
 
     try:
-        from djlib.metadata.genre_resolver import resolve as resolve_genres, ALL_SOURCES
-        from djlib.metadata import lastfm, beatport
-
-        dur_s = dur_sec or None
-        is_remix = bool(version and not live)
-        genre_sources = set(ALL_SOURCES)
-        if is_remix:
-            genre_sources.discard("mb")
-
-        genre_res = resolve_genres(
-            artist, title, version=version, duration_s=dur_s,
-            sources=genre_sources,
-            tag_genre=(tags.get("genre") or "").strip(),
+        from djlib.metadata.genre_classifier import classify_genre
+        classifier_result = classify_genre(
+            artist=artist,
+            title=title,
+            version=version,
+            bpm=(tags.get("bpm") or "").strip(),
+            key=(tags.get("key_camelot") or "").strip(),
+            filename=(tags.get("filename") or "").strip(),
         )
+        if classifier_result.get("year") and not year_online:
+            year_online = str(classifier_result["year"]).strip()
+        if float(classifier_result.get("confidence") or 0.0) >= MIN_GENRE_CONFIDENCE:
+            genre_suggest = str(classifier_result.get("genre") or "").strip()
+    except Exception as exc:
+        logger.debug(f"Classifier lookup failed: {exc}")
 
-        # ---- year / album resolution ----
-        if version:
-            # Remix: try Beatport for specific remix release date
-            try:
-                bp_data = beatport.search_track(
-                    artist, title, duration_s=dur_s, version=version,
-                )
-                if bp_data:
-                    # Beatport's search_track already validates version
-                    # match (version_score > 0) before returning a result,
-                    # so if bp_data is not None the match is acceptable.
-                    rd = bp_data.get("release_date", "")
-                    if rd and rd.strip():
-                        year_online = rd.split("-")[0]
-                    alb = bp_data.get("release_name", "") or bp_data.get("album", "")
-                    if alb and alb.strip():
-                        album_online = alb
-                    # Extract artist from Beatport when our parsed artist
-                    # is empty (e.g. filename without "Artist - Title" pattern).
-                    if not artist.strip() and bp_data.get("artist"):
-                        artist = bp_data["artist"]
-            except Exception:
-                pass
-
-            # Fallback: SoundCloud upload year (captured during genre fetch
-            # — no extra API call, uses _sc_year_cache).
-            if not year_online:
-                try:
-                    from djlib.metadata import soundcloud
-                    sc_year = soundcloud.get_cached_year(artist, title, version)
-                    if not sc_year:
-                        # Cache miss (genre fetch not called yet?) → full lookup
-                        sc_year = soundcloud.get_track_year(artist, title, version)
-                    if sc_year:
-                        year_online = sc_year
-                except Exception:
-                    pass
-
-        # Last.fm for year/album (skip year for remixes — returns original year)
+    try:
+        from djlib.metadata import lastfm
         if not year_online or not album_online:
-            try:
-                lf = lastfm.track_info(artist, title)
-                if not year_online and lf.get("year") and not version:
-                    year_online = lf["year"]
-                if not album_online and lf.get("album"):
-                    album_online = lf["album"]
-            except Exception:
-                pass
-
-        # Beatport fallback for originals
-        if not version and (not year_online or not album_online):
-            try:
-                bp = beatport.search_track(artist, title, duration_s=dur_s)
-                if bp:
-                    if not year_online:
-                        rd = bp.get("release_date", "")
-                        if rd and rd.strip():
-                            year_online = rd.split("-")[0]
-                    if not album_online:
-                        an = bp.get("album", "")
-                        if an and an.strip():
-                            album_online = an
-            except Exception:
-                pass
-
-        # ---- Build result if genre confidence is high enough ----
-        if genre_res and genre_res.confidence >= MIN_GENRE_CONFIDENCE:
-            genres = [genre_res.main] + genre_res.subs[:2]
-            src_names = [s.source for s in genre_res.breakdown]
-            meta_source = f"genres({','.join(src_names)})" if src_names else "genres"
-            final_year = year_online or year_from_tags
-            final_album = album_online or album_from_tags
-
-            result: Dict[str, str] = {
-                "artist_suggest": artist,
-                "title_suggest": title,
-                "version_suggest": version,
-                "genre_suggest": ", ".join(genres),
-                "album_suggest": final_album,
-                "year_suggest": final_year,
-                "duration_suggest": "",
-                "meta_source": meta_source,
-            }
-            if release_group_id:
-                result["release_group_id"] = release_group_id
-
-            if live and dur_sec:
-                _enrich_archive_org(result, artist, title, dur_sec)
-
-            return result
+            lf = lastfm.track_info(artist, title)
+            if not year_online and lf.get("year") and not version:
+                year_online = str(lf["year"]).strip()
+            if not album_online and lf.get("album"):
+                album_online = str(lf["album"]).strip()
     except Exception:
         pass
 
-    return None
+    if not (classifier_result or year_online or album_online or year_from_tags or album_from_tags):
+        return None
+
+    meta_sources = []
+    if classifier_result:
+        meta_sources.append(
+            f"ai_classifier({classifier_result.get('source', 'nano+WS+LF')})"
+        )
+    if release_group_id:
+        meta_sources.append("musicbrainz_release_info")
+    elif album_online or (year_online and not version):
+        meta_sources.append("lastfm_track_info")
+
+    result: Dict[str, str] = {
+        "artist_suggest": artist,
+        "title_suggest": title,
+        "version_suggest": version,
+        "genre_suggest": genre_suggest,
+        "album_suggest": album_online or album_from_tags,
+        "year_suggest": year_online or year_from_tags,
+        "duration_suggest": "",
+        "meta_source": "+".join(meta_sources) or "metadata_fallback",
+    }
+    if release_group_id:
+        result["release_group_id"] = release_group_id
+
+    if classifier_result:
+        result["__classifier_genre"] = str(classifier_result.get("genre") or "")
+        result["__classifier_confidence"] = str(classifier_result.get("confidence") or "")
+        result["__classifier_reasoning"] = str(classifier_result.get("reasoning") or "")
+        result["__classifier_source"] = str(classifier_result.get("source") or "nano+WS+LF")
+        result["__classifier_lastfm_tags"] = str(classifier_result.get("lastfm_tags") or "")
+        result["__classifier_year"] = str(classifier_result.get("year") or "")
+        result["__classifier_year_evidence"] = str(classifier_result.get("year_evidence") or "")
+
+    if live and dur_sec:
+        _enrich_archive_org(result, artist, title, dur_sec)
+
+    return result
 
 
 def _clean_title(t: str) -> str:
@@ -1347,7 +1305,7 @@ def lookup_acoustid(fp: str, duration_sec: int, file_album_tag: str = "") -> Dic
 
 
 def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | None:
-    """Enrich metadata online (AcoustID + MusicBrainz + Beatport + Last.fm).
+    """Enrich metadata online (AcoustID + MusicBrainz + classifier + Last.fm).
 
     Preserves BPM/Key.  Returns suggested field updates or None.
     """
@@ -1363,6 +1321,9 @@ def enrich_online_for_row(path: Path, row: Dict[str, str]) -> Dict[str, str] | N
         "genre": row.get("genre", ""),
         "version_info": row.get("version_suggest", ""),
         "album": file_album,
+        "bpm": row.get("bpm", "") or row.get("tag_bpm_original", ""),
+        "key_camelot": row.get("key_camelot", "") or row.get("tag_key_original", ""),
+        "filename": path.name,
     }
 
     return suggest_metadata(path, tags, enable_online=True)

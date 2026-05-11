@@ -1,12 +1,9 @@
-"""Web search abstraction for genre enrichment.
-
-Provides a unified interface for searching track metadata across the web,
-with pluggable backends (DuckDuckGo, SearXNG, Brave, Serper).
+"""Web search abstraction for genre enrichment via SearXNG.
 
 Usage:
     from djlib.metadata.web_search import create_searcher, search_track_genre
 
-    searcher = create_searcher("ddg")  # or "searxng", "brave", "serper"
+    searcher = create_searcher()
     snippets = search_track_genre(searcher, artist="deadmau5", title="Strobe")
 """
 from __future__ import annotations

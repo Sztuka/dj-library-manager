@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="audioread
 # --- Core importy (nasze moduły) ---
 from djlib.config import (
     reconfigure, ensure_base_dirs, CONFIG_FILE,
-    INBOX_DIR, LOGS_DIR, CSV_PATH, ARCHIVE_CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_CSV
+    INBOX_DIR, LOGS_DIR, CSV_PATH, REJECTED_CSV_PATH, AUDIO_EXTS, UNSORTED_CSV
 )
 from djlib.csvdb import load_records, save_records, load_rejected, save_rejected
 from djlib.tags import read_tags, write_tags
@@ -23,7 +23,7 @@ from djlib.filename import build_final_filename, extension_for, split_title_and_
 from djlib.mover import resolve_target_path, move_with_rename, utc_now_str
 from djlib.ml.export_dataset import export_training_dataset
 from djlib.tag_cleaner import clean_tags
-from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, is_done
+from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, EXPORT_DISPOSITIONS
 from djlib.external_sync import (
     import_rekordbox_snapshot, 
     import_traktor_snapshot,
@@ -44,6 +44,43 @@ except Exception:
 
 # --- Pomocnicze ---
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _ensure_unique_path(target: Path) -> Path:
+    """Return the first free variant of ``target`` by appending ``' (N)'``.
+
+    Two different mojibake filenames in the same folder can sanitize to the
+    same clean name (e.g. ``foo"bar.mp3`` and ``foo“bar.mp3`` both collapse
+    to ``foo bar.mp3``). The two files are not necessarily duplicates —
+    same stem is just a rename coincidence. This helper only ensures the
+    destination path is unique; content-level dedup is a separate concern
+    and not assumed here.
+
+    NFC-compares against the parent listing so macOS NFD-on-disk doesn't
+    make a candidate look free when it actually collides.
+    """
+    if not target.exists():
+        # Also guard against NFD-on-disk: `target.exists()` follows symlinks
+        # and normalizes, but on case-insensitive APFS an NFC lookup may
+        # miss an NFD twin. Compare against the normalized directory list.
+        taken = _parent_nfc_names_uncached(target.parent)
+        if unicodedata.normalize("NFC", target.name) not in taken:
+            return target
+    stem = target.stem
+    ext = target.suffix
+    parent = target.parent
+    taken_names = _parent_nfc_names_uncached(parent)
+    n = 2
+    while True:
+        candidate = parent / f"{stem} ({n}){ext}"
+        if (
+            not candidate.exists()
+            and unicodedata.normalize("NFC", candidate.name) not in taken_names
+        ):
+            return candidate
+        n += 1
+        if n > 10_000:
+            raise RuntimeError(f"Giving up finding a unique name for {target}")
 
 
 def _parent_nfc_names_uncached(parent: Path) -> frozenset[str]:
@@ -226,6 +263,16 @@ def cmd_scan(args: argparse.Namespace) -> None:
     # Also track known file paths to prevent duplicates when tags change
     known_paths = {r.get("file_path", "") for r in library_rows if r.get("file_path")}
     known_paths.update({r.get("file_path", "") for r in staging_rows if r.get("file_path")})
+
+    # Map fingerprint → winner row (mutable dict ref) so we can record duplicate
+    # paths on the winner's row when skipping acoustic duplicates.
+    # Only staging rows are tracked — library rows are already applied and
+    # their duplicate_paths field cannot be updated here.
+    fp_to_row: Dict[str, Dict[str, str]] = {
+        r["fingerprint"]: r
+        for r in staging_rows
+        if r.get("fingerprint")
+    }
     
     # Get current Rekordbox track IDs for auto-tagging
     from djlib.external_sync import get_rekordbox_track_ids, get_traktor_track_ids
@@ -337,8 +384,26 @@ def cmd_scan(args: argparse.Namespace) -> None:
             if "fpcalc" in str(e).lower():
                 missing_fpcalc = True
 
-        is_dup = "true" if (fp and fp in known_fps) else "false"
-        
+        is_dup = fp and fp in known_fps
+
+        # Skip acoustic duplicates (same fingerprint = same audio, different path/quality)
+        if is_dup:
+            # Record this path on the winner's row so cmd_apply can merge cues later
+            winner = fp_to_row.get(fp)
+            if winner is not None:
+                try:
+                    existing = winner.get("duplicate_paths") or "[]"
+                    dup_list: list = json.loads(existing) if existing.strip() else []
+                    dup_str = str(p)
+                    if dup_str not in dup_list:
+                        dup_list.append(dup_str)
+                        winner["duplicate_paths"] = json.dumps(dup_list)
+                except Exception:
+                    pass
+            print(f"   ⊘ [DUPLICATE] {p.name} — fingerprint already known, skipping")
+            processed += 1
+            continue
+
         # ── Check rejected registry by fingerprint ──
         if fp and fp in rejected_fps:
             print(f"   🚫 [REJECTED] {p.name} (fingerprint matches previously rejected file)")
@@ -408,7 +473,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "file_hash": fhash,
             "fingerprint": fp,
             "added_date": utc_now_str(),
-            "is_duplicate": is_dup,
+            "is_duplicate": "false",
             "artist": _safe_str(tags.get("artist")).strip(),
             "title": _safe_str(tags.get("title")).strip(),
             "version_info": _safe_str(tags.get("version_info")).strip(),
@@ -428,7 +493,8 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "pop_playcount": _safe_str(sugg.get("pop_playcount")),
             "pop_listeners": _safe_str(sugg.get("pop_listeners")),
             "meta_source": _safe_str(sugg.get("meta_source")),
-            "done": "FALSE",
+            "duplicate_paths": "",
+            "disposition": "",
         }
         for key in [
             "artist_suggest",
@@ -448,6 +514,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
         known_hashes.add(fhash)
         if fp:
             known_fps.add(fp)
+            fp_to_row[fp] = rec  # allow duplicates later in this scan to find winner
         added += 1
         processed += 1
         
@@ -466,7 +533,31 @@ def cmd_scan(args: argparse.Namespace) -> None:
                 }
             )
 
-    if new_rows:
+    # Remove duplicates already present in staging_rows (from previous scans before this fix).
+    # Keep first occurrence by fingerprint, then by file_hash.
+    seen_fps_clean: set = set()
+    seen_hashes_clean: set = set()
+    cleaned: List[Dict[str, str]] = []
+    removed_dups = 0
+    for row in staging_rows:
+        rfp = row.get("fingerprint") or ""
+        rhash = row.get("file_hash") or ""
+        if rfp and rfp in seen_fps_clean:
+            removed_dups += 1
+            continue
+        if rhash and rhash in seen_hashes_clean:
+            removed_dups += 1
+            continue
+        if rfp:
+            seen_fps_clean.add(rfp)
+        if rhash:
+            seen_hashes_clean.add(rhash)
+        cleaned.append(row)
+    if removed_dups:
+        print(f"   ⊘ Removed {removed_dups} duplicate row(s) from unsorted.csv")
+        staging_rows = cleaned
+
+    if new_rows or removed_dups:
         _save_unsorted(staging_rows)
         print(f"Scanned {len(new_rows)} files. Saved to {UNSORTED_CSV}.")
     else:
@@ -488,14 +579,87 @@ def cmd_scan(args: argparse.Namespace) -> None:
 # Legacy bucketing system (CLUB/OPEN FORMAT) has been replaced with LIBRARY/Artist/Album structure.
 # Auto-bucketing logic is no longer relevant. Use manual genre selection in unsorted.csv instead.
 
+
+def cmd_dedup_staging(args: argparse.Namespace) -> None:
+    """Deduplicate unsorted.csv by acoustic fingerprint / file hash.
+
+    Scans existing unsorted.csv rows for duplicates (same fingerprint or same
+    file hash), keeps the first occurrence as the winner, records the others
+    in the winner's duplicate_paths field, and removes the duplicate rows.
+    Run this once after upgrading to fix entries scanned before duplicate
+    tracking was added.
+
+    Use --dry-run to preview without writing.
+    """
+    dry_run = getattr(args, "dry_run", False)
+    rows = _load_unsorted()
+    if not rows:
+        print("unsorted.csv is empty.")
+        return
+
+    seen_fps: Dict[str, int] = {}   # fingerprint -> index in `rows`
+    seen_hashes: Dict[str, int] = {}  # file_hash -> index in `rows`
+    to_remove: List[int] = []
+
+    def _add_dup_path(winner_row: Dict[str, str], dup_path: str) -> None:
+        existing = winner_row.get("duplicate_paths") or "[]"
+        try:
+            dup_list: list = json.loads(existing) if existing.strip() else []
+        except Exception:
+            dup_list = []
+        if dup_path and dup_path not in dup_list:
+            dup_list.append(dup_path)
+            winner_row["duplicate_paths"] = json.dumps(dup_list)
+
+    for i, row in enumerate(rows):
+        fp = row.get("fingerprint") or ""
+        fhash = row.get("file_hash") or ""
+        fp_dup = fp and fp in seen_fps
+        hash_dup = not fp_dup and fhash and fhash in seen_hashes
+
+        if fp_dup:
+            winner_idx = seen_fps[fp]
+            dup_file = row.get("file_path") or f"row#{i}"
+            _add_dup_path(rows[winner_idx], dup_file)
+            to_remove.append(i)
+            print(f"   ⊘ {Path(dup_file).name} → duplicate of {Path(rows[winner_idx].get('file_path', '')).name}")
+        elif hash_dup:
+            winner_idx = seen_hashes[fhash]
+            dup_file = row.get("file_path") or f"row#{i}"
+            _add_dup_path(rows[winner_idx], dup_file)
+            to_remove.append(i)
+            print(f"   ⊘ {Path(dup_file).name} → duplicate of {Path(rows[winner_idx].get('file_path', '')).name}")
+        else:
+            if fp:
+                seen_fps[fp] = i
+            if fhash:
+                seen_hashes[fhash] = i
+
+    if not to_remove:
+        print(f"No duplicates found in unsorted.csv ({len(rows)} rows checked).")
+        return
+
+    print(f"\nFound {len(to_remove)} duplicate(s) in {len(rows)} rows.")
+    if dry_run:
+        print("Dry-run mode — no changes written.")
+        return
+
+    for i in reversed(to_remove):
+        rows.pop(i)
+
+    _save_unsorted(rows)
+    print(f"Removed {len(to_remove)} duplicate row(s). unsorted.csv now has {len(rows)} rows.")
+    print("Run 'apply' to merge cue points and delete duplicate files.")
+
+
 def cmd_enrich_online(args: argparse.Namespace) -> None:
-    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm (+ SoundCloud).
+    """Wzbogaca metadane (suggest_*) dla pozycji pending korzystając z MusicBrainz/AcoustID/Last.fm + WS classifier.
     Prowadzi status w LOGS/enrich_status.json, aby UI mogło pokazywać postęp.
     Nie nadpisuje już zaakceptowanych. Nie zmienia BPM/Key.
     """
     rows = _load_unsorted()
     force_genres = bool(getattr(args, "force_genres", False))
-    todo = [r for r in rows if not is_done(r.get("done"))]
+    todo = [r for r in rows if (r.get("disposition") or "").lower().strip() not in EXPORT_DISPOSITIONS]
     total = len(todo)
     processed = 0
     changed = 0
@@ -545,97 +709,46 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         except Exception:
             pass
 
-    _flush_status()
+    def _classifier_from_online(online: Optional[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+        if not online:
+            return None
+        marker_fields = (
+            "__classifier_genre",
+            "__classifier_confidence",
+            "__classifier_reasoning",
+            "__classifier_year",
+            "__classifier_year_evidence",
+            "__classifier_lastfm_tags",
+        )
+        if not any((online.get(k) or "").strip() for k in marker_fields):
+            return None
+        try:
+            confidence = float((online.get("__classifier_confidence") or "0").strip() or 0.0)
+        except Exception:
+            confidence = 0.0
+        return {
+            "genre": (online.get("__classifier_genre") or "").strip(),
+            "confidence": confidence,
+            "reasoning": (online.get("__classifier_reasoning") or "").strip(),
+            "source": (online.get("__classifier_source") or "nano+WS+LF").strip(),
+            "lastfm_tags": (online.get("__classifier_lastfm_tags") or "").strip(),
+            "year": (online.get("__classifier_year") or "").strip(),
+            "year_evidence": (online.get("__classifier_year_evidence") or "").strip(),
+        }
 
-    # Beatport token validation with auto-refresh
-    beatport_available = True
-    try:
-        from djlib.metadata.beatport import get_valid_token
-        # Attempt to get valid token (triggers auto-refresh if expired)
-        token = get_valid_token()
-        print("✅ Beatport: Token ready")
-    except Exception as e:
-        beatport_available = False
-        error_msg = str(e)
-        print(f"\n⚠️  Beatport: {error_msg}")
-        
-        # Provide helpful guidance based on error type
-        if "credentials" in error_msg.lower() or "missing" in error_msg.lower():
-            print(f"   Setup: python -m djlib.cli setup-beatport")
-        
-        # Only prompt if user hasn't already set skip flag
-        if not getattr(args, "skip_beatport", False):
-            _flush_status()
-            try:
-                choice = input("Kontynuować bez Beatport? [Y/n]: ").strip().lower()
-            except Exception:
-                choice = "y"
-            
-            if choice in {"n", "no"}:
-                print("Przerwano na prośbę użytkownika.")
-                status_doc["state"] = "done"
-                status_doc["completed_at"] = _now_iso()
-                _flush_status()
-                return
-            else:
-                print("→ Pomiń Beatport w tym przebiegu.")
-                setattr(args, "skip_beatport", True)
     _flush_status()
-
-    # SoundCloud client id health (informative, does not block)
-    sc_health_msg = ""
-    try:
-        from djlib.metadata.soundcloud import client_id_status
-        h = client_id_status()
-        if h:
-            status_doc["soundcloud"]["client_id_status"] = h.get("status", "unknown")
-        sc_health_msg = f"soundcloud_client_id_status={h.get('status')}" if h else ""
-        if h and h.get("status") == "ok":
-            print(f"✅ SoundCloud: {h.get('message')}")
-            if not getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "active"
-        elif h and h.get("status") == "expired":
-            print(f"ℹ SoundCloud: {h.get('message')} - auto-refresh dostępny")
-            # Auto-refresh will happen automatically when needed
-            if not getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "active"
-        elif h and h.get("status") in {"invalid", "error"}:
-            print(f"⚠ SoundCloud client_id: {h.get('message')}")
-            if getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "skipped"
-            else:
-                status_doc["soundcloud"]["prompt_shown"] = True
-                _flush_status()
-                try:
-                    choice = input("Kontynuować bez SoundCloud? [Y/n]: ").strip().lower()
-                except Exception:
-                    choice = "y"
-                if choice in {"n", "no"}:
-                    print("Przerwano na prośbę użytkownika (SoundCloud invalid).")
-                    status_doc["soundcloud"]["decision"] = "aborted"
-                    status_doc["state"] = "done"
-                    status_doc["completed_at"] = _now_iso()
-                    _flush_status()
-                    return
-                else:
-                    print("→ Pomiń SoundCloud w tym przebiegu.")
-                    setattr(args, "skip_soundcloud", True)
-                    status_doc["soundcloud"]["decision"] = "skipped"
-        elif h and h.get("status") == "missing":
-            if getattr(args, "skip_soundcloud", False):
-                status_doc["soundcloud"]["decision"] = "skipped"
-            else:
-                print("ℹ Brak SoundCloud client_id (można ustawić DJLIB_SOUNDCLOUD_CLIENT_ID).")
-                status_doc["soundcloud"]["decision"] = "skipped"  # treat missing as skipped
-    except Exception:
-        pass
+    print("ℹ enrich-online uses MusicBrainz, Last.fm and WS-based AI classification; Beatport/SoundCloud APIs are not used in this workflow.")
+    status_doc["soundcloud"]["client_id_status"] = "unused"
+    status_doc["soundcloud"]["decision"] = "skipped"
+    status_doc["soundcloud"]["attempted_requests"] = 0
     _flush_status()
 
     for r in rows:
-        if is_done(r.get("done")):
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS:
             continue
         p = Path(r.get("file_path",""))
         online = enrich_online_for_row(p, r)
+        precomputed_cls = _classifier_from_online(online)
         if not online:
             processed += 1
             status_doc["rows_processed"] = processed
@@ -666,7 +779,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         if any_change and (online.get("meta_source") or "").strip():
             r["meta_source"] = online["meta_source"]
         
-    # Zawsze spróbuj wzbogacić gatunki używając wszystkich źródeł (MB + Last.fm + SoundCloud)
+    # Always try to enrich genres using the production WS-based classifier.
         try:
             a = (r.get("artist_suggest") or r.get("artist") or "").strip()
             t = (r.get("title_suggest") or r.get("title") or "").strip()
@@ -689,28 +802,38 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             
-            from djlib.metadata.genre_classifier import classify_genre, ClassifierError
-            print(f"   🎵 Classifying genre (nano+WS+LF) for: {a} - {t}")
-            bpm_str = (r.get("bpm") or r.get("tag_bpm_original") or "").strip()
-            key_str = (r.get("key_camelot") or r.get("tag_key_original") or "").strip()
-            filename_hint = Path(r.get("file_path", "")).name if r.get("file_path") else ""
-            try:
-                cls = classify_genre(
-                    artist=a, title=t, version=v,
-                    bpm=bpm_str, key=key_str, filename=filename_hint,
-                )
-            except ClassifierError as e:
-                print(f"      ❌ Classification failed (after retry): {e}")
-                r["ai_genre"] = ""
-                r["ai_confidence"] = ""
-                r["ai_reasoning"] = f"ERROR: {str(e)[:200]}"
-                r["ai_classify_date"] = _now_iso()
-                genre_res = None
+            cls = precomputed_cls
+            if cls is None:
+                from djlib.metadata.genre_classifier import classify_genre, ClassifierError
+                print(f"   🎵 Classifying genre (nano+WS+LF) for: {a} - {t}")
+                bpm_str = (r.get("bpm") or r.get("tag_bpm_original") or "").strip()
+                key_str = (r.get("key_camelot") or r.get("tag_key_original") or "").strip()
+                filename_hint = Path(r.get("file_path", "")).name if r.get("file_path") else ""
+                try:
+                    cls = classify_genre(
+                        artist=a, title=t, version=v,
+                        bpm=bpm_str, key=key_str, filename=filename_hint,
+                    )
+                except ClassifierError as e:
+                    print(f"      ❌ Classification failed (after retry): {e}")
+                    r["ai_genre"] = ""
+                    r["ai_confidence"] = ""
+                    r["ai_reasoning"] = f"ERROR: {str(e)[:200]}"
+                    r["ai_classify_date"] = _now_iso()
+                    genre_res = None
+                    cls = None
             else:
+                print(f"   🎵 Reusing genre classification (nano+WS+LF) for: {a} - {t}")
+
+            if cls is not None:
                 r["ai_genre"] = cls["genre"]
                 r["ai_confidence"] = f"{cls['confidence']:.2f}"
                 r["ai_reasoning"] = cls["reasoning"][:500]
                 r["ai_classify_date"] = _now_iso()
+                cls_year = (cls.get("year") or "").strip()
+                if cls_year and not (r.get("year_suggest") or "").strip():
+                    r["year_suggest"] = cls_year
+                    any_change = True
                 if cls.get("lastfm_tags"):
                     lf_top = [name.strip() for name in re.split(r',\s*', cls["lastfm_tags"]) if name.strip()][:5]
                     r["genres_lastfm"] = ", ".join(s.split(" (")[0] for s in lf_top)
@@ -768,10 +891,8 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             elif not genre_res and force_genres:
-                # All online sources returned nothing (e.g. SC remixer
-                # validation failed — track not found on any platform).
-                # Fall back to original file tag genre so the track isn't
-                # left with stale/wrong data from a previous enrich run.
+                # Classifier produced no usable genre. Fall back to the original
+                # file tag so the row is not left with stale data from an older run.
                 original_tag_genre = (r.get("tag_genre_original") or "").strip()
                 if original_tag_genre:
                     r["genre_suggest"] = original_tag_genre.lower()
@@ -786,35 +907,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
             # Debug: print exception for troubleshooting
             print(f"Genre resolution failed for {a} - {t}: {e}")
             pass
-
-        # Safety net: extract artist from Beatport for remixes where
-        # suggest_metadata didn't provide an artist (e.g. AcoustID intercepted,
-        # transient error, or low confidence discarded the result).
-        # Uses in-process cache — no extra API call when genre_resolver already
-        # queried Beatport above.
-        if (
-            not (r.get("artist_suggest") or "").strip()
-            and v
-            and not getattr(args, "skip_beatport", False)
-        ):
-            try:
-                from djlib.metadata.beatport import search_track as bp_search
-                bp_result = bp_search(a, t, dur_s, version=v)
-                if bp_result and bp_result.get("artist"):
-                    r["artist_suggest"] = bp_result["artist"]
-                    any_change = True
-                    print(f"      🎤 Artist from Beatport: {bp_result['artist']}")
-                    # Also fill year/album if still empty
-                    if not (r.get("year_suggest") or "").strip():
-                        rd = bp_result.get("release_date", "")
-                        if rd and rd.strip():
-                            r["year_suggest"] = rd.split("-")[0]
-                    if not (r.get("album_suggest") or "").strip():
-                        alb = bp_result.get("release_name", "") or bp_result.get("album", "")
-                        if alb and alb.strip():
-                            r["album_suggest"] = alb
-            except Exception:
-                pass
 
         # Popularność z Last.fm (playcount/listeners) — pomoc dla singalong/party dance/decades
         try:
@@ -912,12 +1004,7 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
         "lastfm": lfm_cnt,
         "soundcloud": sc_cnt,
     }
-    # Uzupełnij attempted_requests z modułu SoundCloud
-    try:
-        from djlib.metadata.soundcloud import soundcloud_request_count
-        status_doc["soundcloud"]["attempted_requests"] = soundcloud_request_count()
-    except Exception:
-        pass
+    status_doc["soundcloud"]["attempted_requests"] = 0
     status_doc["rows_processed"] = processed
     status_doc["updated"] = changed
     status_doc["state"] = "done"
@@ -947,8 +1034,6 @@ def cmd_enrich_online(args: argparse.Namespace) -> None:
     #     print(f"🎨 Okładki URL: found={covers_added}, failed={covers_failed}")
     if not _lfm_key_present:
         print("   ⚠ Brak LASTFM_API_KEY (DJLIB_LASTFM_API_KEY) — kolumna genres_lastfm może pozostać pusta.")
-    if sc_health_msg:
-        print(f"   ℹ {sc_health_msg}")
 
 def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
     """Uzupełnij brakujące fingerprinty w istniejącym CSV.
@@ -960,7 +1045,7 @@ def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
     rows = _load_unsorted()
     targets = []
     for r in rows:
-        if is_done(r.get("done")):
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS:
             continue
         fp = (r.get("fingerprint") or "").strip()
         if fp:
@@ -1051,7 +1136,7 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
 
     updated = 0
     for r in rows:
-        if is_done(r.get("done")):
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS:
             continue
         fp = (r.get("file_path") or "").strip()
         if not fp:
@@ -1093,11 +1178,11 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
 
 def cmd_apply(args: argparse.Namespace) -> None:
     """Apply approved changes from unsorted.csv.
-    
-    New model: Uses status/destination columns (library/reject/archive/mixes).
-    Legacy model: Falls back to target_subfolder if destination is empty.
+
+    Dispositions: library (→ LIB_ROOT/Artist/), reject (→ REJECT_ROOT/),
+    mixes (→ MIXES_ROOT/). Legacy fallback: target_subfolder if disposition empty.
     """
-    from djlib.logistics import build_library_path, build_reject_path, build_archive_path, build_mixes_path
+    from djlib.logistics import build_library_path, build_reject_path, build_mixes_path
     
     # Check if Rekordbox is running before starting
     try:
@@ -1112,19 +1197,16 @@ def cmd_apply(args: argparse.Namespace) -> None:
         pass  # pyrekordbox not available
     
     rows = _load_unsorted()
-    ready = [r for r in rows if is_done(r.get("done"))]
+    ready = [r for r in rows if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS]
     if not ready:
-        print("Brak wierszy z oznaczeniem done=TRUE.")
+        print("Brak wierszy z ustawionym disposition (library/reject/mixes).")
         return
     library_rows = load_records(CSV_PATH)
-    archive_rows = load_records(ARCHIVE_CSV_PATH)  # Load archive for duplicate checking
     rejected_registry = load_rejected(REJECTED_CSV_PATH)  # Load rejected registry for appending
     processed_ids: set[str] = set()
-    # Track DJ software IDs to remove for rejected/archived files
+    # Track DJ software IDs to remove for rejected files
     rejected_rekordbox_ids: List[str] = []
     rejected_traktor_ids: List[str] = []
-    archived_rekordbox_ids: List[str] = []
-    archived_traktor_ids: List[str] = []
     tags_written = 0
     tags_errors = 0
     tags_cleaned = 0
@@ -1144,35 +1226,23 @@ def cmd_apply(args: argparse.Namespace) -> None:
     traktor_mapping = get_traktor_track_ids()
     
     # Build library index for duplicate detection when exporting to library
-    # Includes both active library AND archive
     # OPTIMIZATION: Only build index if there are files destined for "library"
     from djlib.dedup import get_audio_info, normalize_for_match, format_quality, format_duration
     from djlib.config import load_config
     _cfg = load_config()
     _library_path = Path(_cfg.get("LIB_ROOT", "")).expanduser()
-    _archive_path = Path(_cfg.get("ARCHIVE_ROOT", "")).expanduser()
     library_index: Dict[str, Any] = {}  # match_key -> AudioInfo
     _library_index_loaded = False
     _audio_exts = {'.mp3', '.flac', '.wav', '.aiff', '.aif', '.m4a', '.ogg', '.opus'}
-    
+
     def _load_library_index():
         """Lazy-load library index for duplicate detection."""
         nonlocal _library_index_loaded
         if _library_index_loaded:
             return
         _library_index_loaded = True
-        
-        # Scan library folder (single rglob with extension filter)
         if _library_path and _library_path.exists():
             for _path in _library_path.rglob("*"):
-                if _path.suffix.lower() in _audio_exts:
-                    _info = get_audio_info(_path)
-                    if _info and _info.artist and _info.title:
-                        library_index[_info.match_key] = _info
-        
-        # Scan archive folder for duplicates too
-        if _archive_path and _archive_path.exists():
-            for _path in _archive_path.rglob("*"):
                 if _path.suffix.lower() in _audio_exts:
                     _info = get_audio_info(_path)
                     if _info and _info.artist and _info.title:
@@ -1209,7 +1279,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     for r in ready:
         # Determine destination path (new model or legacy fallback)
-        destination = (r.get("destination") or "").lower().strip()
+        destination = (r.get("disposition") or "").lower().strip()
         target_subfolder = (r.get("target_subfolder") or "").strip()
         
         src = Path(r.get("file_path") or "")
@@ -1237,11 +1307,23 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 except Exception:
                     pass
             
-            # Block export if no rekordbox_id found anywhere
+            # Block export if no rekordbox_id found anywhere — unless the
+            # DJ explicitly opted in to the tag-only workflow via
+            # `--allow-no-rekordbox`. In that mode the track enters library
+            # with `analysis_source=tags` so consumers (REVIEW UI, ML export)
+            # know BPM/Key came from the audio file, not Rekordbox analysis.
             final_rekordbox_id = current_rekordbox_id or file_rekordbox_id
             if not final_rekordbox_id:
-                _skip("NO_REKORDBOX_ID", f"{src.name}  → Uruchom 'sync-dj-libraries --write' aby przypisać ID")
-                continue
+                if not getattr(args, "allow_no_rekordbox", False):
+                    _skip(
+                        "NO_REKORDBOX_ID",
+                        f"{src.name}  → Uruchom 'sync-dj-libraries --write' aby przypisać ID, lub użyj 'apply --allow-no-rekordbox'",
+                    )
+                    continue
+                print(
+                    f"   ⚠️  No Rekordbox ID for {src.name} — applying with "
+                    f"analysis_source=tags (not yet analyzed by Rekordbox)"
+                )
             
             if current_rekordbox_id and current_rekordbox_id != r.get("rekordbox_id", ""):
                 print(f"   🔧 Updating Rekordbox ID for {src.name}: {r.get('rekordbox_id', '')} → {current_rekordbox_id}")
@@ -1301,11 +1383,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
         
         artist = r.get("artist") or r.get("tag_artist_original") or r.get("artist_suggest") or ""
         title = r.get("title") or r.get("tag_title_original") or r.get("title_suggest") or ""
-        
-        # Check for duplicates in library/archive when exporting
-        if destination in ("library", "archive"):
-            _load_library_index()  # Lazy-load on first library/archive export
-            match_key = normalize_for_match(artist, title)
+        version = r.get("version_info") or r.get("version_suggest") or ""
+
+        # Check for duplicates in library when exporting
+        if destination == "library":
+            _load_library_index()  # Lazy-load on first library export
+            # Include version_info in the match key so Original Mix and Extended Mix
+            # are not treated as the same track within a single export batch.
+            match_key = normalize_for_match(artist, f"{title} {version}".strip())
             
             # ── Intra-batch duplicate check ──
             if match_key in _batch_match_keys:
@@ -1313,7 +1398,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                       f"{artist} - {title}  (already in this export batch from {_batch_match_keys[match_key]})")
                 continue
             
-            # ── Library/archive duplicate check ──
+            # ── Library duplicate check ──
             if match_key in library_index:
                 existing = library_index[match_key]
                 src_info = get_audio_info(src)
@@ -1352,8 +1437,6 @@ def cmd_apply(args: argparse.Namespace) -> None:
             dest_path = build_library_path(artist, final_name)
         elif destination == "reject":
             dest_path = build_reject_path(final_name)
-        elif destination == "archive":
-            dest_path = build_archive_path(artist, final_name)
         elif destination == "mixes":
             # DJ mixes: flat structure, no artist folders
             dest_path = build_mixes_path(final_name)
@@ -1377,8 +1460,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
         
         # ── Handle file-already-exists at destination ──
         if dest_path.exists():
-            if destination in ("library", "archive", "mixes"):
-                # NEVER silently create (2) copies in library/archive/mixes
+            if destination in ("library", "mixes"):
+                # NEVER silently create (2) copies in library/mixes
                 # This means a duplicate slipped past the artist+title check
                 # (e.g. same file re-exported, or metadata-level dedup missed it)
                 from djlib.fingerprint import file_sha256 as _fsha
@@ -1388,6 +1471,13 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 if existing_hash == new_hash:
                     _skip("IDENTICAL_FILE_EXISTS",
                           f"{dest_path.name}  (exact same file already at destination)")
+                    # File already at destination from a previous interrupted run —
+                    # clean up the source and mark as processed so the row is removed.
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
+                    processed_ids.add(r.get("track_id", ""))
                     continue
                 
                 # Different file, same name — ask user
@@ -1430,16 +1520,54 @@ def cmd_apply(args: argparse.Namespace) -> None:
         shutil.move(str(src), str(dest_path))
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
-        
+
+        # ── Merge cue points from acoustic duplicates into winner ──────────────
+        # Only for library destination; winner's pre-move path (str(src)) is still
+        # in the Rekordbox/Traktor DB at this point.
+        if destination == "library":
+            from djlib.cue_merge import parse_duplicate_paths, merge_and_remove_duplicate
+            _dup_paths = parse_duplicate_paths(r.get("duplicate_paths") or "")
+            if _dup_paths:
+                _rb_running = False
+                try:
+                    from pyrekordbox.utils import get_rekordbox_pid
+                    _rb_running = bool(get_rekordbox_pid())
+                except Exception:
+                    pass
+                if _rb_running:
+                    print(f"   ⚠️  Rekordbox is running — cue merge skipped for duplicates. "
+                          f"Close Rekordbox and re-run apply to merge.")
+                else:
+                    _tk_path = _get_traktor_collection_path()
+                    for _dup in _dup_paths:
+                        print(f"   🔀 Merging cues from duplicate: {Path(_dup).name}")
+                        try:
+                            _mr = merge_and_remove_duplicate(
+                                winner_path=str(src),
+                                dup_path=_dup,
+                                traktor_collection_path=_tk_path,
+                                delete_file=True,
+                            )
+                            for _err in _mr.get("errors", []):
+                                print(f"   ⚠️  {_err}")
+                            _flags = [
+                                f"rb={'✓' if _mr['rb_merged'] else '✗'}",
+                                f"tk={'✓' if _mr['tk_merged'] else '✗'}",
+                                f"del={'✓' if _mr['file_deleted'] else '✗'}",
+                            ]
+                            print(f"   ✅ Cue merge: {' '.join(_flags)}")
+                        except Exception as _e:
+                            print(f"   ⚠️  Cue merge failed for {Path(_dup).name}: {_e} — continuing")
+
         # ── Update library_index so next files in this batch are caught ──
-        if destination in ("library", "archive"):
-            _mk = normalize_for_match(artist, title)
+        if destination == "library":
+            _mk = normalize_for_match(artist, f"{title} {version}".strip())
             new_info = get_audio_info(dest_path)
             if new_info:
                 library_index[_mk] = new_info
             _batch_match_keys[_mk] = src.name
         
-        # Track rejected/archived files for DJ software removal
+        # Track rejected files for DJ software removal
         if destination == "reject":
             if r.get("rekordbox_id"):
                 rejected_rekordbox_ids.append(str(r.get("rekordbox_id") or ""))
@@ -1462,15 +1590,27 @@ def cmd_apply(args: argparse.Namespace) -> None:
             print(f"   🚫 Rejected: {dest_path.name} (moved to reject folder, no further processing)")
             continue
         
-        if destination == "archive":
-            if r.get("rekordbox_id"):
-                archived_rekordbox_ids.append(str(r.get("rekordbox_id") or ""))
-                print(f"   📌 Will remove from Rekordbox: {r.get('rekordbox_id')}")
-            if r.get("traktor_id"):
-                archived_traktor_ids.append(str(r.get("traktor_id") or ""))
-                print(f"   📌 Will remove from Traktor: {r.get('traktor_id')}")
-        
-        # Update record (only for library/mixes destinations OR archive for archive CSV)
+        # Provenance of BPM+Key. Consumers (REVIEW UI, ML export) use this to
+        # tell an analyzed track from a tag-only import. Rekordbox wins when
+        # its ID is present (DJ software re-analyzed the file); Traktor is
+        # next; `tags` covers the `--allow-no-rekordbox` path where BPM/Key
+        # come from ID3. Empty string means "unknown provenance" (no DJ
+        # software ID AND no BPM/Key in tags — defensive default).
+        has_rb = bool(r.get("rekordbox_id"))
+        has_tr = bool(r.get("traktor_id"))
+        has_tag_analysis = bool(r.get("bpm")) and bool(
+            r.get("key_camelot") or r.get("key")
+        )
+        if has_rb:
+            analysis_source = "rekordbox"
+        elif has_tr:
+            analysis_source = "traktor"
+        elif has_tag_analysis:
+            analysis_source = "tags"
+        else:
+            analysis_source = ""
+
+        # Update library.csv with final record metadata
         record = {
             "track_id": r.get("track_id", ""),
             "file_path": str(dest_path),
@@ -1486,6 +1626,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "genre": r.get("genre") or r.get("genre_suggest") or "",
             "bpm": r.get("bpm") or "",
             "key_camelot": r.get("key_camelot") or "",
+            "analysis_source": analysis_source,
             "energy_hint": r.get("energy_hint") or "",
             "destination": destination or "library",  # Default to library if not specified
             "must_play": r.get("must_play") or "",
@@ -1501,34 +1642,17 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "target_subfolder": target_subfolder or "",
         }
         
-        # Decide which CSV to update based on destination
-        if destination == "archive":
-            # Archive goes to library-archive.csv, not library.csv
-            existing_idx = None
-            for idx, arch_row in enumerate(archive_rows):
-                if arch_row.get("track_id") == record["track_id"]:
-                    existing_idx = idx
-                    break
-            
-            if existing_idx is not None:
-                archive_rows[existing_idx] = record
-            else:
-                archive_rows.append(record)
-            print(f"   📦 Archived: {dest_path.name} (will be saved to library-archive.csv)")
+        # Update library.csv record (library/mixes destinations)
+        existing_idx = None
+        for idx, lib_row in enumerate(library_rows):
+            if lib_row.get("track_id") == record["track_id"]:
+                existing_idx = idx
+                break
+
+        if existing_idx is not None:
+            library_rows[existing_idx] = record
         else:
-            # Library/mixes goes to library.csv
-            existing_idx = None
-            for idx, lib_row in enumerate(library_rows):
-                if lib_row.get("track_id") == record["track_id"]:
-                    existing_idx = idx
-                    break
-            
-            if existing_idx is not None:
-                # Update existing record (file was moved/renamed)
-                library_rows[existing_idx] = record
-            else:
-                # Add new record
-                library_rows.append(record)
+            library_rows.append(record)
         
         # Po udanym przeniesieniu wyczyść spam tagi i zapisz zaakceptowane metadane
         print(f"\n🔧 Processing tags for: {dest_path.name}")
@@ -1622,7 +1746,12 @@ def cmd_apply(args: argparse.Namespace) -> None:
             
             # Album intentionally left empty - user manages their own artwork/album organization
             updates["album"] = ""
-            
+
+            # occasion_tags → Grouping tag (TIT1/©grp) — readable in Rekordbox and Traktor
+            occasion = (r.get("occasion_tags") or "").strip()
+            if occasion:
+                updates["grouping"] = occasion
+
             if updates:
                 write_tags(dest_path, updates)
                 tags_written += 1
@@ -1634,7 +1763,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 tags_clean_errors += 1
 
     if args.dry_run:
-        print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (oznaczone done=TRUE).")
+        print(f"[DRY-RUN] Gotowe do eksportu: {len(ready)} (disposition: library/reject/mixes).")
         return
 
     if log_rows:
@@ -1649,28 +1778,17 @@ def cmd_apply(args: argparse.Namespace) -> None:
     remaining = [r for r in rows if r.get("track_id") not in processed_ids]
     _save_unsorted(remaining)
     save_records(CSV_PATH, library_rows)
-    
-    # Save archive records if any were added
-    archived_count = len(archived_rekordbox_ids) + len(archived_traktor_ids)
-    if archived_rekordbox_ids or archived_traktor_ids:
-        save_records(ARCHIVE_CSV_PATH, archive_rows)
-        print(f"📦 Zapisano {len(archive_rows)} rekordów do library-archive.csv")
-    
+
     # Save rejected registry (always — append-only, even if no new rejects this run)
-    _new_rejects = len([r for r in ready if (r.get("destination") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
+    _new_rejects = len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
     if _new_rejects > 0:
         save_rejected(REJECTED_CSV_PATH, rejected_registry)
         print(f"🚫 Zapisano {len(rejected_registry)} rekordów do library-rejected.csv (+{_new_rejects} nowych)")
-    
-    # Count actual library additions (not archive/reject)
-    rejected_count = len(rejected_rekordbox_ids) + len(rejected_traktor_ids)
-    # Use max of rekordbox/traktor IDs for count since track may have both or one
-    rejected_tracks = max(len(rejected_rekordbox_ids), len(rejected_traktor_ids), 
-                         len([r for r in ready if (r.get("destination") or "").lower().strip() == "reject"]))
-    archived_tracks = max(len(archived_rekordbox_ids), len(archived_traktor_ids),
-                         len([r for r in ready if (r.get("destination") or "").lower().strip() == "archive"]))
-    library_added = len(processed_ids) - rejected_tracks - archived_tracks
-    print(f"Przeniesiono: {library_added} do biblioteki, {archived_tracks} do archiwum, {rejected_tracks} do odrzuconych.")
+
+    rejected_tracks = max(len(rejected_rekordbox_ids), len(rejected_traktor_ids),
+                         len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject"]))
+    library_added = len(processed_ids) - rejected_tracks
+    print(f"Przeniesiono: {library_added} do biblioteki, {rejected_tracks} do odrzuconych.")
     print(f"🧹 Czyszczenie spam tagów: cleaned={tags_cleaned}, errors={tags_clean_errors}")
     print(f"🎨 Okładki: applied={covers_applied}, skipped={covers_skipped}, failed={covers_failed}")
     print(f"📀 Zapis tagów audio: ok={tags_written}, errors={tags_errors}")
@@ -1682,14 +1800,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
         for reason, count in sorted(skipped_reasons.items()):
             print(f"   {reason}: {count}")
     
-    # Remove rejected/archived tracks from DJ software
-    all_rekordbox_to_remove = rejected_rekordbox_ids + archived_rekordbox_ids
-    all_traktor_to_remove = rejected_traktor_ids + archived_traktor_ids
-    
+    # Remove rejected tracks from DJ software
+    all_rekordbox_to_remove = rejected_rekordbox_ids
+    all_traktor_to_remove = rejected_traktor_ids
+
     if not args.dry_run and (all_rekordbox_to_remove or all_traktor_to_remove):
         print()
         print("=" * 60)
-        print("🗑️  REMOVING REJECTED/ARCHIVED FROM DJ SOFTWARE")
+        print("🗑️  REMOVING REJECTED FROM DJ SOFTWARE")
         print("=" * 60)
         print()
         
@@ -2417,9 +2535,77 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
             fp_duplicates_merged = before_fp_dedup - len(df)
             duplicates_merged += fp_duplicates_merged
             
-            CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-            df.to_csv(CSV_PATH, index=False)
-            print(f"✅ Merged {len(df)} unique tracks into library.csv")
+            from djlib.library_schema import (
+                LIBRARY_FIELDNAMES as _CANONICAL,
+                apply_gig_track_guard,
+                load_library_csv,
+                merge_with_existing_library,
+                save_library_csv,
+            )
+            from djlib.locks import csv_lock
+
+            # Wrap the whole load → merge → save in a cross-process lock so
+            # the Review UI cannot save between our read and write (silent
+            # data loss otherwise — last writer wins, SHA-256 sidecar is
+            # valid for whichever wrote last, masking the loss).
+            with csv_lock(CSV_PATH):
+                # Merge-by-track_id: preserve djlib-owned fields (file_hash,
+                # original_path, added_date, …) from the existing library.csv.
+                # Without this step the DJ-software snapshot nukes everything
+                # djlib computed or tracked itself. Orphan rows (previously in
+                # library, no longer returned by RB/Traktor) are kept with their
+                # external IDs cleared.
+                existing_rows = load_library_csv(CSV_PATH)
+
+                # Build lookup of existing cue_points by track_id so we can
+                # preserve them when the fresh sync didn't produce data (e.g.
+                # read error, or track temporarily not in RB).
+                existing_cues_by_tid: Dict[str, Dict[str, str]] = {
+                    str(r.get("track_id", "")): {
+                        "rb": str(r.get("cue_points_rb", "")),
+                        "tk": str(r.get("cue_points_tk", "")),
+                    }
+                    for r in existing_rows
+                    if r.get("track_id")
+                }
+
+                new_rows = df.fillna("").to_dict(orient="records")
+                merged_rows = merge_with_existing_library(new_rows, existing_rows)
+                merged_rows, live_skipped = apply_gig_track_guard(merged_rows, existing_rows)
+
+                # Preserve existing cue_points when the fresh sync produced
+                # no data (read error or track genuinely absent from RB/Traktor).
+                for row in merged_rows:
+                    tid = str(row.get("track_id", ""))
+                    ex = existing_cues_by_tid.get(tid, {})
+                    if not row.get("cue_points_rb") and ex.get("rb"):
+                        row["cue_points_rb"] = ex["rb"]
+                    if not row.get("cue_points_tk") and ex.get("tk"):
+                        row["cue_points_tk"] = ex["tk"]
+
+                if live_skipped:
+                    print(f"   ⚠️  Skipped DJ-software update for {live_skipped} track(s) "
+                          f"currently on an active gig (live_location != nas).")
+
+                # Preserve any columns pandas produced that aren't in the
+                # canonical schema yet. The canonical writer drops unknowns by
+                # default; `extra_fieldnames` is the escape hatch for transient
+                # legacy columns.
+                extra = [c for c in df.columns if c not in _CANONICAL]
+                backup_path = save_library_csv(
+                    CSV_PATH,
+                    merged_rows,
+                    extra_fieldnames=extra,
+                )
+                if backup_path:
+                    log.info("library.csv backed up to %s", backup_path)
+            orphan_count = sum(
+                1 for r in merged_rows
+                if not r.get("rekordbox_id") and not r.get("traktor_id")
+            )
+            print(f"✅ Merged {len(merged_rows)} unique tracks into library.csv")
+            if orphan_count:
+                print(f"   ({orphan_count} orphan rows — in library but no longer in RB/Traktor)")
             if total_filtered > 0:
                 print(f"   (Filtered out {total_filtered} unwanted tracks:")
                 if apple_music_filtered > 0:
@@ -3079,13 +3265,6 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                 print(f"   AFTER:  {proposed_name}")
                 print(f"   reason: {why}")
 
-                # Handle name collision
-                if new_path.exists() and new_path != p:
-                    print(f"   ⚠️  A file with that name already exists — will skip this one.")
-                    remaining.append((p, why))
-                    print()
-                    continue
-
                 if accept_all:
                     choice = "y"
                 else:
@@ -3109,6 +3288,19 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
                     remaining.append((p, why))
                     print()
                     continue
+
+                # Suffix is reactive: only when the clean target is actually
+                # taken in the SAME folder. Different-folder copies (most of
+                # the user's real-world case) rename straight through with
+                # no suffix. POSIX `os.rename` would silently overwrite an
+                # existing file, so we pre-check — Python stdlib has no
+                # "rename-fail-if-exists" primitive on POSIX.
+                if new_path.exists() and new_path != p:
+                    new_path = _ensure_unique_path(new_path)
+                    print(
+                        f"   ℹ️  '{proposed_name}' already exists here — "
+                        f"using {new_path.name} instead to avoid overwriting."
+                    )
 
                 try:
                     os.rename(str(p), str(new_path))
@@ -3602,6 +3794,93 @@ def cmd_review(args: argparse.Namespace) -> None:
     )
 
 
+# ============ GIG PREP ============
+
+def cmd_gig_prep(args: argparse.Namespace) -> None:
+    """Parse playlist, validate, print plan (--dry-run) or copy tracks."""
+    from djlib.gig import (
+        GigDir,
+        GigPrepLock,
+        _fmt_bytes,
+        estimate_total_bytes,
+        parse_m3u,
+        resolve_tracks,
+        run_gig_prep_copy,
+        validate_gig_prep,
+    )
+    from djlib.library_schema import load_library_csv
+
+    m3u_path = Path(args.from_m3u)
+    if not m3u_path.exists():
+        print(f"ERROR: playlist not found: {m3u_path}")
+        raise SystemExit(1)
+
+    playlist_paths = parse_m3u(m3u_path)
+    library_rows = load_library_csv(CSV_PATH)
+    resolved = resolve_tracks(playlist_paths, library_rows)
+    errors = validate_gig_prep(args.gig_id, resolved, check_files_exist=True)
+
+    found = [r for r in resolved if r.track_id]
+    not_found = [r for r in resolved if r.match_type == "not_found"]
+    on_gig = [e for e in errors if e.kind == "ON_ANOTHER_GIG"]
+    missing_file = [e for e in errors if e.kind == "FILE_MISSING"]
+    total_bytes = estimate_total_bytes(resolved)
+
+    print(f"\nGig prep plan: {args.gig_id}")
+    print(f"  Playlist : {m3u_path} ({len(playlist_paths)} tracks)")
+    print(f"  Resolved : {len(found)} found in library.csv")
+    if not_found:
+        print(f"  Not in library      : {len(not_found)}")
+    if on_gig:
+        print(f"  On another gig      : {len(on_gig)}")
+    if missing_file:
+        print(f"  File missing on disk: {len(missing_file)}")
+    print(f"  Est. size: {_fmt_bytes(total_bytes)}")
+
+    if errors:
+        print("\n  ERRORS:")
+        for e in errors:
+            detail = f" ({e.detail})" if e.detail else ""
+            print(f"    [{e.kind}]{detail} {e.path}")
+        print()
+        raise SystemExit(1)
+
+    if args.dry_run:
+        print(f"\n  Plan is clean — {len(found)} tracks ready to copy.\n")
+        return
+
+    # ── Live copy ─────────────────────────────────────────────────────────
+    gig_dir = GigDir(gig_id=args.gig_id)
+    gig_dir.ensure()
+
+    lock = GigPrepLock(gig_dir.lock_path)
+    if not lock.acquire():
+        print(f"\nERROR: another gig-prep is already running for '{args.gig_id}'.")
+        print(f"  Lock file: {gig_dir.lock_path}")
+        raise SystemExit(1)
+
+    try:
+        print(f"\n  Copying {len(found)} tracks to {gig_dir.audio_dir} …")
+        result = run_gig_prep_copy(
+            gig_id=args.gig_id,
+            resolved=resolved,
+            csv_path=CSV_PATH,
+            gig_dir=gig_dir,
+            resume=getattr(args, "resume", False),
+            source_playlist=str(m3u_path),
+        )
+        print(f"\n  Done.")
+        print(f"    Copied   : {result.copied}")
+        if result.skipped:
+            print(f"    Skipped  : {result.skipped} (already verified)")
+        print(f"    Committed: {result.committed}")
+        if result.failed:
+            print(f"    FAILED   : {result.failed}")
+            raise SystemExit(1)
+    finally:
+        lock.release()
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -3690,10 +3969,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_parser.set_defaults(func=cmd_scan)
 
+    dedup_parser = sp.add_parser(
+        "dedup-staging",
+        help="Deduplicate unsorted.csv: merge duplicate rows scanned before automatic dedup was added",
+    )
+    dedup_parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    dedup_parser.set_defaults(func=cmd_dedup_staging)
+
     # REMOVED: auto-decide parser (legacy bucketing system)
 
     ap2 = sp.add_parser("apply")
     ap2.add_argument("--dry-run", action="store_true")
+    ap2.add_argument(
+        "--allow-no-rekordbox",
+        action="store_true",
+        help=(
+            "Move tracks to library even when Rekordbox has not seen them yet. "
+            "BPM/Key fall back to audio tags and the row is marked "
+            "analysis_source=tags, ready_for_rekordbox=false. Without this "
+            "flag, tracks missing rekordbox_id are skipped (default behavior)."
+        ),
+    )
     ap2.set_defaults(func=cmd_apply)
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
@@ -3710,7 +4006,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_parser("fix-filenames").set_defaults(func=cmd_fix_titles_from_filenames)
     ep = sp.add_parser("enrich-online")
     ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm nawet jeśli już wypełnione")
-    ep.add_argument("--skip-soundcloud", action="store_true", help="Pomiń źródło SoundCloud nawet jeśli client_id jest ustawiony")
+    ep.add_argument("--skip-soundcloud", action="store_true", help="Legacy no-op: enrich-online no longer uses the SoundCloud API")
     ep.set_defaults(func=cmd_enrich_online)
 
     # analyze-audio
@@ -3770,6 +4066,14 @@ def build_parser() -> argparse.ArgumentParser:
     icd.add_argument("--dump", required=False, help="Path to .tar.zst dump file (auto-detect if not provided)")
     icd.add_argument("--force", action="store_true", help="Rebuild database even if it exists")
     icd.set_defaults(func=cmd_import_canonical_dump)
+
+    # ========== GIG PREP ==========
+    gig = sp.add_parser("gig-prep", help="Prepare a gig: copy tracks from NAS to MacBook (Phase 2)")
+    gig.add_argument("gig_id", help="Unique gig identifier, e.g. friday-2026-05-15")
+    gig.add_argument("--from-m3u", required=True, metavar="PATH", help="Path to M3U/M3U8 playlist file")
+    gig.add_argument("--dry-run", action="store_true", help="Print plan without copying anything")
+    gig.add_argument("--resume", action="store_true", help="Resume interrupted prep (skips already-verified tracks)")
+    gig.set_defaults(func=cmd_gig_prep)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")

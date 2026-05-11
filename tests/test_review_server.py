@@ -125,6 +125,132 @@ def test_update_track_not_found(client):
     assert resp.status_code == 404
 
 
+# ── Batch update API ─────────────────────────────────────────────────────────
+
+def test_batch_update_no_body(client):
+    resp = client.post("/api/tracks/batch-update")
+    assert resp.status_code in (400, 415)
+
+
+def test_batch_update_no_track_ids(client):
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"fields": {"genre": "Techno"}},
+    )
+    assert resp.status_code == 400
+
+
+def test_batch_update_no_fields(client):
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": ["some-id"]},
+    )
+    assert resp.status_code == 400
+
+
+def test_batch_update_not_found(client):
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": ["nonexistent-id-xyz"], "fields": {"genre": "Techno"}},
+    )
+    assert resp.status_code == 404
+
+
+def test_batch_update_updates_multiple_tracks(client, tmp_path, monkeypatch):
+    """Batch update should write the new field value to all matching tracks."""
+    import csv, uuid
+    from djlib.review import server as srv
+
+    csv_file = tmp_path / "unsorted.csv"
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "disposition",
+                  "rating", "year", "bpm", "key_camelot", "version_info", "file_path"]
+    rows = [
+        {k: "" for k in fieldnames} | {"track_id": tid, "genre": "House", "artist": "Test"}
+        for tid in ids
+    ]
+    with open(csv_file, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    monkeypatch.setattr(srv, "UNSORTED_CSV", csv_file)
+
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": ids[:2], "fields": {"genre": "Techno"}, "source": "unsorted"},
+    )
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["ok"] is True
+    assert data["updated"] == 2
+
+    with open(csv_file, newline="") as f:
+        result = list(csv.DictReader(f))
+    genres = {r["track_id"]: r["genre"] for r in result}
+    assert genres[ids[0]] == "Techno"
+    assert genres[ids[1]] == "Techno"
+    assert genres[ids[2]] == "House"  # untouched
+    # dropped_fields should be empty when all requested fields exist
+    assert data.get("dropped_fields", []) == []
+
+
+def test_batch_update_reports_dropped_fields(client, tmp_path, monkeypatch):
+    """Fields not in CSV schema should be reported in dropped_fields, not silently lost."""
+    import csv, uuid
+    from djlib.review import server as srv
+
+    csv_file = tmp_path / "unsorted.csv"
+    tid = str(uuid.uuid4())
+    fieldnames = ["track_id", "file_hash", "artist", "title", "genre", "disposition",
+                  "rating", "year", "bpm", "key_camelot"]
+    rows = [{k: "" for k in fieldnames} | {"track_id": tid, "genre": "House"}]
+    with open(csv_file, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
+
+    monkeypatch.setattr(srv, "UNSORTED_CSV", csv_file)
+
+    # Send a real field + a bogus field
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": [tid], "fields": {"genre": "Techno", "bogus_field": "x"}, "source": "unsorted"},
+    )
+    assert resp.status_code == 200
+    data = json.loads(resp.data)
+    assert data["ok"] is True
+    assert data["updated"] == 1
+    assert "bogus_field" in data["dropped_fields"]
+    assert "genre" not in data["dropped_fields"]
+
+
+def test_batch_update_all_fields_dropped_returns_400(client, tmp_path, monkeypatch):
+    """If every requested field is unknown, return 400 instead of silent success."""
+    import csv, uuid
+    from djlib.review import server as srv
+
+    csv_file = tmp_path / "unsorted.csv"
+    tid = str(uuid.uuid4())
+    fieldnames = ["track_id", "artist", "title"]
+    with open(csv_file, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerow({"track_id": tid, "artist": "A", "title": "T"})
+
+    monkeypatch.setattr(srv, "UNSORTED_CSV", csv_file)
+
+    # Use truly unknown field names (not in UNSORTED_COLUMNS schema)
+    resp = client.post(
+        "/api/tracks/batch-update",
+        json={"track_ids": [tid], "fields": {"bogus_one": "x", "bogus_two": "y"}, "source": "unsorted"},
+    )
+    assert resp.status_code == 400
+    data = json.loads(resp.data)
+    assert data["ok"] is False
+    assert set(data["dropped_fields"]) == {"bogus_one", "bogus_two"}
+
+
 # ── Processed tracks API ─────────────────────────────────────────────────────
 
 def test_tracks_processed_returns_list(client):
@@ -135,7 +261,27 @@ def test_tracks_processed_returns_list(client):
     assert isinstance(data, list)
 
 
-def test_tracks_processed_from_library_csv(client, tmp_path):
+@pytest.fixture
+def fake_dest_roots(tmp_path, monkeypatch):
+    """Patch server._get_processed_dest_roots to return tmp_path-anchored roots.
+
+    Mixes deliberately lives under library (as in production default layout:
+    `{LIB_ROOT}/MIXES/`), so ordering matters — mixes must win over library.
+    """
+    from djlib.review import server as srv
+
+    base = tmp_path.resolve()
+    lib = base / "Music Library"
+    roots = [
+        ("mixes", lib / "MIXES"),
+        ("rejected", base / "Music Rejected"),
+        ("library", lib),
+    ]
+    monkeypatch.setattr(srv, "_get_processed_dest_roots", lambda: roots)
+    return tmp_path
+
+
+def test_tracks_processed_from_library_csv(client, tmp_path, fake_dest_roots):
     """Processed endpoint reads library.csv filtered by destination folders."""
     from djlib.review import server as srv
 
@@ -143,18 +289,15 @@ def test_tracks_processed_from_library_csv(client, tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     lib_csv = data_dir / "library.csv"
+    lib_base = str(tmp_path)
     lib_csv.write_text(
         "external_source,external_track_id,track_id,old_full_path,artist,title,"
         "bpm,key,rating,color,duration_seconds,date_added,last_played,"
         "play_count,snapshot_date,rekordbox_id,traktor_id,cue_count\n"
         # Track in Music Library (should appear)
         "rekordbox,rb1,tid-aaa-111,"
-        "/Users/test/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
+        f"{lib_base}/Music Library/DJ Test/DJ Test - Track One [5A 128].mp3,"
         "DJ Test,Track One,128,5A,4,,200,2025-12-15,,5,,rb1,,0\n"
-        # Track in Music Archive (should appear)
-        "traktor,,tid-bbb-222,"
-        "/Users/test/Music Archive/Unknown/Unknown.mp3,"
-        "Unknown Artist,Unknown Track,120,3B,0,,180,2025-11-01,,0,,,,0\n"
         # Track in ~/Music (NOT processed — DJ software import, should be excluded)
         "rekordbox+traktor,rb2,tid-ccc-333,"
         "/Users/test/Music/Some DJ Track.mp3,"
@@ -168,7 +311,7 @@ def test_tracks_processed_from_library_csv(client, tmp_path):
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert isinstance(data, list)
-        assert len(data) == 2  # Only Music Library + Music Archive
+        assert len(data) == 1  # Only Music Library track (archive removed)
 
         # Library track
         lib_track = [t for t in data if t["track_id"] == "tid-aaa-111"][0]
@@ -181,25 +324,21 @@ def test_tracks_processed_from_library_csv(client, tmp_path):
         assert lib_track["destination"] == "library"
         assert lib_track["in_dj_software"] == "yes"
         assert lib_track["date_added"] == "2025-12-15"
-
-        # Archive track
-        arch_track = [t for t in data if t["track_id"] == "tid-bbb-222"][0]
-        assert arch_track["destination"] == "archive"
-        assert arch_track["in_dj_software"] == "yes"  # has external_source=traktor
     finally:
         srv._REPO = old_repo
 
 
-def test_tracks_processed_no_duplicates(client, tmp_path):
+def test_tracks_processed_no_duplicates(client, tmp_path, fake_dest_roots):
     """Library.csv has unique track_ids, so processed should have no dupes."""
     from djlib.review import server as srv
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    base = str(tmp_path)
     (data_dir / "library.csv").write_text(
         "external_source,track_id,old_full_path,artist,title,bpm,key,rating,play_count\n"
-        "rekordbox,tid-001,/Users/test/Music Library/A/track.mp3,Artist A,Track A,128,5A,3,2\n"
-        "traktor,tid-002,/Users/test/Music Library/B/track.mp3,Artist B,Track B,130,7B,0,0\n"
+        f"rekordbox,tid-001,{base}/Music Library/A/track.mp3,Artist A,Track A,128,5A,3,2\n"
+        f"traktor,tid-002,{base}/Music Library/B/track.mp3,Artist B,Track B,130,7B,0,0\n"
     )
 
     old_repo = srv._REPO
@@ -214,16 +353,22 @@ def test_tracks_processed_no_duplicates(client, tmp_path):
         srv._REPO = old_repo
 
 
-def test_tracks_processed_rejected_and_mixes(client, tmp_path):
-    """Tracks in Music Rejected and Music Mixes are also processed."""
+def test_tracks_processed_rejected_and_mixes(client, tmp_path, fake_dest_roots):
+    """Tracks in rejected and mixes destinations classify correctly.
+
+    Critical invariant: a track under `{LIB_ROOT}/MIXES/…` must classify as
+    `mixes`, NOT `library`. The old substring matcher ("Music Library" matches
+    first) misclassified every mix as a library track.
+    """
     from djlib.review import server as srv
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
+    base = str(tmp_path)
     (data_dir / "library.csv").write_text(
         "external_source,track_id,old_full_path,artist,title,bpm,key,rating,play_count\n"
-        "rekordbox,tid-rej,/Users/test/Music Rejected/bad.mp3,Bad,Track,120,1A,0,0\n"
-        "traktor,tid-mix,/Users/test/Music Library/MIXES/set.mp3,DJ,Mix Set,125,,0,0\n"
+        f"rekordbox,tid-rej,{base}/Music Rejected/bad.mp3,Bad,Track,120,1A,0,0\n"
+        f"traktor,tid-mix,{base}/Music Library/MIXES/set.mp3,DJ,Mix Set,125,,0,0\n"
     )
 
     old_repo = srv._REPO
@@ -234,8 +379,7 @@ def test_tracks_processed_rejected_and_mixes(client, tmp_path):
         assert len(data) == 2
         dests = {t["track_id"]: t["destination"] for t in data}
         assert dests["tid-rej"] == "rejected"
-        # Music Library/MIXES → "library" since "Music Library" matches first
-        assert dests["tid-mix"] == "library"
+        assert dests["tid-mix"] == "mixes"
     finally:
         srv._REPO = old_repo
 
@@ -458,7 +602,14 @@ def test_enrich_track_not_found(client):
     assert resp.status_code == 404
 
 
-def _classifier_result(genre: str, confidence: float, lastfm_tags: str = "", reasoning: str = "") -> Dict:
+def _classifier_result(
+    genre: str,
+    confidence: float,
+    lastfm_tags: str = "",
+    reasoning: str = "",
+    year: str | None = None,
+    year_evidence: str = "",
+) -> Dict:
     """Build a classifier-shape dict for mocking _classify_genre."""
     return {
         "genre": genre,
@@ -466,6 +617,8 @@ def _classifier_result(genre: str, confidence: float, lastfm_tags: str = "", rea
         "reasoning": reasoning,
         "source": "nano+WS+LF",
         "lastfm_tags": lastfm_tags,
+        "year": year or "",
+        "year_evidence": year_evidence,
     }
 
 
@@ -607,8 +760,8 @@ def test_enrich_uses_user_edited_fields(client, tmp_path):
     assert captured_args["version"] == "Talon Remix"
 
 
-def test_enrich_track_returns_year_from_soundcloud(client, tmp_path):
-    """Year from SoundCloud cache is included in enrich response."""
+def test_enrich_track_returns_year_from_classifier(client, tmp_path):
+    """Classifier-provided year is included in enrich response."""
     from djlib.review import server as srv
 
     csv_path = _make_unsorted_csv(tmp_path, [{
@@ -624,51 +777,30 @@ def test_enrich_track_returns_year_from_soundcloud(client, tmp_path):
         "genre_suggest": "",
     }])
 
-    mock_result = _classifier_result(genre="Deep House", confidence=0.80)
+    mock_result = _classifier_result(
+        genre="Deep House",
+        confidence=0.80,
+        year="2023",
+        year_evidence="Discogs result mentions Released 2023",
+    )
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
          patch.object(srv, "_classify_genre", return_value=mock_result), \
-         patch("djlib.metadata.soundcloud.get_cached_year", return_value="2023"):
+         patch("djlib.metadata.soundcloud.get_cached_year") as mock_sc_year, \
+         patch("djlib.metadata.beatport.search_track") as mock_bp_search:
         resp = client.post("/api/enrich-track", json={"track_id": "year-sc-1"})
 
     assert resp.status_code == 200
     data = json.loads(resp.data)
     assert data["year"] == "2023"
     assert data["genre"] == "Deep House"
+    assert data["source_details"]["year"] == "Discogs result mentions Released 2023"
+    mock_sc_year.assert_not_called()
+    mock_bp_search.assert_not_called()
 
 
-def test_enrich_track_returns_year_from_beatport(client, tmp_path):
-    """Year from Beatport release_date is included when SC has no year."""
-    from djlib.review import server as srv
-
-    csv_path = _make_unsorted_csv(tmp_path, [{
-        "track_id": "year-bp-1",
-        "file_path": "/tmp/test/Artist - Title.wav",
-        "artist": "Another Artist",
-        "title": "Another Title",
-        "version_info": "",
-        "duration_suggest": "4:30",
-        "tag_genre_original": "",
-        "artist_suggest": "",
-        "title_suggest": "",
-        "genre_suggest": "",
-    }])
-
-    mock_result = _classifier_result(genre="Tech House", confidence=0.90)
-
-    with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch.object(srv, "_classify_genre", return_value=mock_result), \
-         patch("djlib.metadata.soundcloud.get_cached_year", return_value=None), \
-         patch("djlib.metadata.beatport.search_track", return_value={"release_date": "2024-06-15"}):
-        resp = client.post("/api/enrich-track", json={"track_id": "year-bp-1"})
-
-    assert resp.status_code == 200
-    data = json.loads(resp.data)
-    assert data["year"] == "2024"
-
-
-def test_enrich_track_year_none_when_no_sources(client, tmp_path):
-    """Year is null when neither SC nor BP have year data."""
+def test_enrich_track_year_none_when_classifier_has_no_year(client, tmp_path):
+    """Year is null when classifier does not return one."""
     from djlib.review import server as srv
 
     csv_path = _make_unsorted_csv(tmp_path, [{
@@ -687,9 +819,7 @@ def test_enrich_track_year_none_when_no_sources(client, tmp_path):
     mock_result = _classifier_result(genre="House", confidence=0.70)
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch.object(srv, "_classify_genre", return_value=mock_result), \
-         patch("djlib.metadata.soundcloud.get_cached_year", return_value=None), \
-         patch("djlib.metadata.beatport.search_track", return_value=None):
+         patch.object(srv, "_classify_genre", return_value=mock_result):
         resp = client.post("/api/enrich-track", json={"track_id": "year-none-1"})
 
     assert resp.status_code == 200
@@ -1001,15 +1131,23 @@ def test_identify_track_success(client, tmp_path):
         assert data["confidence"] == 0.75
         assert "reasoning" in data
 
-    # Clean up cache
-    srv._identify_cache.pop("identify-test-1", None)
+    # Clean up cache (composite key: track_id|artist_lower|title_lower)
+    srv._identify_cache.pop("identify-test-1||september maru w dave nunes", None)
 
 
-def test_identify_track_uses_cache(client):
-    """Second request for same track_id returns cached result."""
+def test_identify_track_uses_cache(client, tmp_path):
+    """Second request for same track_id+artist+title returns cached result without API call."""
     import djlib.review.server as srv
 
-    srv._identify_cache["cached-identify"] = {
+    csv_path = _make_unsorted_csv(tmp_path, [{
+        "track_id": "cached-identify",
+        "artist": "Cached Artist",
+        "title": "Cached Title",
+    }])
+
+    # Cache key is now composite: track_id|artist_lower|title_lower
+    cache_key = "cached-identify|cached artist|cached title"
+    srv._identify_cache[cache_key] = {
         "artist": "Cached Artist",
         "title": "Cached Title",
         "version": "",
@@ -1018,14 +1156,18 @@ def test_identify_track_uses_cache(client):
         "reasoning": "cached",
     }
 
-    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+    with patch.object(srv, "UNSORTED_CSV", csv_path), \
+         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
+         patch("djlib.review.server.http_requests.post") as mock_post:
         resp = client.post("/api/identify-track", json={"track_id": "cached-identify"})
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert data["artist"] == "Cached Artist"
         assert data["reasoning"] == "cached"
+        # API must NOT have been called — result came from cache
+        mock_post.assert_not_called()
 
-    del srv._identify_cache["cached-identify"]
+    del srv._identify_cache[cache_key]
 
 
 def test_identify_track_openai_error(client, tmp_path):
@@ -2166,4 +2308,3 @@ def test_unsorted_tracks_include_rating_field(client, tmp_path):
         assert len(data) >= 1
         track = next(t for t in data if t["track_id"] == "rating-test-3")
         assert track["rating"] == "3"
-

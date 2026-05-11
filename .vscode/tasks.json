@@ -160,6 +160,22 @@
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Dedup unsorted (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dedup-staging --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Dedup unsorted",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dedup-staging",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }

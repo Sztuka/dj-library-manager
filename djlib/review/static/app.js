@@ -37,8 +37,22 @@
   // Auto-play on navigation
   let autoPlay = false;
 
+  // ── Ghost-row review state ──────────────────────────────────────────────────
+  var ghostReview = {
+    active: false,
+    jobId: null,
+    total: 0,
+    done: 0,
+    locked: false,          // true while streaming: block edits + sort changes
+    pollTimer: null,
+    ticked: {},             // { track_id: { field: bool } }
+    proposals: {},          // { track_id: { field: {value,source,confidence,was} } }
+    filter: "all",          // "all" | "conflicts" | "low"
+    autoThreshold: parseFloat(localStorage.getItem("ghost-auto-accept") || "0.85"),
+  };
+
   // Auto-destination mapping
-  const AUTO_DEST = { accept: "library", reject: "reject" };
+  const EXPORT_DISPOSITIONS = new Set(["library", "reject", "mixes"]);
 
   // Batch selection
   let selectedSet = new Set();
@@ -65,8 +79,7 @@
   const emptyState = document.getElementById("empty-state");
   const sourceSelect = document.getElementById("source-select");
   const searchInput = document.getElementById("search-input");
-  const filterStatus = document.getElementById("filter-status");
-  const filterDone = document.getElementById("filter-done");
+  const filterDisposition = document.getElementById("filter-disposition");
   const filterBpm = document.getElementById("filter-bpm");
   const filterKey = document.getElementById("filter-key");
   const filterRating = document.getElementById("filter-rating");
@@ -94,13 +107,6 @@
   const aiBannerAccept = document.getElementById("ai-banner-accept");
   const aiBannerDismiss = document.getElementById("ai-banner-dismiss");
   const ctxAiSuggest = document.getElementById("ctx-ai-suggest");
-  const enrichBanner = document.getElementById("enrich-banner");
-  const enrichBannerGenre = document.getElementById("enrich-banner-genre");
-  const enrichBannerConf = document.getElementById("enrich-banner-confidence");
-  const enrichBannerSources = document.getElementById("enrich-banner-sources");
-  const enrichBannerAccept = document.getElementById("enrich-banner-accept");
-  const enrichBannerDismiss = document.getElementById("enrich-banner-dismiss");
-  const enrichBannerSwap = document.getElementById("enrich-banner-swap");
   const identifyBanner = document.getElementById("identify-banner");
   const identifyBannerArtist = document.getElementById(
     "identify-banner-artist",
@@ -153,6 +159,12 @@
   const aiChatPrompts = document.getElementById("ai-chat-prompts");
   const aiChatDragHandle = document.getElementById("ai-chat-drag-handle");
   const urlScrapeBanner = document.getElementById("url-scrape-banner");
+  const reviewToolbar = document.getElementById("review-toolbar");
+  const reviewProgress = document.getElementById("review-progress");
+  const reviewTickedCount = document.getElementById("review-ticked-count");
+  const reviewApplyBtn = document.getElementById("review-apply-btn");
+  const reviewCancelBtn = document.getElementById("review-cancel-btn");
+  const reviewAutoThresholdInput = document.getElementById("review-auto-threshold");
   const urlScrapeBannerArtist = document.getElementById(
     "url-scrape-banner-artist",
   );
@@ -180,12 +192,23 @@
   const urlInputCancel = document.getElementById("url-input-cancel");
   const urlInputSubmit = document.getElementById("url-input-submit");
 
+  // Batch bar
+  const batchBar = document.getElementById("batch-bar");
+  const batchClear = document.getElementById("batch-clear");
+  const batchCount = document.getElementById("batch-count");
+  const batchGenre = document.getElementById("batch-genre");
+  const batchYear = document.getElementById("batch-year");
+  const batchArtist = document.getElementById("batch-artist");
+  const batchGroup = document.getElementById("batch-group");
+  const batchDisposition = document.getElementById("batch-disposition");
+  const batchRating = document.getElementById("batch-rating");
+  const batchApply = document.getElementById("batch-apply");
+  const batchApplyCount = document.getElementById("batch-apply-count");
+
   // AI availability (checked once on load)
   let aiAvailable = false;
   let aiPending = false; // prevents double-clicks
   let aiBannerTrack = null; // track the banner is showing for
-  let enrichPending = false;
-  let enrichBannerTrack = null;
   let identifyPending = false;
   let identifyBannerTrack = null;
   let classifyPending = false;
@@ -198,12 +221,28 @@
   // -- Column definitions per source --------------------------
   const COLUMNS = {
     unsorted: [
+      { key: "_select", label: "", width: "28px", type: "row-select" },
       { key: "_index", label: "#", width: "36px" },
       { key: "artist", label: "Artist", width: "15%", type: "editable" },
       { key: "title", label: "Title", width: "16%", type: "editable" },
       { key: "version_info", label: "Version", width: "10%", type: "editable" },
       { key: "_in_library", label: "Lib", width: "36px", type: "in-library" },
+      {
+        key: "file_path",
+        label: "Folder",
+        width: "110px",
+        cls: "col-folder",
+        fmt: function (fp) {
+          if (!fp) return "—";
+          var parts = fp.replace(/\\/g, "/").split("/");
+          var dirs = parts.slice(0, -1).filter(Boolean);
+          if (!dirs.length) return "—";
+          return dirs.slice(-2).join("/");
+        },
+      },
       { key: "genre", label: "Genre", width: "11%", type: "genre-select" },
+      { key: "occasion_tags", label: "Group", width: "90px", type: "editable", cls: "col-group" },
+      { key: "disposition", label: "Disp", width: "88px", type: "disposition-select" },
       {
         key: "year",
         label: "Year",
@@ -214,9 +253,6 @@
       { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
       { key: "key_camelot", label: "Key", width: "40px", cls: "col-key" },
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
-      { key: "destination", label: "Dest", width: "72px", type: "dest-select" },
-      { key: "status", label: "Status", width: "68px", type: "status-display" },
-      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
     ],
     library: [
       { key: "_index", label: "#", width: "36px" },
@@ -261,6 +297,7 @@
       },
     ],
     "library-review": [
+      { key: "_select", label: "", width: "28px", type: "row-select" },
       { key: "_index", label: "#", width: "36px" },
       { key: "artist", label: "Artist", width: "14%", type: "editable" },
       { key: "title", label: "Title", width: "15%", type: "editable" },
@@ -278,9 +315,10 @@
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
       { key: "rekordbox_id", label: "RB", width: "36px", cls: "col-bpm" },
       { key: "traktor_id", label: "TK", width: "36px", cls: "col-bpm" },
-      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+      { key: "disposition", label: "Disp", width: "88px", type: "disposition-select" },
     ],
     "library-fix": [
+      { key: "_select", label: "", width: "28px", type: "row-select" },
       { key: "_index", label: "#", width: "32px" },
       { key: "artist", label: "Artist", width: "11%", type: "editable" },
       { key: "title", label: "Title", width: "12%", type: "editable" },
@@ -294,8 +332,7 @@
       { key: "ai_version", label: "AI Ver", width: "8%", cls: "col-ai" },
       { key: "ai_genre", label: "AI Genre", width: "8%", cls: "col-ai" },
       { key: "ai_confidence", label: "Conf", width: "40px", cls: "col-ai col-bpm" },
-      { key: "status", label: "Status", width: "60px", type: "status-badge" },
-      { key: "done", label: "\u2713", width: "32px", type: "checkbox" },
+      { key: "disposition", label: "Disp", width: "88px", type: "disposition-select" },
     ],
   };
 
@@ -368,7 +405,7 @@
     var newVal = stars === current ? 0 : stars;
     track.rating = String(newVal);
     // Update the cell in the DOM
-    var row = tableBody.children[currentIndex];
+    var row = getDataRow(currentIndex);
     if (row) {
       var cells = row.querySelectorAll(".col-rating");
       if (cells.length) cells[0].innerHTML = ratingToStars(newVal);
@@ -394,8 +431,6 @@
     const v = (val || "").toLowerCase();
     if (v === "library")
       return '<span class="badge-dest dest-library">library</span>';
-    if (v === "archive")
-      return '<span class="badge-dest dest-archive">archive</span>';
     if (v === "rejected")
       return '<span class="badge-dest dest-rejected">rejected</span>';
     if (v === "mixes")
@@ -456,6 +491,16 @@
     selectedSet.clear();
     selectionAnchor = -1;
     undoStack = [];
+    // Exit review mode when switching sources (ghost rows belong to unsorted only)
+    if (ghostReview.active) exitReviewMode(true);
+    // Reset batch bar inputs to avoid ghost values across source switches
+    if (batchGenre) batchGenre.value = "";
+    if (batchYear) batchYear.value = "";
+    if (batchArtist) batchArtist.value = "";
+    if (batchGroup) batchGroup.value = "";
+    if (batchDisposition) batchDisposition.value = "";
+    if (batchRating) batchRating.value = "";
+    updateBatchBar();
     applyFilters();
     // Auto-select first row
     if (filteredTracks.length > 0) {
@@ -470,6 +515,7 @@
     } catch (e) {
       genres = [];
     }
+    populateBatchGenre();
   }
 
   // -- Populate key filter from library data ------------------
@@ -507,8 +553,7 @@
     const isLib = currentSource === "library";
     const isUnsorted = currentSource === "unsorted";
     // Unsorted-only filters (hidden on library & processed)
-    filterStatus.style.display = isUnsorted ? "" : "none";
-    filterDone.style.display = isUnsorted ? "" : "none";
+    filterDisposition.style.display = isUnsorted ? "" : "none";
     // Library-only filters
     filterBpm.style.display = isLib ? "" : "none";
     filterKey.style.display = isLib ? "" : "none";
@@ -518,8 +563,7 @@
   // -- Filtering & sorting ------------------------------------
   function applyFilters() {
     const q = searchInput.value.toLowerCase().trim();
-    const sf = filterStatus.value;
-    const df = filterDone.value;
+    const sf = filterDisposition.value;
     const bf = filterBpm.value;
     const kf = filterKey.value;
     const rf = filterRating.value;
@@ -546,13 +590,10 @@
       if (!isLib) {
         if (sf) {
           if (sf === "undecided") {
-            if (t.status && t.status !== "") return false;
+            if (t.disposition && t.disposition !== "") return false;
           } else {
-            if (t.status !== sf) return false;
+            if (t.disposition !== sf) return false;
           }
-        }
-        if (df) {
-          if (t.done !== df) return false;
         }
       }
       // Library-specific filters
@@ -648,30 +689,23 @@
   // -- Stats bar ----------------------------------------------
   function updateStats() {
     if (currentSource === "unsorted") {
-      var acc = 0,
-        rej = 0,
-        rev = 0,
-        und = 0;
+      var lib = 0, rej = 0, mix = 0, later = 0, und = 0;
       for (var i = 0; i < allTracks.length; i++) {
         var t = allTracks[i];
-        if (t.status === "accept") acc++;
-        else if (t.status === "reject") rej++;
-        else if (t.status === "review") rev++;
+        var d = (t.disposition || "").toLowerCase();
+        if (d === "library") lib++;
+        else if (d === "reject") rej++;
+        else if (d === "mixes") mix++;
+        else if (d === "later") later++;
         else und++;
       }
-      statsBar.innerHTML =
-        '<span class="stat-accept">' +
-        acc +
-        " acc</span> \u00b7 " +
-        '<span class="stat-reject">' +
-        rej +
-        " rej</span> \u00b7 " +
-        '<span class="stat-review">' +
-        rev +
-        " rev</span> \u00b7 " +
-        '<span class="stat-undecided">' +
-        und +
-        " todo</span>";
+      var parts = [];
+      if (lib) parts.push('<span class="stat-lib">' + lib + " lib</span>");
+      if (rej) parts.push('<span class="stat-reject">' + rej + " rej</span>");
+      if (mix) parts.push('<span class="stat-mixes">' + mix + " mix</span>");
+      if (later) parts.push('<span class="stat-later">' + later + " later</span>");
+      parts.push('<span class="stat-undecided">' + und + " todo</span>");
+      statsBar.innerHTML = parts.join(" \u00b7 ");
     } else if (currentSource === "library") {
       // Library stats: source breakdown, rated, BPM range
       var srcBoth = 0,
@@ -716,7 +750,6 @@
       var inLib = 0,
         prRated = 0,
         prLib = 0,
-        prArch = 0,
         prRej = 0;
       for (var i = 0; i < allTracks.length; i++) {
         var t = allTracks[i];
@@ -725,7 +758,6 @@
         if (rat > 0) prRated++;
         var dest = (t.destination || "").toLowerCase();
         if (dest === "library") prLib++;
-        else if (dest === "archive") prArch++;
         else if (dest === "rejected") prRej++;
       }
       var prParts = [];
@@ -737,10 +769,6 @@
       prParts.push(
         '<span class="badge-dest dest-library">' + prLib + " library</span>",
       );
-      if (prArch)
-        prParts.push(
-          '<span class="badge-dest dest-archive">' + prArch + " archive</span>",
-        );
       if (prRej)
         prParts.push(
           '<span class="badge-dest dest-rejected">' +
@@ -760,6 +788,533 @@
   }
 
   // -- Table rendering ----------------------------------------
+  // ── Ghost-row navigation helper ────────────────────────────────────────────
+  // Returns the i-th data row (skipping ghost rows) from tableBody.
+  // Use instead of tableBody.children[i] everywhere navigation touches the DOM,
+  // so that interspersed ghost rows don't shift the index-to-row mapping.
+  function getDataRow(index) {
+    if (index < 0) return null;
+    var count = 0;
+    for (var i = 0; i < tableBody.children.length; i++) {
+      var child = tableBody.children[i];
+      if (child.classList.contains("ghost-row")) continue;
+      if (count === index) return child;
+      count++;
+    }
+    return null;
+  }
+
+  // ── Ghost-row enrichment fields allowed per source ─────────────────────────
+  var GHOST_FIELDS = ["genre", "year", "artist", "title", "version_info"];
+
+  // Source abbreviation badges
+  var SOURCE_ABBR = {
+    "ai_classifier": "AI",
+    "ai_identify": "AI",
+    "musicbrainz": "MB",
+    "beatport": "BP",
+    "soundcloud": "SC",
+    "lastfm": "LF",
+    "manual": "M",
+  };
+
+  function ghostSourceBadge(source) {
+    if (!source) return "";
+    var key = source.split(":")[0];
+    var label = SOURCE_ABBR[key] || key.substring(0, 3).toUpperCase();
+    return '<span class="ghost-src-badge src-' + key + '">' + label + '</span>';
+  }
+
+  function ghostDefaultTicked(field, proposal) {
+    var conf = proposal.confidence || 0;
+    var wasEmpty = !proposal.was || proposal.was === "";
+    // Never auto-tick an overwrite (was non-empty and proposal differs)
+    if (!wasEmpty && proposal.value !== proposal.was) return false;
+    return conf >= ghostReview.autoThreshold;
+  }
+
+  // Build (or rebuild) ghost row ticked map for one track's proposals.
+  function ghostInitTicked(tid, proposals) {
+    var entry = {};
+    for (var field in proposals) {
+      if (!Object.prototype.hasOwnProperty.call(proposals, field)) continue;
+      if (field === "_ts") continue;
+      entry[field] = ghostDefaultTicked(field, proposals[field]);
+    }
+    ghostReview.ticked[tid] = entry;
+  }
+
+  function ghostCountTicked() {
+    var n = 0;
+    for (var tid in ghostReview.ticked) {
+      if (!Object.prototype.hasOwnProperty.call(ghostReview.ticked, tid)) continue;
+      var fields = ghostReview.ticked[tid];
+      for (var f in fields) {
+        if (fields[f]) n++;
+      }
+    }
+    return n;
+  }
+
+  function updateReviewToolbar() {
+    if (!ghostReview.active) {
+      reviewToolbar.classList.add("hidden");
+      return;
+    }
+    reviewToolbar.classList.remove("hidden");
+
+    var label = ghostReview.locked
+      ? "ENRICHING " + ghostReview.done + "/" + ghostReview.total + "…"
+      : ghostReview.done + "/" + ghostReview.total + " done";
+    reviewProgress.textContent = label;
+
+    var ticked = ghostCountTicked();
+    reviewTickedCount.textContent = ticked + " ticked";
+    reviewApplyBtn.disabled = ticked === 0;
+    reviewApplyBtn.textContent = "Apply " + ticked;
+
+    // Update bulk column toggle button states
+    var bulkBtns = reviewToolbar.querySelectorAll(".review-bulk-btn");
+    bulkBtns.forEach(function (btn) {
+      var field = btn.dataset.field;
+      var allOn = true, anyOn = false;
+      for (var tid in ghostReview.ticked) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.ticked, tid)) continue;
+        if (!(field in ghostReview.ticked[tid])) { allOn = false; continue; }
+        if (ghostReview.ticked[tid][field]) anyOn = true;
+        else allOn = false;
+      }
+      btn.classList.toggle("bulk-all-on", allOn && anyOn);
+      btn.classList.toggle("bulk-some-on", !allOn && anyOn);
+    });
+
+    // Apply ghost row filter visibility
+    applyGhostFilter();
+  }
+
+  function applyGhostFilter() {
+    var filter = ghostReview.filter;
+    var ghostRows = tableBody.querySelectorAll("tr.ghost-row");
+    ghostRows.forEach(function (gr) {
+      var tid = gr.dataset.ghostFor;
+      if (filter === "all") {
+        gr.style.display = "";
+        return;
+      }
+      var proposals = ghostReview.proposals[tid] || {};
+      if (filter === "conflicts") {
+        var hasConflict = false;
+        for (var f in proposals) {
+          if (f === "_ts") continue;
+          var p = proposals[f];
+          if (p.was && p.was !== "" && p.value !== p.was) { hasConflict = true; break; }
+        }
+        gr.style.display = hasConflict ? "" : "none";
+        return;
+      }
+      if (filter === "low") {
+        var hasLow = false;
+        for (var f2 in proposals) {
+          if (f2 === "_ts") continue;
+          if ((proposals[f2].confidence || 0) < 0.7) { hasLow = true; break; }
+        }
+        gr.style.display = hasLow ? "" : "none";
+        return;
+      }
+    });
+  }
+
+  // Render or refresh the ghost row for one track.
+  function renderGhostRow(track, proposals) {
+    var tid = track.track_id || track.file_hash || "";
+    if (!tid) return;
+
+    // Remove existing ghost row for this track if any
+    var existing = tableBody.querySelector('tr.ghost-row[data-ghost-for="' + tid + '"]');
+    if (existing) existing.remove();
+
+    var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
+
+    var tr = document.createElement("tr");
+    tr.classList.add("ghost-row");
+    tr.dataset.ghostFor = tid;
+
+    cols.forEach(function (col, colIdx) {
+      var td = document.createElement("td");
+      td.className = col.cls || "";
+      td.classList.add("ghost-cell");
+
+      if (colIdx === 1) {
+        // Index column: show confidence badge + "↳"
+        var proposal0 = null;
+        var maxConf = 0;
+        for (var f in proposals) {
+          if (f === "_ts") continue;
+          var c = proposals[f] && proposals[f].confidence || 0;
+          if (c > maxConf) { maxConf = c; proposal0 = proposals[f]; }
+        }
+        var confPct = Math.round(maxConf * 100);
+        var confCls = maxConf >= 0.85 ? "ghost-conf-high" : maxConf >= 0.6 ? "ghost-conf-mid" : "ghost-conf-low";
+        td.innerHTML = '<div class="ghost-inner"><span class="ghost-lead">↳</span> <span class="ghost-conf ' + confCls + '">' + confPct + '%</span></div>';
+        tr.appendChild(td);
+        return;
+      }
+
+      var field = col.key;
+      if (!GHOST_FIELDS.includes(field)) {
+        // Not enrichable: empty cell
+        td.innerHTML = "";
+        if (field === "done" || field === "_select") {
+          // Apply-row button in last action column
+          if (field === "done") {
+            var applyBtn = document.createElement("button");
+            applyBtn.className = "ghost-apply-row-btn";
+            applyBtn.title = "Apply this row";
+            applyBtn.textContent = "✓";
+            applyBtn.dataset.tid = tid;
+            applyBtn.addEventListener("click", function () {
+              applyGhostRow(tid);
+            });
+            td.appendChild(applyBtn);
+          }
+        }
+        tr.appendChild(td);
+        return;
+      }
+
+      var proposal = proposals[field];
+      if (!proposal) {
+        td.innerHTML = '<span class="ghost-empty">—</span>';
+        tr.appendChild(td);
+        return;
+      }
+
+      var ticked = ghostReview.ticked[tid] && ghostReview.ticked[tid][field];
+      var isOverwrite = proposal.was && proposal.was !== "" && proposal.value !== proposal.was;
+      var isSame = proposal.value === proposal.was;
+
+      td.classList.toggle("ghost-accept", !!ticked);
+      td.classList.toggle("ghost-reject", !ticked);
+      td.classList.toggle("ghost-overwrite", isOverwrite && !!ticked);
+      td.classList.toggle("ghost-same", isSame);
+
+      var toggleSpan = '<span class="ghost-toggle" role="button" tabindex="0" data-tid="' + tid + '" data-field="' + field + '">' + (ticked ? "✓" : "✗") + '</span>';
+      var valSpan = '<span class="ghost-value">' + escapeHtml(proposal.value || "") + '</span>';
+      var srcSpan = ghostSourceBadge(proposal.source);
+      var wasSpan = isOverwrite ? '<span class="ghost-was">(was: ' + escapeHtml(proposal.was) + ')</span>' : (isSame ? '<span class="ghost-was dim">=</span>' : "");
+
+      td.innerHTML = '<div class="ghost-inner">' + toggleSpan + " " + valSpan + " " + srcSpan + " " + wasSpan + '</div>';
+      td.querySelector(".ghost-toggle").addEventListener("click", function (e) {
+        e.stopPropagation();
+        toggleGhostCell(tid, field);
+      });
+      td.querySelector(".ghost-toggle").addEventListener("keydown", function (e) {
+        if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleGhostCell(tid, field); }
+      });
+
+      tr.appendChild(td);
+    });
+
+    // Find the data row for this track and insert ghost row after it
+    var dataRow = tableBody.querySelector('tr[data-tid="' + tid + '"]');
+    if (!dataRow) {
+      // fallback: find by dataset.idx matching filteredTracks index
+      for (var i = 0; i < filteredTracks.length; i++) {
+        if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+          dataRow = getDataRow(i);
+          break;
+        }
+      }
+    }
+    if (dataRow) {
+      dataRow.after(tr);
+    } else {
+      tableBody.appendChild(tr);
+    }
+  }
+
+  function toggleGhostCell(tid, field) {
+    if (!ghostReview.ticked[tid]) ghostReview.ticked[tid] = {};
+    ghostReview.ticked[tid][field] = !ghostReview.ticked[tid][field];
+    // Refresh just this ghost row
+    var track = null;
+    for (var i = 0; i < filteredTracks.length; i++) {
+      if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+        track = filteredTracks[i];
+        break;
+      }
+    }
+    if (track) renderGhostRow(track, ghostReview.proposals[tid] || {});
+    updateReviewToolbar();
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // Apply a single ghost row (all ticked fields for that track)
+  function applyGhostRow(tid) {
+    var ticked = ghostReview.ticked[tid] || {};
+    applyGhostApplications([{ track_id: tid, fields: ticked }]);
+  }
+
+  var _applyInFlight = false;
+
+  // Send accepted fields to backend and clean up ghost row(s)
+  function applyGhostApplications(applications) {
+    if (!applications.length) return;
+    if (_applyInFlight) return;
+    _applyInFlight = true;
+    fetch("/api/apply-enrichment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ applications: applications }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        _applyInFlight = false;
+        if (data.error) { showToast("Apply error: " + data.error, ""); return; }
+        applications.forEach(function (app) {
+          var tid = app.track_id;
+          // Update in-memory track data with accepted values
+          var proposals = ghostReview.proposals[tid] || {};
+          var track = null;
+          for (var i = 0; i < allTracks.length; i++) {
+            if ((allTracks[i].track_id || allTracks[i].file_hash) === tid) { track = allTracks[i]; break; }
+          }
+          if (track) {
+            for (var field in app.fields) {
+              if (app.fields[field] && proposals[field]) {
+                track[field] = proposals[field].value;
+              }
+            }
+          }
+          // Remove ghost row from DOM
+          var gr = tableBody.querySelector('tr.ghost-row[data-ghost-for="' + tid + '"]');
+          if (gr) gr.remove();
+          // Remove from review state
+          delete ghostReview.ticked[tid];
+          delete ghostReview.proposals[tid];
+        });
+        // Refresh table rows: update cell values in-place, then flash animation
+        var changedTids = new Set(applications.map(function (a) { return a.track_id; }));
+        reRenderDataRows(changedTids);
+        updateReviewToolbar();
+        showToast("Applied " + data.applied + " track(s)", "");
+        if (Object.keys(ghostReview.proposals).length === 0) {
+          exitReviewMode(false);
+        }
+      })
+      .catch(function () { _applyInFlight = false; showToast("Apply request failed", ""); });
+  }
+
+  // Re-render specific data rows in-place: update cell values + flash animation
+  function reRenderDataRows(tids) {
+    var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
+    for (var i = 0; i < filteredTracks.length; i++) {
+      var t = filteredTracks[i];
+      var tid = t.track_id || t.file_hash || "";
+      if (!tids.has(tid)) continue;
+      var dataRow = getDataRow(i);
+      if (!dataRow) continue;
+      // Update cell values in-place without rebuilding the row (preserves event listeners)
+      var tds = dataRow.querySelectorAll("td");
+      for (var ci = 0; ci < cols.length && ci < tds.length; ci++) {
+        var col = cols[ci];
+        var td = tds[ci];
+        if (col.type === "editable") {
+          td.textContent = t[col.key] || "";
+          td.title = t[col.key] || "";
+        } else if (col.type === "genre-select" || col.type === "dest-select") {
+          var sel = td.querySelector("select");
+          if (sel) sel.value = t[col.key] || "";
+        }
+      }
+      dataRow.classList.add("ghost-applied");
+      setTimeout((function (dr) {
+        return function () { dr.classList.remove("ghost-applied"); };
+      })(dataRow), 1200);
+    }
+  }
+
+  function applyAllTicked() {
+    var applications = [];
+    for (var tid in ghostReview.ticked) {
+      if (!Object.prototype.hasOwnProperty.call(ghostReview.ticked, tid)) continue;
+      var fields = ghostReview.ticked[tid];
+      var hasAny = Object.values(fields).some(Boolean);
+      if (hasAny) applications.push({ track_id: tid, fields: fields });
+    }
+    applyGhostApplications(applications);
+  }
+
+  function startBatchEnrich(selectedTids) {
+    if (!selectedTids || !selectedTids.length) {
+      showToast("No tracks selected for batch enrich", "");
+      return;
+    }
+    ghostReview.active = true;
+    ghostReview.locked = true;
+    ghostReview.total = selectedTids.length;
+    ghostReview.done = 0;
+    ghostReview.jobId = null;
+    ghostReview.proposals = {};
+    ghostReview.ticked = {};
+
+    // Insert placeholder ghost rows immediately
+    selectedTids.forEach(function (tid) {
+      for (var i = 0; i < filteredTracks.length; i++) {
+        if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+          renderGhostRow(filteredTracks[i], { _loading: true });
+          break;
+        }
+      }
+    });
+
+    updateReviewToolbar();
+    document.body.classList.add("review-locked");
+
+    fetch("/api/enrich-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        track_ids: selectedTids,
+        fields: ["genre", "year", "artist", "title", "version_info"],
+      }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.error) {
+          showToast("Batch enrich error: " + data.error, "");
+          exitReviewMode(true);
+          return;
+        }
+        ghostReview.jobId = data.job_id;
+        ghostReview.total = data.total;
+        pollBatchEnrich();
+      })
+      .catch(function () {
+        showToast("Batch enrich request failed", "");
+        exitReviewMode(true);
+      });
+  }
+
+  function pollBatchEnrich() {
+    if (!ghostReview.jobId) return;
+    ghostReview.pollTimer = setTimeout(function () {
+      fetch("/api/enrich-status?job_id=" + ghostReview.jobId)
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.error) { exitReviewMode(true); return; }
+
+          ghostReview.done = data.done;
+
+          // Hydrate new results into ghost rows
+          var newResults = data.new_results || {};
+          for (var tid in newResults) {
+            if (!Object.prototype.hasOwnProperty.call(newResults, tid)) continue;
+            // Fetch full proposal from sidecar on next tick (results are partial)
+          }
+
+          // Re-fetch sidecar delta to get full field proposals
+          if (Object.keys(newResults).length > 0) {
+            hydrateFromSidecar(Object.keys(newResults));
+          }
+
+          updateReviewToolbar();
+
+          if (data.state === "running") {
+            pollBatchEnrich();
+          } else {
+            ghostReview.locked = false;
+            document.body.classList.remove("review-locked");
+            updateReviewToolbar();
+            showToast("Enrichment complete — " + ghostReview.done + " tracks", "");
+          }
+        })
+        .catch(function () {
+          exitReviewMode(true);
+        });
+    }, 1500);
+  }
+
+  function hydrateFromSidecar(tids) {
+    fetch("/api/pending-suggestions")
+      .then(function (r) { return r.json(); })
+      .then(function (sidecar) {
+        tids.forEach(function (tid) {
+          var proposals = sidecar[tid];
+          if (!proposals) return;
+          ghostReview.proposals[tid] = proposals;
+          ghostInitTicked(tid, proposals);
+          for (var i = 0; i < filteredTracks.length; i++) {
+            if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+              renderGhostRow(filteredTracks[i], proposals);
+              break;
+            }
+          }
+        });
+        updateReviewToolbar();
+      });
+  }
+
+  function hydrateAllFromSidecar() {
+    fetch("/api/pending-suggestions")
+      .then(function (r) { return r.json(); })
+      .then(function (sidecar) {
+        var tids = Object.keys(sidecar);
+        if (!tids.length) return;
+        ghostReview.active = true;
+        ghostReview.locked = false;
+        ghostReview.done = tids.length;
+        ghostReview.total = tids.length;
+        tids.forEach(function (tid) {
+          var proposals = sidecar[tid];
+          ghostReview.proposals[tid] = proposals;
+          ghostInitTicked(tid, proposals);
+        });
+        // Table is already rendered at this point (hydration is async) — insert ghost rows now
+        tids.forEach(function (tid) {
+          for (var i = 0; i < filteredTracks.length; i++) {
+            if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid) {
+              renderGhostRow(filteredTracks[i], ghostReview.proposals[tid]);
+              break;
+            }
+          }
+        });
+        updateReviewToolbar();
+      });
+  }
+
+  function exitReviewMode(cancelJob) {
+    if (cancelJob && ghostReview.jobId) {
+      fetch("/api/enrich-cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: ghostReview.jobId }),
+      });
+    }
+    if (ghostReview.pollTimer) {
+      clearTimeout(ghostReview.pollTimer);
+      ghostReview.pollTimer = null;
+    }
+    ghostReview.active = false;
+    ghostReview.locked = false;
+    ghostReview.jobId = null;
+    ghostReview.ticked = {};
+    ghostReview.proposals = {};
+
+    document.body.classList.remove("review-locked");
+
+    // Remove all ghost rows from DOM
+    tableBody.querySelectorAll("tr.ghost-row").forEach(function (gr) { gr.remove(); });
+    updateReviewToolbar();
+  }
+
   function renderTable() {
     const cols = COLUMNS[currentSource] || COLUMNS.unsorted;
 
@@ -768,16 +1323,44 @@
     const hr = document.createElement("tr");
     for (const col of cols) {
       const th = document.createElement("th");
-      th.textContent = col.label;
-      if (col.width) th.style.width = col.width;
-      th.dataset.key = col.key;
-      if (sortKey === col.key) {
-        th.classList.add("sorted");
-        th.textContent += sortDir === 1 ? " \u25B2" : " \u25BC";
+      if (col.key === "_select") {
+        th.classList.add("col-select");
+        th.dataset.key = col.key;
+        if (col.width) th.style.width = col.width;
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.id = "select-all-cb";
+        cb.title = "Select / deselect all";
+        cb.addEventListener("change", function () {
+          if (cb.checked) {
+            for (let j = 0; j < filteredTracks.length; j++) {
+              selectedSet.add(trackId(filteredTracks[j]));
+            }
+          } else {
+            selectedSet.clear();
+          }
+          // Sync DOM (rows + per-row checkboxes)
+          for (let j = 0; j < tableBody.children.length; j++) {
+            const tr = tableBody.children[j];
+            tr.classList.toggle("selected", cb.checked);
+            const rowCb = tr.querySelector('.col-select input[type="checkbox"]');
+            if (rowCb) rowCb.checked = cb.checked;
+          }
+          updateBatchBar();
+        });
+        th.appendChild(cb);
+      } else {
+        th.textContent = col.label;
+        if (col.width) th.style.width = col.width;
+        th.dataset.key = col.key;
+        if (sortKey === col.key) {
+          th.classList.add("sorted");
+          th.textContent += sortDir === 1 ? " \u25B2" : " \u25BC";
+        }
+        th.addEventListener("click", function () {
+          handleSort(col.key);
+        });
       }
-      th.addEventListener("click", function () {
-        handleSort(col.key);
-      });
       hr.appendChild(th);
     }
     tableHead.appendChild(hr);
@@ -792,17 +1375,41 @@
       tr.dataset.idx = i;
 
       // Row state classes
+      const trackTid = trackId(track);
+      if (trackTid) tr.dataset.tid = trackTid; // used by ghost-row querySelector
       if (i === currentIndex) tr.classList.add("active");
-      if (selectedSet.has(i)) tr.classList.add("selected");
-      if (track.status === "accept") tr.classList.add("status-accept");
-      else if (track.status === "reject") tr.classList.add("status-reject");
-      if (track.done === "TRUE") tr.classList.add("is-done");
+      if (selectedSet.has(trackTid)) tr.classList.add("selected");
+      var disp = (track.disposition || "").toLowerCase();
+      if (disp) tr.classList.add("disp-" + disp);
 
       for (const col of cols) {
         const td = document.createElement("td");
         if (col.cls) td.classList.add(col.cls);
 
-        if (col.key === "_index") {
+        if (col.key === "_select") {
+          td.classList.add("col-select");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = selectedSet.has(trackTid);
+          cb.addEventListener(
+            "change",
+            (function (tid, cb, tr) {
+              return function (e) {
+                e.stopPropagation();
+                if (cb.checked) {
+                  selectedSet.add(tid);
+                  tr.classList.add("selected");
+                } else {
+                  selectedSet.delete(tid);
+                  tr.classList.remove("selected");
+                }
+                updateBatchBar();
+                updateSelectAllState();
+              };
+            })(trackTid, cb, tr),
+          );
+          td.appendChild(cb);
+        } else if (col.key === "_index") {
           td.textContent = i + 1;
           td.classList.add("col-index");
         } else if (col.type === "checkbox") {
@@ -816,7 +1423,6 @@
                 e.stopPropagation();
                 track[col.key] = cb.checked ? "TRUE" : "FALSE";
                 saveTrackField(track, col.key, track[col.key]);
-                tr.classList.toggle("is-done", cb.checked);
               };
             })(track, col, cb, tr),
           );
@@ -837,17 +1443,23 @@
             e.stopPropagation();
           });
           td.appendChild(sel);
-        } else if (col.type === "dest-select") {
-          const sel = buildDestSelect(track[col.key]);
+        } else if (col.type === "disposition-select") {
+          const sel = buildDispositionSelect(track[col.key]);
           sel.addEventListener(
             "change",
-            (function (track, col, sel) {
+            (function (track, col, sel, tr) {
               return function (e) {
                 e.stopPropagation();
+                var prev = track[col.key];
                 track[col.key] = sel.value;
                 saveTrackField(track, col.key, sel.value);
+                // Update row class
+                if (prev) tr.classList.remove("disp-" + prev);
+                if (sel.value) tr.classList.add("disp-" + sel.value);
+                _applyDispositionSelectClass(sel);
+                updateStats();
               };
-            })(track, col, sel),
+            })(track, col, sel, tr),
           );
           sel.addEventListener("mousedown", function (e) {
             e.stopPropagation();
@@ -866,10 +1478,6 @@
               };
             })(td, track, col),
           );
-        } else if (col.type === "status-display") {
-          td.textContent = track[col.key] || "\u2014";
-          td.classList.add("col-status");
-          if (track[col.key]) td.classList.add(track[col.key]);
         } else if (col.type === "rating") {
           td.classList.add("col-rating");
           td.innerHTML = ratingToStars(track[col.key]);
@@ -916,7 +1524,7 @@
             if (e.shiftKey) {
               extendSelection(i);
             } else {
-              clearSelection();
+              // Move cursor only — preserve batch selection (#3)
               selectRow(i);
             }
           };
@@ -945,6 +1553,20 @@
     }
 
     tableBody.appendChild(frag);
+
+    // Re-render ghost rows for any proposals already in review state
+    if (ghostReview.active && Object.keys(ghostReview.proposals).length > 0) {
+      for (var gtid in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, gtid)) continue;
+        for (var gi = 0; gi < filteredTracks.length; gi++) {
+          if ((filteredTracks[gi].track_id || filteredTracks[gi].file_hash) === gtid) {
+            renderGhostRow(filteredTracks[gi], ghostReview.proposals[gtid]);
+            break;
+          }
+        }
+      }
+      updateReviewToolbar();
+    }
   }
 
   /**
@@ -992,18 +1614,24 @@
     }
     return sel;
   }
-  const DEST_OPTIONS = ["", "library", "reject", "archive", "mixes"];
+  const DISPOSITION_OPTIONS = ["", "library", "reject", "mixes", "later"];
+  const DISPOSITION_LABELS = { "": "\u2014", library: "Library", reject: "Reject", mixes: "Mixes", later: "Later" };
 
-  function buildDestSelect(currentValue) {
+  function _applyDispositionSelectClass(sel) {
+    sel.className = "inline-select";
+    if (sel.value) sel.classList.add("disp-sel-" + sel.value);
+  }
+
+  function buildDispositionSelect(currentValue) {
     const sel = document.createElement("select");
-    sel.classList.add("inline-select");
-    for (const d of DEST_OPTIONS) {
+    for (const d of DISPOSITION_OPTIONS) {
       const o = document.createElement("option");
       o.value = d;
-      o.textContent = d || "\u2014";
+      o.textContent = DISPOSITION_LABELS[d] || d;
       if (d === currentValue) o.selected = true;
       sel.appendChild(o);
     }
+    _applyDispositionSelectClass(sel);
     return sel;
   }
 
@@ -1045,14 +1673,174 @@
     });
   }
 
-  // -- Batch selection ----------------------------------------
-  function clearSelection() {
-    for (const idx of selectedSet) {
-      if (idx < tableBody.children.length) {
-        tableBody.children[idx].classList.remove("selected");
+  // -- Batch bar helpers --------------------------------------
+  function updateBatchBar() {
+    const n = selectedSet.size;
+    if (n === 0) {
+      batchBar.classList.add("hidden");
+      return;
+    }
+    batchBar.classList.remove("hidden");
+    batchCount.textContent = n + " selected";
+    batchApplyCount.textContent = n;
+  }
+
+  function updateSelectAllState() {
+    const cb = document.getElementById("select-all-cb");
+    if (!cb) return;
+    const n = selectedSet.size;
+    const total = filteredTracks.length;
+    if (n === 0) {
+      cb.checked = false;
+      cb.indeterminate = false;
+    } else if (n >= total) {
+      cb.checked = true;
+      cb.indeterminate = false;
+    } else {
+      cb.checked = false;
+      cb.indeterminate = true;
+    }
+  }
+
+  function populateBatchGenre() {
+    batchGenre.innerHTML = '<option value="">Genre…</option>';
+    for (const g of genres) {
+      const opt = document.createElement("option");
+      opt.value = g;
+      opt.textContent = g;
+      batchGenre.appendChild(opt);
+    }
+  }
+
+  function applyBatchFields() {
+    if (!isEditableSource()) return;
+    const fields = {};
+    const genreVal = batchGenre.value.trim();
+    const yearVal = batchYear.value.trim();
+    const artistVal = batchArtist.value.trim();
+    const groupVal = batchGroup.value.trim();
+    const dispositionVal = batchDisposition.value;
+    const ratingVal = batchRating.value;
+
+    // Year validation: 4 digits in plausible DJ-music range
+    if (yearVal) {
+      const yearNum = parseInt(yearVal, 10);
+      if (!/^\d{4}$/.test(yearVal) || yearNum < 1900 || yearNum > 2099) {
+        showToast("Invalid year — use 1900–2099", "reject");
+        batchYear.focus();
+        batchYear.select();
+        return;
       }
     }
+
+    if (genreVal) fields.genre = genreVal;
+    if (yearVal) fields.year = yearVal;
+    if (artistVal) fields.artist = artistVal;
+    if (groupVal !== "") fields.occasion_tags = groupVal;
+    if (dispositionVal) fields.disposition = dispositionVal;
+    if (ratingVal !== "") fields.rating = ratingVal;  // "0" is valid for clearing
+
+    if (selectedSet.size === 0) {
+      showToast("Nothing selected", "reject");
+      return;
+    }
+    if (Object.keys(fields).length === 0) {
+      showToast("No fields to apply", "");
+      return;
+    }
+
+    // Build {tid -> track} map and track_ids list from current selection
+    const targets = [];
+    for (let i = 0; i < filteredTracks.length; i++) {
+      const tid = trackId(filteredTracks[i]);
+      if (selectedSet.has(tid)) {
+        targets.push({ tid: tid, track: filteredTracks[i] });
+      }
+    }
+    if (targets.length === 0) {
+      showToast("Nothing selected", "reject");
+      return;
+    }
+    const track_ids = targets.map(function (t) { return t.tid; });
+
+    // Snapshot prior values for rollback
+    const rollback = [];
+    for (const { track } of targets) {
+      const prev = {};
+      for (const k of Object.keys(fields)) prev[k] = track[k] || "";
+      rollback.push({ track, prev });
+    }
+
+    // Optimistic update in memory + push single-batch undo
+    pushBatchUndo(rollback, fields);
+    for (const { track } of targets) {
+      for (const [k, v] of Object.entries(fields)) {
+        track[k] = v;
+      }
+    }
+
+    const n = track_ids.length;
+    batchApply.disabled = true;
+    fetch("/api/tracks/batch-update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_ids, fields, source: currentSource }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { status: r.status, body: d }; }); })
+      .then(function (resp) {
+        if (resp.status >= 200 && resp.status < 300 && resp.body.ok) {
+          showToast("Updated " + resp.body.updated + " tracks", "accept");
+          if (resp.body.dropped_fields && resp.body.dropped_fields.length) {
+            setTimeout(function () {
+              showToast("Skipped (not in CSV): " + resp.body.dropped_fields.join(", "), "reject");
+            }, 1300);
+          }
+          applyFilters();
+        } else {
+          // Rollback in-memory
+          for (const { track, prev } of rollback) {
+            for (const [k, v] of Object.entries(prev)) track[k] = v;
+          }
+          undoStack.pop(); // drop the batch-undo entry we never committed
+          applyFilters();
+          showToast("Batch update failed — reverted", "reject");
+        }
+      })
+      .catch(function () {
+        for (const { track, prev } of rollback) {
+          for (const [k, v] of Object.entries(prev)) track[k] = v;
+        }
+        undoStack.pop();
+        applyFilters();
+        showToast("Batch update error — reverted", "reject");
+      })
+      .finally(function () {
+        batchApply.disabled = false;
+      });
+
+    batchGenre.value = "";
+    batchYear.value = "";
+    batchArtist.value = "";
+    batchGroup.value = "";
+    batchDisposition.value = "";
+    batchRating.value = "";
+    // Selection preserved (#4)
+    showToast("Applying to " + n + " tracks…", "");
+  }
+
+  // -- Batch selection ----------------------------------------
+  function clearSelection() {
     selectedSet.clear();
+    // Walk all rendered rows — set may have held stale ids after a re-render
+    for (let j = 0; j < tableBody.children.length; j++) {
+      const tr = tableBody.children[j];
+      if (tr.classList.contains("ghost-row")) continue;
+      tr.classList.remove("selected");
+      const rowCb = tr.querySelector('.col-select input[type="checkbox"]');
+      if (rowCb) rowCb.checked = false;
+    }
+    updateBatchBar();
+    updateSelectAllState();
   }
 
   function extendSelection(toIndex) {
@@ -1062,21 +1850,25 @@
     const lo = Math.min(selectionAnchor, toIndex);
     const hi = Math.max(selectionAnchor, toIndex);
     for (let i = lo; i <= hi; i++) {
-      selectedSet.add(i);
-      if (i < tableBody.children.length) {
-        tableBody.children[i].classList.add("selected");
+      if (i >= 0 && i < filteredTracks.length) {
+        selectedSet.add(trackId(filteredTracks[i]));
+      }
+      var selTr = getDataRow(i);
+      if (selTr) {
+        selTr.classList.add("selected");
+        const rowCb = selTr.querySelector('.col-select input[type="checkbox"]');
+        if (rowCb) rowCb.checked = true;
       }
     }
     // Move cursor to toIndex
     const prev = currentIndex;
     currentIndex = toIndex;
-    if (prev >= 0 && prev < tableBody.children.length) {
-      tableBody.children[prev].classList.remove("active");
-    }
-    if (toIndex < tableBody.children.length) {
-      const row = tableBody.children[toIndex];
-      row.classList.add("active");
-      row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    var prevRow = getDataRow(prev);
+    if (prevRow) prevRow.classList.remove("active");
+    var toRow = getDataRow(toIndex);
+    if (toRow) {
+      toRow.classList.add("active");
+      toRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
     // Update player info
     const track = filteredTracks[toIndex];
@@ -1087,6 +1879,8 @@
       updateFilenameDisplay(track);
       updateGenreSources(track);
     }
+    updateBatchBar();
+    updateSelectAllState();
   }
 
   // -- Row selection ------------------------------------------
@@ -1099,13 +1893,12 @@
     const track = filteredTracks[index];
 
     // Update visual state (swap classes instead of full re-render)
-    if (prev >= 0 && prev < tableBody.children.length) {
-      tableBody.children[prev].classList.remove("active");
-    }
-    if (index < tableBody.children.length) {
-      const row = tableBody.children[index];
-      row.classList.add("active");
-      row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    var prevDataRow = getDataRow(prev);
+    if (prevDataRow) prevDataRow.classList.remove("active");
+    var newDataRow = getDataRow(index);
+    if (newDataRow) {
+      newDataRow.classList.add("active");
+      newDataRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
 
     // Player info
@@ -1202,8 +1995,9 @@
     const genreColIdx = cols.findIndex(function (c) {
       return c.key === "genre";
     });
-    if (genreColIdx >= 0 && tableBody.children[currentIndex]) {
-      const cell = tableBody.children[currentIndex].children[genreColIdx];
+    var curRow = getDataRow(currentIndex);
+    if (genreColIdx >= 0 && curRow) {
+      const cell = curRow.children[genreColIdx];
       const sel = cell.querySelector("select");
       if (sel) sel.value = g;
     }
@@ -1241,7 +2035,7 @@
       showToast('AI applied: ' + fields.join(', '), '');
       // Refresh row cells
       var cols = COLUMNS[currentSource] || COLUMNS.unsorted;
-      var row = tableBody.children[currentIndex];
+      var row = getDataRow(currentIndex);
       if (row) {
         cols.forEach(function(col, ci) {
           if (col.key === 'genre') {
@@ -1448,7 +2242,8 @@
         openAiChat(contextTrack);
         break;
       case "enrich-track":
-        requestEnrichTrack(contextTrack);
+        if (currentSource === "unsorted" && !ghostReview.locked)
+          startBatchEnrich([trackId(contextTrack)]);
         break;
       case "swap-artist-title":
         requestSwapArtistTitle(contextTrack);
@@ -1556,195 +2351,6 @@
     aiBannerTrack = null;
   }
 
-  // -- Re-enrich (context menu) ---------------------------------
-
-  function requestEnrichTrack(track) {
-    if (!track || enrichPending) return;
-    if (currentSource !== "unsorted") {
-      showToast("Enrich only works on Unsorted tab", "");
-      return;
-    }
-
-    enrichPending = true;
-    enrichBannerTrack = track;
-
-    // Show loading state
-    enrichBanner.classList.remove("hidden");
-    enrichBanner.classList.add("enrich-loading");
-    enrichBannerGenre.textContent = "Enriching…";
-    enrichBannerConf.textContent = "";
-    enrichBannerSources.textContent = "";
-    enrichBannerAccept.style.display = "none";
-    enrichBannerSwap.style.display = "none";
-    enrichBannerDismiss.style.display = "inline-block";
-
-    fetch("/api/enrich-track", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ track_id: trackId(track) }),
-    })
-      .then(function (r) {
-        return r.json();
-      })
-      .then(function (data) {
-        enrichPending = false;
-        enrichBanner.classList.remove("enrich-loading");
-
-        if (data.error) {
-          showToast("Enrich error: " + data.error, "");
-          hideEnrichBanner();
-          return;
-        }
-
-        if (!data.genre) {
-          enrichBannerGenre.textContent = "No results found";
-          enrichBannerConf.textContent = "";
-          enrichBannerSources.textContent =
-            "Try editing artist/title and re-enriching";
-        } else {
-          var displayGenre = data.genre_full || data.genre;
-          if (data.year) {
-            displayGenre += " (" + data.year + ")";
-          }
-          enrichBannerGenre.textContent = displayGenre;
-          var conf = data.confidence
-            ? Math.round(data.confidence * 100) + "%"
-            : "";
-          enrichBannerConf.textContent = conf;
-          // Show source details
-          var srcParts = [];
-          if (data.source_details) {
-            for (var src in data.source_details) {
-              srcParts.push(src + ": " + data.source_details[src]);
-            }
-          }
-          enrichBannerSources.textContent = srcParts.join(" | ");
-          enrichBannerSources.title = srcParts.join("\n");
-          enrichBannerAccept.style.display = "inline-block";
-          enrichBannerAccept.dataset.genre = data.genre_full || data.genre;
-          enrichLastData = data;
-        }
-
-        // Show swap suggestion if detected
-        if (data.swap_suggestion && data.swap_suggestion.swapped) {
-          enrichBannerSwap.style.display = "inline-block";
-          enrichBannerSwap.title =
-            data.swap_suggestion.reason || "Artist and title may be swapped";
-        }
-      })
-      .catch(function (err) {
-        enrichPending = false;
-        enrichBanner.classList.remove("enrich-loading");
-        showToast("Enrich request failed", "");
-        hideEnrichBanner();
-      });
-  }
-
-  function hideEnrichBanner() {
-    enrichBanner.classList.add("hidden");
-    enrichBanner.classList.remove("enrich-loading");
-    enrichBannerTrack = null;
-    enrichLastData = null;
-  }
-
-  // Accept enrich result
-  // Store last enrich response data for Accept to use
-  var enrichLastData = null;
-
-  enrichBannerAccept.addEventListener("click", function () {
-    var genre = enrichBannerAccept.dataset.genre;
-    if (!genre || !enrichBannerTrack) return;
-
-    // Save MAIN genre (single canonical name) to genre column (dropdown-compatible)
-    var mainGenre = matchGenreLabel(
-      (enrichLastData && enrichLastData.genre) || genre,
-    );
-    enrichBannerTrack.genre = mainGenre;
-    saveTrackField(enrichBannerTrack, "genre", mainGenre);
-
-    // Save genre_full (main + subs) to genre_suggest (text field, not dropdown)
-    var genreFull =
-      (enrichLastData && (enrichLastData.genre_full || enrichLastData.genre)) ||
-      genre;
-    enrichBannerTrack.genre_suggest = genreFull;
-    saveTrackField(enrichBannerTrack, "genre_suggest", genreFull);
-
-    // Save per-source genre tags (SC, BP, Last.fm, MB) to CSV
-    if (enrichLastData && enrichLastData.source_genres) {
-      var sg = enrichLastData.source_genres;
-      for (var col in sg) {
-        enrichBannerTrack[col] = sg[col];
-        saveTrackField(enrichBannerTrack, col, sg[col]);
-      }
-    }
-
-    // Save meta_source
-    if (enrichLastData && enrichLastData.meta_source) {
-      enrichBannerTrack.meta_source = enrichLastData.meta_source;
-      saveTrackField(
-        enrichBannerTrack,
-        "meta_source",
-        enrichLastData.meta_source,
-      );
-    }
-
-    // Save year if returned by enrich
-    if (enrichLastData && enrichLastData.year) {
-      enrichBannerTrack.year = enrichLastData.year;
-      saveTrackField(enrichBannerTrack, "year", enrichLastData.year);
-    }
-
-    // Update dropdown in table if visible
-    if (currentSource === "unsorted") {
-      var idx = filteredTracks.indexOf(enrichBannerTrack);
-      if (idx >= 0) {
-        var cols = COLUMNS.unsorted;
-        var genreColIdx = cols.findIndex(function (c) {
-          return c.key === "genre";
-        });
-        if (genreColIdx >= 0 && tableBody.children[idx]) {
-          var cell = tableBody.children[idx].children[genreColIdx];
-          var sel = cell.querySelector("select");
-          if (sel) sel.value = mainGenre;
-        }
-        // Update year cell if visible
-        var yearColIdx = cols.findIndex(function (c) {
-          return c.key === "year";
-        });
-        if (
-          enrichLastData &&
-          enrichLastData.year &&
-          yearColIdx >= 0 &&
-          tableBody.children[idx]
-        ) {
-          var yearCell = tableBody.children[idx].children[yearColIdx];
-          if (yearCell) yearCell.textContent = enrichLastData.year;
-        }
-      }
-    }
-
-    // Refresh genre sources panel (SC, BP, etc. at bottom)
-    updateGenreSources(enrichBannerTrack);
-
-    var toastMsg = "Genre: " + mainGenre;
-    if (enrichLastData && enrichLastData.year) {
-      toastMsg += " | Year: " + enrichLastData.year;
-    }
-    showToast(toastMsg, "");
-    hideEnrichBanner();
-  });
-
-  // Dismiss enrich banner
-  enrichBannerDismiss.addEventListener("click", function () {
-    hideEnrichBanner();
-  });
-
-  // Swap button in enrich banner
-  enrichBannerSwap.addEventListener("click", function () {
-    if (!enrichBannerTrack) return;
-    requestSwapArtistTitle(enrichBannerTrack);
-    hideEnrichBanner();
-  });
 
   function requestSwapArtistTitle(track) {
     if (!track) return;
@@ -2576,8 +3182,9 @@
         var genreColIdx = cols.findIndex(function (c) {
           return c.key === "genre";
         });
-        if (genreColIdx >= 0 && tableBody.children[idx]) {
-          var cell = tableBody.children[idx].children[genreColIdx];
+        var aiRow = getDataRow(idx);
+        if (genreColIdx >= 0 && aiRow) {
+          var cell = aiRow.children[genreColIdx];
           var sel = cell.querySelector("select");
           if (sel) sel.value = genre;
         }
@@ -2827,10 +3434,20 @@
 
   // -- Undo ---------------------------------------------------
   function pushUndo(track, fields) {
-    const entry = { trackId: trackId(track), prev: {} };
+    const entry = { type: "single", trackId: trackId(track), prev: {} };
     for (const k of Object.keys(fields)) {
       entry.prev[k] = track[k] || "";
     }
+    undoStack.push(entry);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+  }
+
+  function pushBatchUndo(rollback, fields) {
+    // rollback: [{track, prev}, ...]; fields: keys that were changed
+    const items = rollback.map(function (r) {
+      return { trackId: trackId(r.track), prev: { ...r.prev } };
+    });
+    const entry = { type: "batch", items: items, fieldKeys: Object.keys(fields) };
     undoStack.push(entry);
     if (undoStack.length > MAX_UNDO) undoStack.shift();
   }
@@ -2841,6 +3458,34 @@
       return;
     }
     const entry = undoStack.pop();
+
+    if (entry.type === "batch") {
+      // Restore in-memory + push one batch-update to server
+      const track_ids = [];
+      const fieldsByTid = {};
+      for (const item of entry.items) {
+        const track = allTracks.find(function (t) { return trackId(t) === item.trackId; });
+        if (!track) continue;
+        for (const [k, v] of Object.entries(item.prev)) track[k] = v;
+        track_ids.push(item.trackId);
+        fieldsByTid[item.trackId] = item.prev;
+      }
+      // Group by identical prev-field-set isn't worth it — server endpoint sets the SAME fields
+      // across all track_ids. We need one request per distinct prev-field-set.
+      // Simpler: fall back to per-track updates here (rare path, undo is small).
+      for (const item of entry.items) {
+        fetch("/api/tracks/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ track_id: item.trackId, fields: item.prev, source: currentSource }),
+        }).catch(function (e) { console.error("Undo save failed:", e); });
+      }
+      applyFilters();
+      showToast("Undo batch: " + entry.fieldKeys.join(", ") + " ×" + entry.items.length, "");
+      return;
+    }
+
+    // Legacy single-track undo
     const track = allTracks.find(function (t) {
       return trackId(t) === entry.trackId;
     });
@@ -2870,15 +3515,15 @@
     showToast("Undo: " + Object.keys(entry.prev).join(", "), "");
   }
 
-  // -- Status / actions ---------------------------------------
-  function setStatus(status) {
+  // -- Disposition / actions ----------------------------------
+  function setDisposition(disposition) {
     if (!isEditableSource()) return;
 
     const targets = [];
     if (selectedSet.size > 0) {
-      for (const idx of selectedSet) {
-        if (idx >= 0 && idx < filteredTracks.length) {
-          targets.push({ idx: idx, track: filteredTracks[idx] });
+      for (let i = 0; i < filteredTracks.length; i++) {
+        if (selectedSet.has(trackId(filteredTracks[i]))) {
+          targets.push({ idx: i, track: filteredTracks[i] });
         }
       }
     } else if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
@@ -2888,83 +3533,34 @@
     if (targets.length === 0) return;
 
     for (const { idx, track } of targets) {
-      const undoFields = { status: status };
-      if (AUTO_DEST[status]) undoFields.destination = AUTO_DEST[status];
-      pushUndo(track, undoFields);
+      pushUndo(track, { disposition: disposition });
 
-      track.status = status;
-      saveTrackField(track, "status", status);
+      var prev = track.disposition || "";
+      track.disposition = disposition;
+      saveTrackField(track, "disposition", disposition);
 
-      if (AUTO_DEST[status]) {
-        track.destination = AUTO_DEST[status];
-        saveTrackField(track, "destination", AUTO_DEST[status]);
-      }
-
-      const row = tableBody.children[idx];
+      const row = getDataRow(idx);
       if (row) {
-        row.classList.remove("status-accept", "status-reject");
-        if (status === "accept") row.classList.add("status-accept");
-        else if (status === "reject") row.classList.add("status-reject");
+        if (prev) row.classList.remove("disp-" + prev);
+        if (disposition) row.classList.add("disp-" + disposition);
 
         const cols = COLUMNS[currentSource];
-        const statusColIdx = cols.findIndex(function (c) {
-          return c.key === "status";
-        });
-        if (statusColIdx >= 0 && row.children[statusColIdx]) {
-          const td = row.children[statusColIdx];
-          td.textContent = status || "\u2014";
-          td.className = "col-status" + (status ? " " + status : "");
-        }
-
-        if (AUTO_DEST[status]) {
-          const destColIdx = cols.findIndex(function (c) {
-            return c.key === "destination";
-          });
-          if (destColIdx >= 0 && row.children[destColIdx]) {
-            const sel = row.children[destColIdx].querySelector("select");
-            if (sel) sel.value = AUTO_DEST[status];
-          }
+        const dispColIdx = cols.findIndex(function (c) { return c.key === "disposition"; });
+        if (dispColIdx >= 0 && row.children[dispColIdx]) {
+          const sel = row.children[dispColIdx].querySelector("select");
+          if (sel) { sel.value = disposition; _applyDispositionSelectClass(sel); }
         }
       }
     }
 
-    const label =
-      targets.length > 1
-        ? status.toUpperCase() + " \u00d7" + targets.length
-        : status.toUpperCase();
-    showToast(label, status);
+    const label = (DISPOSITION_LABELS[disposition] || disposition).toUpperCase();
+    const toastClass = disposition === "reject" ? "reject" : disposition === "library" ? "accept" : "";
+    showToast(targets.length > 1 ? label + " \u00d7" + targets.length : label, toastClass);
     updateStats();
-
     clearSelection();
 
     if (targets.length === 1 && currentIndex < filteredTracks.length - 1) {
-      setTimeout(function () {
-        navigateRow(1, false);
-      }, 150);
-    }
-  }
-
-  function toggleDone() {
-    if (currentIndex < 0 || !isEditableSource()) return;
-    const track = filteredTracks[currentIndex];
-    const newVal = track.done === "TRUE" ? "FALSE" : "TRUE";
-    track.done = newVal;
-    saveTrackField(track, "done", newVal);
-    showToast(newVal === "TRUE" ? "Done \u2713" : "Not done", "");
-
-    const row = tableBody.children[currentIndex];
-    if (row) {
-      row.classList.toggle("is-done", newVal === "TRUE");
-      const cols = COLUMNS[currentSource];
-      const doneColIdx = cols.findIndex(function (c) {
-        return c.key === "done";
-      });
-      if (doneColIdx >= 0 && row.children[doneColIdx]) {
-        const cb = row.children[doneColIdx].querySelector(
-          'input[type="checkbox"]',
-        );
-        if (cb) cb.checked = newVal === "TRUE";
-      }
+      setTimeout(function () { navigateRow(1, false); }, 150);
     }
   }
 
@@ -2975,7 +3571,7 @@
     for (let offset = 0; offset < filteredTracks.length; offset++) {
       const idx = (start + offset) % filteredTracks.length;
       const t = filteredTracks[idx];
-      if (!t.status || t.status === "") {
+      if (!t.disposition || t.disposition === "" || t.disposition === "later") {
         selectRow(idx);
         if (autoPlay) playTrack(idx);
         return;
@@ -3052,24 +3648,31 @@
         stopPlayback();
         break;
 
-      case "KeyA":
+      case "KeyL":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          setStatus("accept");
+          setDisposition("library");
         }
         break;
 
       case "KeyR":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          setStatus("reject");
+          setDisposition("reject");
         }
         break;
 
-      case "KeyV":
+      case "KeyM":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          setStatus("review");
+          setDisposition("mixes");
+        }
+        break;
+
+      case "Period":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          setDisposition("later");
         }
         break;
 
@@ -3083,8 +3686,18 @@
       case "KeyE":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
-          if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
-            requestEnrichTrack(filteredTracks[currentIndex]);
+          if (currentSource === "unsorted" && !ghostReview.locked) {
+            var batchTids = [];
+            if (selectedSet.size > 0) {
+              filteredTracks.forEach(function (t) {
+                var tid2 = t.track_id || t.file_hash || "";
+                if (selectedSet.has(tid2)) batchTids.push(tid2);
+              });
+            } else if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+              var t2 = filteredTracks[currentIndex];
+              batchTids.push(t2.track_id || t2.file_hash || "");
+            }
+            if (batchTids.length > 0) startBatchEnrich(batchTids);
           }
         }
         break;
@@ -3093,13 +3706,6 @@
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
           jumpNextUndecided();
-        }
-        break;
-
-      case "KeyD":
-        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-          e.preventDefault();
-          toggleDone();
         }
         break;
 
@@ -3159,8 +3765,7 @@
     selectionAnchor = -1;
     undoStack = [];
     // Reset all filters
-    filterStatus.value = "";
-    filterDone.value = "";
+    filterDisposition.value = "";
     filterBpm.value = "";
     filterKey.value = "";
     filterRating.value = "";
@@ -3177,12 +3782,7 @@
     if (filteredTracks.length > 0 && currentIndex < 0) selectRow(0);
   });
 
-  filterStatus.addEventListener("change", function () {
-    applyFilters();
-    if (filteredTracks.length > 0) selectRow(0);
-  });
-
-  filterDone.addEventListener("change", function () {
+  filterDisposition.addEventListener("change", function () {
     applyFilters();
     if (filteredTracks.length > 0) selectRow(0);
   });
@@ -3201,6 +3801,28 @@
     applyFilters();
     if (filteredTracks.length > 0) selectRow(0);
   });
+
+  // -- Batch bar events ---------------------------------------
+  batchClear.addEventListener("click", function () {
+    clearSelection();
+  });
+
+  batchApply.addEventListener("click", function () {
+    applyBatchFields();
+  });
+
+  batchYear.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") applyBatchFields();
+  });
+
+  batchArtist.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") applyBatchFields();
+  });
+
+  batchGenre.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") applyBatchFields();
+  });
+
 
   // -- Init ---------------------------------------------------
   // Check AI availability (non-blocking)
@@ -3222,7 +3844,94 @@
       aiAvailable = false;
     });
 
+  // ── Review toolbar event wiring ────────────────────────────────────────────
+
+  // Apply all ticked
+  reviewApplyBtn.addEventListener("click", function () {
+    if (!ghostReview.locked) applyAllTicked();
+  });
+
+  // Cancel review mode
+  reviewCancelBtn.addEventListener("click", function () {
+    var hasTicked = ghostCountTicked() > 0;
+    if (hasTicked && !confirm("Cancel review? Unapplied proposals will be discarded.")) return;
+    exitReviewMode(true);
+  });
+
+  // Auto-threshold slider
+  if (reviewAutoThresholdInput) {
+    reviewAutoThresholdInput.value = ghostReview.autoThreshold;
+    reviewAutoThresholdInput.addEventListener("change", function () {
+      ghostReview.autoThreshold = parseFloat(this.value) || 0.85;
+      localStorage.setItem("ghost-auto-accept", String(ghostReview.autoThreshold));
+      // Re-init ticked defaults for all proposals
+      for (var tid in ghostReview.proposals) {
+        if (Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid)) {
+          ghostInitTicked(tid, ghostReview.proposals[tid]);
+        }
+      }
+      // Re-render all ghost rows
+      for (var tid2 in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid2)) continue;
+        for (var i = 0; i < filteredTracks.length; i++) {
+          if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid2) {
+            renderGhostRow(filteredTracks[i], ghostReview.proposals[tid2]);
+            break;
+          }
+        }
+      }
+      updateReviewToolbar();
+    });
+  }
+
+  // Bulk column toggle buttons
+  reviewToolbar.querySelectorAll(".review-bulk-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var field = this.dataset.field;
+      // Check current state: if any ticked, untick all; else tick all
+      var anyTicked = false;
+      for (var tid in ghostReview.ticked) {
+        if (ghostReview.ticked[tid] && ghostReview.ticked[tid][field]) { anyTicked = true; break; }
+      }
+      var newState = !anyTicked;
+      for (var tid2 in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid2)) continue;
+        if (field in ghostReview.proposals[tid2]) {
+          if (!ghostReview.ticked[tid2]) ghostReview.ticked[tid2] = {};
+          ghostReview.ticked[tid2][field] = newState;
+        }
+      }
+      // Re-render all ghost rows
+      for (var tid3 in ghostReview.proposals) {
+        if (!Object.prototype.hasOwnProperty.call(ghostReview.proposals, tid3)) continue;
+        for (var i = 0; i < filteredTracks.length; i++) {
+          if ((filteredTracks[i].track_id || filteredTracks[i].file_hash) === tid3) {
+            renderGhostRow(filteredTracks[i], ghostReview.proposals[tid3]);
+            break;
+          }
+        }
+      }
+      updateReviewToolbar();
+    });
+  });
+
+  // Filter buttons
+  reviewToolbar.querySelectorAll(".review-filter-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      reviewToolbar.querySelectorAll(".review-filter-btn").forEach(function (b) {
+        b.classList.remove("active");
+      });
+      this.classList.add("active");
+      ghostReview.filter = this.dataset.filter;
+      applyGhostFilter();
+    });
+  });
+
+  // ── On load: hydrate ghost rows from sidecar (surviving page refresh) ──────
   Promise.all([loadGenres(), loadLibraryIndex()]).then(function () {
-    loadTracks("unsorted");
+    loadTracks("unsorted").then(function () {
+      // After table is rendered, show any pending proposals from sidecar
+      if (currentSource === "unsorted") hydrateAllFromSidecar();
+    });
   });
 })();

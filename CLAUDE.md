@@ -32,6 +32,15 @@ DJ library organizer: scans unsorted audio → enriches metadata (Beatport, Musi
 
 # Main CLI entry
 .venv/bin/python -m djlib.cli <command>
+
+# Gig prep — dry-run (validate playlist, print plan, no writes)
+.venv/bin/python -m djlib.cli gig-prep friday-2026-05-15 --from-m3u ~/Playlists/friday.m3u --dry-run
+
+# Gig prep — live copy (RESERVE → COPY → COMMIT)
+.venv/bin/python -m djlib.cli gig-prep friday-2026-05-15 --from-m3u ~/Playlists/friday.m3u
+
+# Gig prep — resume interrupted copy
+.venv/bin/python -m djlib.cli gig-prep friday-2026-05-15 --from-m3u ~/Playlists/friday.m3u --resume
 ```
 
 ## Project Structure
@@ -41,6 +50,8 @@ djlib/              # Main package
   cli.py            # CLI commands (argparse)
   config.py         # Paths, settings, YAML config loader
   csvdb.py          # CSV read/write operations
+  gig.py            # Gig prep: M3U parsing, track resolver, three-phase copy protocol
+  library_schema.py # library.csv field definitions, safe writer, merge + gig-track guard
   review/           # Flask Review UI
     server.py       # API endpoints + HTML serving
     static/         # app.js, style.css
@@ -78,6 +89,15 @@ config.local.yml    # Local overrides (gitignored)
 - **Before committing:** always run full test suite (`pytest -q`) and verify 0 failures
 - **Multi-line commits:** use `git commit -F /tmp/commit_msg.txt` to avoid terminal escaping issues
 
+## Issue Tracking
+
+- **GitHub Issues** — used for all backlog tickets (bugs, features, deferred tasks)
+- **Habit:** before starting any non-trivial work, check if a GitHub Issue exists; create one if not
+- **Linking:** reference issues in commits (`closes #N`, `refs #N`) so history is traceable
+- **Create issue:** `gh issue create --title "..." --body "..."`
+- **List issues:** `gh issue list`
+- **View issue:** `gh issue view <N>`
+
 ## Testing
 
 - **Framework:** pytest
@@ -91,10 +111,11 @@ config.local.yml    # Local overrides (gitignored)
 ## Data Architecture
 
 - **track_id:** UUID5 hash (stable, derived from file content). Primary key across all CSVs
-- **library.csv:** master database, ~30 fields. Overwritten entirely by `sync-dj-libraries`
+- **library.csv:** master database, ~30 fields. Written atomically via `save_library_csv()` — never overwrite directly
 - **unsorted.csv:** staging area. Rows removed by `apply` command after processing
 - **LOGS/moves-\*.csv:** append-only history (src, dest, track_id). Source of truth for processed tracks
 - **genres.yml:** canonical genre definitions with synonyms, categories, boost values
+- **live_location / live_path:** gig-tracking fields in library.csv. `live_location` is `"nas"` (default, file on NAS), `"gig:<id>:preparing"` (copy in progress), or `"gig:<id>"` (file on MacBook, gig active). `live_path` is the MacBook-local path while the gig is active. Both fields are djlib-owned — `sync-dj-libraries` never overwrites them, and `apply_gig_track_guard` fully blocks sync updates for any track not on NAS.
 
 ## Review UI Architecture
 
@@ -107,7 +128,7 @@ config.local.yml    # Local overrides (gitignored)
 ## Important Patterns
 
 - **Folders are logistics, not categories.** Genre lives in metadata, not folder names
-- **Destinations:** library (main), reject, archive, mixes — that's it
+- **Destinations:** library (main), reject, mixes — that's it (archive removed)
 - **DJ software IDs** (rekordbox_id, traktor_id) are critical — never lose them during operations
 - **File operations must be safe** — hash-check before overwrite, never create silent `(2)` copies
 - **HTTP cache** exists at `djlib_http_cache/` — can be cleared with `rm -f djlib_http_cache*`
