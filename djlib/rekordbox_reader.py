@@ -16,7 +16,9 @@ log = logging.getLogger(__name__)
 
 # Fields fetched from Rekordbox and returned per track.
 # These are the mutable fields a DJ changes during/after a gig.
-_MUTABLE_FIELDS = ("cue_points_rb", "rating", "play_count", "last_played")
+# NOTE: last_played is intentionally omitted — DjmdContent has no LastPlayed column;
+# play history lives in DjmdSongHistory and would require a join + aggregation.
+_MUTABLE_FIELDS = ("cue_points_rb", "rating", "play_count", "bpm")
 
 
 def _default_db_path() -> Optional[Path]:
@@ -42,7 +44,6 @@ def _content_to_dict(content: Any) -> Dict[str, str]:
         "cue_points_rb": serialize_rb_cues(getattr(content, "Cues", None)),
         "rating":        str(getattr(content, "Rating", "") or ""),
         "play_count":    str(getattr(content, "DJPlayCount", "") or ""),
-        "last_played":   str(getattr(content, "LastPlayed", "") or ""),
         "bpm":           bpm_str,
     }
 
@@ -76,6 +77,7 @@ def fetch_gig_tracks(
             )
 
     from pyrekordbox import Rekordbox6Database
+    from pyrekordbox.db6 import DjmdContent
 
     # Build lookup: rekordbox_id (str) → track_id
     rb_id_to_tid: Dict[str, str] = {}
@@ -90,10 +92,24 @@ def fetch_gig_tracks(
     if not rb_id_to_tid:
         return {}
 
+    # Convert rekordbox_id strings to ints for SQL IN filter
+    rb_int_ids = []
+    for rb_id in rb_id_to_tid:
+        try:
+            rb_int_ids.append(int(rb_id))
+        except ValueError:
+            log.warning("rekordbox_id %r is not an integer — skipping", rb_id)
+
     result: Dict[str, Dict[str, str]] = {}
     db = Rekordbox6Database(path=db_path)
     try:
-        for content in db.get_content():
+        # Targeted query: only fetch the N tracks we need, not the whole collection
+        rows = (
+            db.session.query(DjmdContent)
+            .filter(DjmdContent.ID.in_(rb_int_ids))
+            .all()
+        )
+        for content in rows:
             rb_id = str(getattr(content, "ID", "") or "")
             tid = rb_id_to_tid.get(rb_id)
             if tid is None:

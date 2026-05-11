@@ -24,21 +24,20 @@ def _fake_cue(kind=1, pos_ms=1000, out_ms=0, color=0xFF0000, comment="Kick",
     )
 
 
-def _fake_content(rb_id, rating=204, play_count=5, bpm=12800,
-                  last_played="2026-05-11", cues=None):
+def _fake_content(rb_id, rating=204, play_count=5, bpm=12800, cues=None):
     return SimpleNamespace(
         ID=rb_id,
         Rating=rating,
         DJPlayCount=play_count,
         BPM=bpm,
-        LastPlayed=last_played,
         Cues=cues or [],
     )
 
 
 def _make_db(contents):
+    """Build a mock Rekordbox6Database that returns `contents` from session.query().filter().all()."""
     db = MagicMock()
-    db.get_content.return_value = contents
+    db.session.query.return_value.filter.return_value.all.return_value = contents
     db.session.close.return_value = None
     return db
 
@@ -75,18 +74,20 @@ def test_fetch_skips_track_without_rekordbox_id(tmp_path):
 
     gig_tracks = [{"track_id": "tid1", "rekordbox_id": ""}]
 
-    with patch("pyrekordbox.Rekordbox6Database", return_value=_make_db([])):
+    with patch("pyrekordbox.Rekordbox6Database") as mock_cls:
         result = fetch_gig_tracks(gig_tracks, db_path=fake_db_path)
 
     assert result == {}
+    mock_cls.assert_not_called()  # no DB open if no valid rekordbox_id
 
 
 def test_fetch_skips_track_not_in_db(tmp_path):
     fake_db_path = tmp_path / "master6.db"
     fake_db_path.touch()
 
+    # DB returns content with ID=99, but we requested ID=42
     content = _fake_content(rb_id=99)
-    gig_tracks = [{"track_id": "tid1", "rekordbox_id": "42"}]  # 42 ≠ 99
+    gig_tracks = [{"track_id": "tid1", "rekordbox_id": "42"}]
 
     with patch("pyrekordbox.Rekordbox6Database", return_value=_make_db([content])):
         result = fetch_gig_tracks(gig_tracks, db_path=fake_db_path)
@@ -109,10 +110,10 @@ def test_fetch_multiple_tracks(tmp_path):
     fake_db_path = tmp_path / "master6.db"
     fake_db_path.touch()
 
+    # DB returns only requested tracks (IN filter) — simulate that behaviour
     contents = [
         _fake_content(rb_id=1, rating=51,  play_count=3),
         _fake_content(rb_id=2, rating=255, play_count=20),
-        _fake_content(rb_id=3, rating=0,   play_count=0),  # not in gig_tracks
     ]
     gig_tracks = [
         {"track_id": "tid1", "rekordbox_id": "1"},
@@ -125,7 +126,23 @@ def test_fetch_multiple_tracks(tmp_path):
     assert set(result.keys()) == {"tid1", "tid2"}
     assert result["tid1"]["rating"] == "51"
     assert result["tid2"]["play_count"] == "20"
-    assert "tid3" not in result  # unrequested track not in result
+
+
+def test_fetch_uses_targeted_query_not_full_scan(tmp_path):
+    """fetch_gig_tracks must use session.query().filter().all(), not get_content()."""
+    fake_db_path = tmp_path / "master6.db"
+    fake_db_path.touch()
+
+    content = _fake_content(rb_id=1)
+    gig_tracks = [{"track_id": "tid1", "rekordbox_id": "1"}]
+    mock_db = _make_db([content])
+
+    with patch("pyrekordbox.Rekordbox6Database", return_value=mock_db):
+        fetch_gig_tracks(gig_tracks, db_path=fake_db_path)
+
+    mock_db.session.query.assert_called_once()
+    mock_db.session.query.return_value.filter.assert_called_once()
+    mock_db.get_content.assert_not_called()
 
 
 # ── cue points serialization ──────────────────────────────────────────────────
@@ -194,6 +211,31 @@ def test_fetch_bpm_zero_returns_empty(tmp_path):
     assert result["tid1"]["bpm"] == ""
 
 
+def test_fetch_bpm_none_returns_empty(tmp_path):
+    fake_db_path = tmp_path / "master6.db"
+    fake_db_path.touch()
+
+    content = _fake_content(rb_id=1, bpm=None)
+    gig_tracks = [{"track_id": "tid1", "rekordbox_id": "1"}]
+
+    with patch("pyrekordbox.Rekordbox6Database", return_value=_make_db([content])):
+        result = fetch_gig_tracks(gig_tracks, db_path=fake_db_path)
+
+    assert result["tid1"]["bpm"] == ""
+
+
+# ── last_played not present ────────────────────────────────────────────────────
+
+
+def test_fetch_result_has_no_last_played():
+    """last_played must not appear in results — DjmdContent has no LastPlayed column."""
+    # This is a static check — verify the returned dict keys
+    from djlib.rekordbox_reader import _content_to_dict
+    content = SimpleNamespace(ID=1, Rating=204, DJPlayCount=5, BPM=12800, Cues=[])
+    result = _content_to_dict(content)
+    assert "last_played" not in result
+
+
 # ── Error handling ────────────────────────────────────────────────────────────
 
 
@@ -222,7 +264,7 @@ def test_fetch_closes_session_even_on_error(tmp_path):
     fake_db_path.touch()
 
     broken_db = MagicMock()
-    broken_db.get_content.side_effect = RuntimeError("DB corrupt")
+    broken_db.session.query.return_value.filter.return_value.all.side_effect = RuntimeError("DB corrupt")
     broken_db.session.close.return_value = None
 
     gig_tracks = [{"track_id": "tid1", "rekordbox_id": "1"}]
@@ -232,3 +274,21 @@ def test_fetch_closes_session_even_on_error(tmp_path):
             fetch_gig_tracks(gig_tracks, db_path=fake_db_path)
 
     broken_db.session.close.assert_called_once()
+
+
+def test_fetch_invalid_rekordbox_id_skipped(tmp_path):
+    """Non-integer rekordbox_id must be skipped with a warning, not crash."""
+    fake_db_path = tmp_path / "master6.db"
+    fake_db_path.touch()
+
+    gig_tracks = [
+        {"track_id": "tid1", "rekordbox_id": "not-an-int"},
+        {"track_id": "tid2", "rekordbox_id": "42"},
+    ]
+    content = _fake_content(rb_id=42)
+
+    with patch("pyrekordbox.Rekordbox6Database", return_value=_make_db([content])):
+        result = fetch_gig_tracks(gig_tracks, db_path=fake_db_path)
+
+    assert "tid1" not in result
+    assert "tid2" in result
