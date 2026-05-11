@@ -145,8 +145,11 @@ def _dest_aiff(src: Path, unsorted_dir: Path) -> Path:
     return unsorted_dir / src.with_suffix(".aiff").name
 
 
-def _originals_dir(unsorted_dir: Path) -> Path:
-    return unsorted_dir / ".originals"
+def _originals_dir(unsorted_dir: Path, originals_dir: Optional[Path] = None) -> Path:
+    if originals_dir is not None:
+        return originals_dir
+    # Default: sibling to Music Unsorted so Rekordbox and scan never touch it
+    return unsorted_dir.parent / (unsorted_dir.name + " Originals")
 
 
 def _safe_move_aiff(tmp_aiff: Path, dest: Path) -> None:
@@ -175,6 +178,7 @@ def run_rewind(
     dry_run: bool = False,
     resume: bool = False,
     wal_path: Optional[Path] = None,
+    originals_dir: Optional[Path] = None,
 ) -> RewindResult:
     """Move WAV/FLAC from library → unsorted as verified AIFF.
 
@@ -212,6 +216,7 @@ def run_rewind(
             dry_run=dry_run,
             resume=resume,
             wal_path=wal_path,
+            originals_dir=originals_dir,
             result=result,
         )
     finally:
@@ -236,6 +241,7 @@ def _run(
     dry_run: bool,
     resume: bool,
     wal_path: Optional[Path],
+    originals_dir: Optional[Path],
     result: RewindResult,
 ) -> RewindResult:
     from djlib.library_schema import load_library_csv, save_library_csv
@@ -264,11 +270,12 @@ def _run(
     print(f"Found {len(candidates)} WAV/FLAC file(s) (~{total_mb:.0f} MB).")
 
     if dry_run:
+        orig_dir = _originals_dir(unsorted_dir, originals_dir)
         for row, src in candidates:
             dest = _dest_aiff(src, unsorted_dir)
             print(f"  DRY-RUN: {src.name}")
             print(f"           → {dest}")
-            print(f"           original → {_originals_dir(unsorted_dir) / src.name}")
+            print(f"           original → {orig_dir / src.name}")
         return result
 
     # ── WAL setup ──────────────────────────────────────────────────────────────
@@ -284,7 +291,7 @@ def _run(
             print(f"Resuming from WAL: {wal_path.name} ({len(prior_states)} prior events)")
 
     # ── Per-file processing ────────────────────────────────────────────────────
-    originals_dir = _originals_dir(unsorted_dir)
+    originals_dir = _originals_dir(unsorted_dir, originals_dir)
     originals_dir.mkdir(parents=True, exist_ok=True)
     unsorted_dir.mkdir(parents=True, exist_ok=True)
 

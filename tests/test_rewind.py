@@ -179,8 +179,9 @@ def test_rewind_wav_happy_path(tmp_path):
     # AIFF in unsorted
     assert (unsorted / "song.aiff").exists()
 
-    # Original moved to .originals/
-    assert (unsorted / ".originals" / "song.wav").exists()
+    # Original moved to originals dir (sibling of unsorted)
+    from djlib.rewind import _originals_dir
+    assert (_originals_dir(unsorted) / "song.wav").exists()
     assert not src.exists()
 
     # Row removed from library.csv
@@ -211,7 +212,8 @@ def test_rewind_flac_happy_path(tmp_path):
 
     assert result.rewound == 1
     assert (unsorted / "song.aiff").exists()
-    assert (unsorted / ".originals" / "song.flac").exists()
+    from djlib.rewind import _originals_dir
+    assert (_originals_dir(unsorted) / "song.flac").exists()
 
 
 def test_wal_written_on_success(tmp_path):

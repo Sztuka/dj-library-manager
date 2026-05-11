@@ -3974,10 +3974,12 @@ def cmd_rewind(args: argparse.Namespace) -> None:
     dry_run = getattr(args, "dry_run", False)
     resume  = getattr(args, "resume", False)
 
+    from djlib.rewind import _originals_dir
+    originals = _originals_dir(INBOX_DIR)
     print(f"\n{'[DRY RUN] ' if dry_run else ''}rewind: WAV/FLAC → AIFF → unsorted")
     print(f"  Library  : {CSV_PATH}")
     print(f"  Unsorted : {INBOX_DIR}")
-    print(f"  Originals: {INBOX_DIR / '.originals'}")
+    print(f"  Originals: {originals}")
     print()
 
     try:
@@ -4015,7 +4017,7 @@ def cmd_rewind(args: argparse.Namespace) -> None:
         print(f"       (let Rekordbox analyze BPM + key before scanning)")
         print(f"    2. Run: python -m djlib.cli scan")
         print(f"    3. Review UI → apply")
-        print(f"    4. Delete originals from {INBOX_DIR / '.originals'} when ready")
+        print(f"    4. Delete originals from {originals} when ready")
 
     if result.failed_hash_mismatch or result.failed_conversion or result.failed_other:
         raise SystemExit(1)
