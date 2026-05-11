@@ -17,6 +17,7 @@ Resume: replay prep.state → derive last state per track → skip already-verif
 """
 from __future__ import annotations
 
+import csv as csv_mod
 import fcntl
 import hashlib
 import json
@@ -534,16 +535,12 @@ def _run_gig_prep_copy_locked(
     # Write gig.csv — frozen snapshot of each track's library row at COMMIT time.
     # Phase 3 gig-merge uses this as the LWW baseline: fields changed in Rekordbox
     # since this snapshot will be detected and merged back to library.csv.
-    import csv as csv_mod
-    with csv_lock(csv_path):
-        snapshot_rows_by_tid = {
-            str(r.get("track_id", "")): r
-            for r in load_library_csv(csv_path)
-        }
+    # Reuses by_tid from the csv_lock block above — already post-COMMIT state,
+    # no second lock needed and no race window with concurrent sync-dj-libraries.
     gig_csv_rows = [
-        snapshot_rows_by_tid[vt["track_id"]]
+        by_tid[vt["track_id"]]
         for vt in verified_tracks
-        if vt["track_id"] in snapshot_rows_by_tid
+        if vt["track_id"] in by_tid
     ]
     with gig_dir.gig_csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv_mod.DictWriter(
@@ -551,12 +548,15 @@ def _run_gig_prep_copy_locked(
         )
         writer.writeheader()
         for row in gig_csv_rows:
-            writer.writerow({k: (row.get(k) or "") for k in LIBRARY_FIELDNAMES})
+            # Use "" for None but preserve falsy non-None values (0, "0", False)
+            writer.writerow(
+                {k: ("" if row.get(k) is None else row.get(k, "")) for k in LIBRARY_FIELDNAMES}
+            )
 
     # Write rekordbox.xml — enrich verified tracks with library metadata
     rb_tracks = []
     for vt in verified_tracks:
-        row = snapshot_rows_by_tid.get(vt["track_id"], {})
+        row = by_tid.get(vt["track_id"], {})
         rb_tracks.append({**row, "local_path": vt["local_path"]})
 
     if rb_tracks:

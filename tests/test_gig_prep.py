@@ -395,7 +395,9 @@ def test_run_gig_prep_copy_writes_gig_csv(tmp_path):
         rows = list(csv_mod.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["track_id"] == "t1"
-    # live_location is captured at COMMIT time → "gig:snap-gig"
+    assert rows[0]["artist"] == "DJ Test"
+    assert rows[0]["title"] == "Test Track"
+    # live_location captured at COMMIT time — proves snapshot uses post-COMMIT by_tid
     assert rows[0]["live_location"] == "gig:snap-gig"
 
 
