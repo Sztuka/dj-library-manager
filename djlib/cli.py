@@ -3926,6 +3926,41 @@ def cmd_gig_merge(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_gig_cleanup(args: argparse.Namespace) -> None:
+    """Phase 4: delete MacBook audio copies after a successful gig-merge."""
+    from djlib.gig import GigDir, GigCleanupResult, run_gig_cleanup
+
+    gig_dir = GigDir(gig_id=args.gig_id)
+    dry_run    = getattr(args, "dry_run", False)
+    verify_nas = getattr(args, "verify_nas", False)
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}gig-cleanup: {args.gig_id}")
+    print(f"  Gig dir : {gig_dir.path}")
+    print(f"  Audio   : {gig_dir.audio_dir}")
+
+    try:
+        result: GigCleanupResult = run_gig_cleanup(
+            gig_id=args.gig_id,
+            csv_path=CSV_PATH,
+            gig_dir=gig_dir,
+            verify_nas=verify_nas,
+            dry_run=dry_run,
+        )
+    except FileNotFoundError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1)
+
+    if result.not_merged:
+        print(f"\nERROR: {result.not_merged} track(s) not yet on NAS — run gig-merge first.")
+        raise SystemExit(1)
+
+    print(f"\n  Done.")
+    print(f"    Deleted : {result.deleted_files} file(s)")
+    if result.sha_failures:
+        print(f"    Kept (NAS SHA mismatch): {result.sha_failures} — investigate before deleting")
+        raise SystemExit(1)
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4127,6 +4162,13 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--create-missing-dirs", action="store_true",
                        help="Create NAS parent directories if missing (default: abort track)")
     merge.set_defaults(func=cmd_gig_merge)
+
+    cleanup = sp.add_parser("gig-cleanup", help="Delete MacBook audio copies after a successful gig-merge (Phase 4)")
+    cleanup.add_argument("gig_id", help="Gig identifier used during gig-prep, e.g. friday-2026-05-15")
+    cleanup.add_argument("--dry-run", action="store_true", help="Print what would be deleted without deleting")
+    cleanup.add_argument("--verify-nas", action="store_true",
+                         help="SHA-256 verify NAS copy before deleting each MacBook file")
+    cleanup.set_defaults(func=cmd_gig_cleanup)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")

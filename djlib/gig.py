@@ -892,3 +892,121 @@ def run_gig_merge(
                 })
 
     return result
+
+
+# ── Gig-cleanup ───────────────────────────────────────────────────────────────
+
+
+@dataclass
+class GigCleanupResult:
+    deleted_files: int = 0
+    not_merged: int = 0    # tracks not yet on NAS — blocked cleanup
+    sha_failures: int = 0  # NAS verify failed — those files kept
+
+
+def run_gig_cleanup(
+    gig_id: str,
+    csv_path: Path,
+    gig_dir: Optional[GigDir] = None,
+    verify_nas: bool = False,
+    dry_run: bool = False,
+) -> GigCleanupResult:
+    """Remove audio/ from a fully-merged gig, freeing MacBook disk space.
+
+    Safety guards:
+      1. All tracks in gig.csv must have live_location=='nas' in library.csv.
+         Any not-yet-merged track aborts the whole operation.
+      2. (--verify-nas) SHA-256 the NAS copy against the manifest before
+         deleting each MacBook file. Mismatches skip that file only.
+
+    What survives: ~/Gigs/<gig_id>/ directory with manifest.json, gig.csv,
+    prep.state, merge.state kept as historical record. Only audio/ is removed.
+    """
+    from djlib.library_schema import load_library_csv
+
+    if gig_dir is None:
+        gig_dir = GigDir(gig_id=gig_id)
+
+    if not gig_dir.gig_csv_path.exists():
+        raise FileNotFoundError(
+            f"gig.csv not found at {gig_dir.gig_csv_path} — "
+            "was gig-prep run for this gig_id?"
+        )
+
+    with gig_dir.gig_csv_path.open(encoding="utf-8") as f:
+        gig_rows = list(csv_mod.DictReader(f))
+
+    manifest_by_tid: Dict[str, Dict] = {}
+    if gig_dir.manifest_path.exists():
+        with gig_dir.manifest_path.open(encoding="utf-8") as f:
+            manifest = json.load(f)
+        manifest_by_tid = {t["track_id"]: t for t in manifest.get("tracks", [])}
+
+    result = GigCleanupResult()
+
+    # ── Guard: every track must be back on NAS ────────────────────────────────
+    current_rows = load_library_csv(csv_path)
+    live_by_tid: Dict[str, Dict[str, str]] = {
+        str(r.get("track_id", "")): r for r in current_rows
+    }
+
+    for row in gig_rows:
+        tid = str(row.get("track_id", "") or "")
+        if not tid:
+            continue
+        live_loc = str((live_by_tid.get(tid) or {}).get("live_location", "") or "")
+        if live_loc != "nas":
+            log.warning(
+                "track_id=%s not on NAS (live_location=%r) — run gig-merge first",
+                tid, live_loc,
+            )
+            result.not_merged += 1
+
+    if result.not_merged:
+        return result
+
+    # ── Per-track: optionally verify NAS, then delete MacBook file ────────────
+    for row in gig_rows:
+        tid = str(row.get("track_id", "") or "")
+        if not tid:
+            continue
+
+        mf = manifest_by_tid.get(tid, {})
+        local_path = Path(str(mf.get("local_path", "") or ""))
+        nas_path   = Path(str(mf.get("src_path", "") or row.get("old_full_path", "")))
+        manifest_sha = str(mf.get("sha256", "") or "")
+
+        if not local_path.exists():
+            continue  # already cleaned up in a prior run
+
+        if verify_nas and manifest_sha:
+            if not nas_path.exists():
+                log.warning("track_id=%s NAS file missing: %s — skipping delete", tid, nas_path)
+                result.sha_failures += 1
+                continue
+            nas_sha = _sha256_file(nas_path)
+            if nas_sha != manifest_sha:
+                log.warning(
+                    "track_id=%s NAS SHA mismatch (expected %s… got %s…) — skipping delete",
+                    tid, manifest_sha[:12], nas_sha[:12],
+                )
+                result.sha_failures += 1
+                continue
+
+        if dry_run:
+            print(f"  [dry-run] would delete: {local_path}")
+            result.deleted_files += 1
+            continue
+
+        try:
+            local_path.unlink()
+            result.deleted_files += 1
+        except OSError as exc:
+            log.warning("could not delete %s: %s", local_path, exc)
+
+    # Remove audio/ if now empty (skip in dry_run)
+    if not dry_run and gig_dir.audio_dir.exists():
+        if not any(gig_dir.audio_dir.iterdir()):
+            gig_dir.audio_dir.rmdir()
+
+    return result
