@@ -227,6 +227,7 @@ def test_gig_dir_paths(tmp_path):
     assert gd.audio_dir == tmp_path / "friday" / "audio"
     assert gd.prep_state_path == tmp_path / "friday" / "prep.state"
     assert gd.manifest_path == tmp_path / "friday" / "manifest.json"
+    assert gd.gig_csv_path == tmp_path / "friday" / "gig.csv"
 
 
 def test_gig_dir_ensure_creates_dirs(tmp_path):
@@ -372,6 +373,51 @@ def test_run_gig_prep_copy_happy_path(tmp_path):
     by_tid = {r["track_id"]: r for r in rows}
     assert by_tid["t1"]["live_location"] == "gig:test-gig"
     assert by_tid["t1"]["live_path"] == str(gig_dir.audio_dir / "t1.mp3")
+
+
+def test_run_gig_prep_copy_writes_gig_csv(tmp_path):
+    """COMMIT must write gig.csv with a frozen row for every prepped track."""
+    src = tmp_path / "src" / "a.mp3"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"audio1" * 500)
+
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas", "live_path": "",
+         "old_full_path": str(src), "artist": "DJ Test", "title": "Test Track"},
+    ])
+    resolved = [ResolveResult(str(src), "t1", {"track_id": "t1", "live_location": "nas"}, "exact")]
+    gig_dir = GigDir(gig_id="snap-gig", root=tmp_path / "Gigs")
+    run_gig_prep_copy("snap-gig", resolved, csv_path, gig_dir)
+
+    assert gig_dir.gig_csv_path.exists(), "gig.csv must be written after COMMIT"
+    import csv as csv_mod
+    with gig_dir.gig_csv_path.open() as f:
+        rows = list(csv_mod.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["track_id"] == "t1"
+    # live_location is captured at COMMIT time → "gig:snap-gig"
+    assert rows[0]["live_location"] == "gig:snap-gig"
+
+
+def test_run_gig_prep_copy_manifest_schema_version_is_list(tmp_path):
+    """manifest.json schema_version must be a list of library field names."""
+    src = tmp_path / "src" / "a.mp3"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"audio1" * 500)
+
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas", "live_path": "", "old_full_path": str(src)},
+    ])
+    resolved = [ResolveResult(str(src), "t1", {"track_id": "t1", "live_location": "nas"}, "exact")]
+    gig_dir = GigDir(gig_id="sv-gig", root=tmp_path / "Gigs")
+    run_gig_prep_copy("sv-gig", resolved, csv_path, gig_dir)
+
+    import json
+    manifest = json.loads(gig_dir.manifest_path.read_text())
+    sv = manifest["schema_version"]
+    assert isinstance(sv, list), "schema_version must be a list of field names"
+    assert "track_id" in sv
+    assert "live_location" in sv
 
 
 def test_run_gig_prep_copy_resume_skips_verified(tmp_path):

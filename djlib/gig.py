@@ -223,6 +223,10 @@ class GigDir:
     def lock_path(self) -> Path:
         return self.path / ".prep.lock"
 
+    @property
+    def gig_csv_path(self) -> Path:
+        return self.path / "gig.csv"
+
     def ensure(self) -> None:
         self.audio_dir.mkdir(parents=True, exist_ok=True)
 
@@ -506,10 +510,11 @@ def _run_gig_prep_copy_locked(
         result.committed += 1
 
     # Write manifest.json
+    from djlib.library_schema import LIBRARY_FIELDNAMES
     all_states = prep.get_track_states()
     manifest = {
         "gig_id": gig_id,
-        "schema_version": 1,
+        "schema_version": list(LIBRARY_FIELDNAMES),
         "created_at": committed_at,
         "source": source_playlist,
         "tracks": [
@@ -526,14 +531,32 @@ def _run_gig_prep_copy_locked(
     with gig_dir.manifest_path.open("w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
 
-    # Write rekordbox.xml — enrich verified tracks with library metadata
+    # Write gig.csv — frozen snapshot of each track's library row at COMMIT time.
+    # Phase 3 gig-merge uses this as the LWW baseline: fields changed in Rekordbox
+    # since this snapshot will be detected and merged back to library.csv.
+    import csv as csv_mod
     with csv_lock(csv_path):
-        rows = load_library_csv(csv_path)
-        by_tid = {str(r.get("track_id", "")): r for r in rows}
+        snapshot_rows_by_tid = {
+            str(r.get("track_id", "")): r
+            for r in load_library_csv(csv_path)
+        }
+    gig_csv_rows = [
+        snapshot_rows_by_tid[vt["track_id"]]
+        for vt in verified_tracks
+        if vt["track_id"] in snapshot_rows_by_tid
+    ]
+    with gig_dir.gig_csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv_mod.DictWriter(
+            f, fieldnames=list(LIBRARY_FIELDNAMES), extrasaction="ignore"
+        )
+        writer.writeheader()
+        for row in gig_csv_rows:
+            writer.writerow({k: (row.get(k) or "") for k in LIBRARY_FIELDNAMES})
 
+    # Write rekordbox.xml — enrich verified tracks with library metadata
     rb_tracks = []
     for vt in verified_tracks:
-        row = by_tid.get(vt["track_id"], {})
+        row = snapshot_rows_by_tid.get(vt["track_id"], {})
         rb_tracks.append({**row, "local_path": vt["local_path"]})
 
     if rb_tracks:
