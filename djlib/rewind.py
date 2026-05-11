@@ -149,7 +149,7 @@ def _originals_dir(unsorted_dir: Path, originals_dir: Optional[Path] = None) -> 
     if originals_dir is not None:
         return originals_dir
     # Default: sibling to Music Unsorted so Rekordbox and scan never touch it
-    return unsorted_dir.parent / (unsorted_dir.name + " Originals")
+    return unsorted_dir.parent / "Music Conversion Originals"
 
 
 def _safe_move_aiff(tmp_aiff: Path, dest: Path) -> None:
