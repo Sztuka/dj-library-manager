@@ -285,3 +285,131 @@ def test_run_gig_cleanup_verify_nas_missing_nas_file(tmp_path):
     assert result.sha_failures == 1
     assert result.deleted_files == 0
     assert audio_by_tid["t1"].exists()
+
+
+def test_run_gig_cleanup_verify_nas_empty_sha_skips_delete(tmp_path):
+    """--verify-nas with missing sha256 in manifest skips the file (can't verify)."""
+    audio_data = b"audio" * 100
+    nas_file = tmp_path / "nas" / "t1.mp3"
+    nas_file.parent.mkdir(parents=True)
+    nas_file.write_bytes(audio_data)
+
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas", "old_full_path": str(nas_file)},
+    ])
+    tracks = [{"track_id": "t1", "old_full_path": str(nas_file), "audio_data": audio_data}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    # Overwrite manifest with empty sha256
+    import json as _json
+    with gig_dir.manifest_path.open() as f:
+        manifest = _json.load(f)
+    manifest["tracks"][0]["sha256"] = ""
+    with gig_dir.manifest_path.open("w") as f:
+        _json.dump(manifest, f)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir, verify_nas=True)
+
+    assert result.sha_failures == 1
+    assert result.deleted_files == 0
+    assert audio_by_tid["t1"].exists()  # MacBook file kept — no reference hash
+
+
+# ── Guard edge cases ──────────────────────────────────────────────────────────
+
+
+def test_run_gig_cleanup_aborts_if_track_missing_from_library(tmp_path):
+    """Track in gig.csv but absent from library.csv → abort (treat as not merged)."""
+    csv_path = _make_library_csv(tmp_path, [])  # empty library
+    tracks = [{"track_id": "t1"}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert result.not_merged == 1
+    assert audio_by_tid["t1"].exists()
+
+
+def test_run_gig_cleanup_aborts_if_track_still_preparing(tmp_path):
+    """Track in 'gig:<id>:preparing' state (crash mid-prep) → abort."""
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "gig:friday:preparing"},
+    ])
+    tracks = [{"track_id": "t1"}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert result.not_merged == 1
+    assert audio_by_tid["t1"].exists()
+
+
+# ── No local_path in manifest ─────────────────────────────────────────────────
+
+
+def test_run_gig_cleanup_skips_track_with_no_local_path(tmp_path):
+    """Track with missing local_path in manifest is skipped safely (no Path('.') footgun)."""
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas"},
+    ])
+    tracks = [{"track_id": "t1"}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    # Corrupt manifest: remove local_path
+    import json as _json
+    with gig_dir.manifest_path.open() as f:
+        manifest = _json.load(f)
+    del manifest["tracks"][0]["local_path"]
+    with gig_dir.manifest_path.open("w") as f:
+        _json.dump(manifest, f)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert result.deleted_files == 0  # nothing to delete — local_path unknown
+    assert result.not_merged == 0     # guard passed
+    # Crucially: no exception, no deletion of unintended paths
+
+
+# ── Empty gig.csv ─────────────────────────────────────────────────────────────
+
+
+def test_run_gig_cleanup_empty_gig_csv_returns_early(tmp_path):
+    """gig.csv with only a header row (no tracks) returns immediately with 0 deleted."""
+    csv_path = _make_library_csv(tmp_path, [])
+    gig_dir = GigDir(gig_id="friday", root=tmp_path / "Gigs")
+    gig_dir.ensure()
+
+    # Write gig.csv with header only
+    import csv as csv_mod
+    with gig_dir.gig_csv_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv_mod.DictWriter(f, fieldnames=LIBRARY_FIELDS)
+        w.writeheader()
+
+    # Plant a file in audio/ — it must NOT be deleted
+    stray = gig_dir.audio_dir / "mystery.mp3"
+    stray.write_bytes(b"data")
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert result.deleted_files == 0
+    assert stray.exists()  # untouched
+
+
+# ── rmdir non-empty audio/ doesn't crash ─────────────────────────────────────
+
+
+def test_run_gig_cleanup_rmdir_tolerates_ds_store(tmp_path):
+    """.DS_Store (or any leftover) in audio/ prevents rmdir but doesn't crash."""
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas"},
+    ])
+    tracks = [{"track_id": "t1"}]
+    gig_dir, _ = _make_gig_dir(tmp_path, "friday", tracks)
+
+    # Plant a .DS_Store-like file that won't be deleted (not in manifest)
+    (gig_dir.audio_dir / ".DS_Store").write_bytes(b"")
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert result.deleted_files == 1
+    assert gig_dir.audio_dir.exists()  # not removed — still has .DS_Store

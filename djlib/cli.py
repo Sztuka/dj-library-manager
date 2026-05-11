@@ -3949,6 +3949,9 @@ def cmd_gig_cleanup(args: argparse.Namespace) -> None:
     except FileNotFoundError as exc:
         print(f"\nERROR: {exc}")
         raise SystemExit(1)
+    except Exception as exc:
+        print(f"\nERROR: {type(exc).__name__}: {exc}")
+        raise SystemExit(1)
 
     if result.not_merged:
         print(f"\nERROR: {result.not_merged} track(s) not yet on NAS — run gig-merge first.")

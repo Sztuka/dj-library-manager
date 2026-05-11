@@ -923,6 +923,7 @@ def run_gig_cleanup(
     prep.state, merge.state kept as historical record. Only audio/ is removed.
     """
     from djlib.library_schema import load_library_csv
+    from djlib.locks import csv_lock
 
     if gig_dir is None:
         gig_dir = GigDir(gig_id=gig_id)
@@ -936,6 +937,10 @@ def run_gig_cleanup(
     with gig_dir.gig_csv_path.open(encoding="utf-8") as f:
         gig_rows = list(csv_mod.DictReader(f))
 
+    if not gig_rows:
+        log.warning("gig.csv for %s has no tracks — nothing to clean up", gig_id)
+        return GigCleanupResult()
+
     manifest_by_tid: Dict[str, Dict] = {}
     if gig_dir.manifest_path.exists():
         with gig_dir.manifest_path.open(encoding="utf-8") as f:
@@ -945,7 +950,9 @@ def run_gig_cleanup(
     result = GigCleanupResult()
 
     # ── Guard: every track must be back on NAS ────────────────────────────────
-    current_rows = load_library_csv(csv_path)
+    # Use csv_lock to avoid reading a partially-written library.csv.
+    with csv_lock(csv_path):
+        current_rows = load_library_csv(csv_path)
     live_by_tid: Dict[str, Dict[str, str]] = {
         str(r.get("track_id", "")): r for r in current_rows
     }
@@ -972,14 +979,28 @@ def run_gig_cleanup(
             continue
 
         mf = manifest_by_tid.get(tid, {})
-        local_path = Path(str(mf.get("local_path", "") or ""))
-        nas_path   = Path(str(mf.get("src_path", "") or row.get("old_full_path", "")))
+        local_path_str = str(mf.get("local_path", "") or "")
+        if not local_path_str:
+            log.warning("track_id=%s has no local_path in manifest — skipping", tid)
+            continue
+        local_path = Path(local_path_str)
+        nas_path     = Path(str(mf.get("src_path", "") or row.get("old_full_path", "")))
         manifest_sha = str(mf.get("sha256", "") or "")
 
-        if not local_path.exists():
+        # Use is_file() not exists() — prevents Path("") == Path(".") footgun
+        if not local_path.is_file():
             continue  # already cleaned up in a prior run
 
-        if verify_nas and manifest_sha:
+        if verify_nas:
+            if not manifest_sha:
+                # No sha in manifest — can't verify; skip to be safe
+                log.warning(
+                    "track_id=%s has no sha256 in manifest — skipping delete "
+                    "(cannot verify NAS copy without a reference hash)",
+                    tid,
+                )
+                result.sha_failures += 1
+                continue
             if not nas_path.exists():
                 log.warning("track_id=%s NAS file missing: %s — skipping delete", tid, nas_path)
                 result.sha_failures += 1
@@ -1004,9 +1025,11 @@ def run_gig_cleanup(
         except OSError as exc:
             log.warning("could not delete %s: %s", local_path, exc)
 
-    # Remove audio/ if now empty (skip in dry_run)
+    # Remove audio/ if now empty (skip in dry_run); tolerate non-empty or OS errors
     if not dry_run and gig_dir.audio_dir.exists():
-        if not any(gig_dir.audio_dir.iterdir()):
-            gig_dir.audio_dir.rmdir()
+        try:
+            gig_dir.audio_dir.rmdir()  # fails silently if non-empty (e.g. .DS_Store)
+        except OSError:
+            pass
 
     return result
