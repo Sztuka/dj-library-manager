@@ -227,19 +227,25 @@ def _run(
         rows = load_library_csv(csv_path)
 
     # ── Find candidates ────────────────────────────────────────────────────────
+    # old_full_path is canonical; fall back to file_path then original_path for
+    # rows that pre-date the field (added before apply populated it).
+    _PATH_FIELDS = ("old_full_path", "file_path", "original_path")
+
     candidates = []
     for row in rows:
-        path_str = row.get("old_full_path", "")
-        if not path_str:
-            continue
-        src = Path(path_str)
-        if src.suffix.lower() not in _CONVERT_EXTS:
+        src: Optional[Path] = None
+        for field in _PATH_FIELDS:
+            p = str(row.get(field, "") or "").strip()
+            if p and Path(p).suffix.lower() in _CONVERT_EXTS:
+                candidate = Path(p)
+                if candidate.exists():
+                    src = candidate
+                    break
+        if src is None:
             continue
         live_loc = str(row.get("live_location", "") or "")
         # Skip tracks currently on MacBook for a gig
         if live_loc and live_loc != "nas":
-            continue
-        if not src.exists():
             continue
         candidates.append((row, src))
 
