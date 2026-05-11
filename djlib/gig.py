@@ -21,6 +21,7 @@ import csv as csv_mod
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -28,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 
 # ── M3U parser ────────────────────────────────────────────────────────────────
@@ -641,10 +644,11 @@ class GigMergeResult:
 def run_gig_merge(
     gig_id: str,
     csv_path: Path,
-    gig_dir: Optional["GigDir"] = None,
+    gig_dir: Optional[GigDir] = None,
     resume: bool = False,
     dry_run: bool = False,
     create_missing_dirs: bool = False,
+    quarantine_root: Optional[Path] = None,
 ) -> GigMergeResult:
     """Merge post-gig Rekordbox state back to library.csv and copy files to NAS.
 
@@ -712,18 +716,27 @@ def run_gig_merge(
     except Exception as exc:
         print(f"  WARNING: Could not read Rekordbox DB: {exc}")
 
-    # Pre-merge backup
     merged_at = datetime.now(timezone.utc).isoformat()
     ts_tag = merged_at.replace(":", "-").replace("+", "Z")[:19]
-    backup_path = csv_path.parent.parent / "LOGS" / f"library-backup-{gig_id}-{ts_tag}.csv"
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(csv_path, backup_path)
+    logs_dir = csv_path.parent.parent / "LOGS"
+
+    # Warn if an interrupted merge exists but --resume was not passed
+    if not resume and merge_state._path.exists():
+        log.warning(
+            "merge.state exists for gig %s but --resume was not passed — "
+            "existing WAL is ignored and tracks may be re-processed. "
+            "Pass --resume to continue from where the last run stopped.",
+            gig_id,
+        )
 
     # Replay WAL for resume
     prior_states = merge_state.get_track_states() if resume else {}
 
-    # Load current library for LWW live side
+    # Load current library for LWW live side; backup inside lock for consistency
+    backup_path = logs_dir / f"library-backup-{gig_id}-{ts_tag}.csv"
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_lock(csv_path):
+        shutil.copy2(csv_path, backup_path)
         current_rows = load_library_csv(csv_path)
     live_by_tid: Dict[str, Dict[str, str]] = {
         str(r.get("track_id", "")): r for r in current_rows
@@ -745,17 +758,19 @@ def run_gig_merge(
         live_loc = str(live_row.get("live_location", "") or "")
 
         # Idempotent: already merged in a previous run
-        if live_loc == "nas" or live_loc == "":
+        if live_loc == "nas":
             merge_state.append_event(tid, MERGE_SKIPPED)
             result.skipped_already_merged += 1
-            resolved_rows_by_tid[tid] = live_row or dict(row)
+            continue
+        if live_loc == "":
+            log.warning("track_id=%s has empty live_location — skipping (already on NAS?)", tid)
+            result.skipped_already_merged += 1
             continue
 
         # Resume: skip copy + LWW if already fully merged in WAL
         prior = prior_states.get(tid, "")
         if prior == MERGE_ROW_MERGED:
             result.skipped_already_merged += 1
-            resolved_rows_by_tid[tid] = live_row or dict(row)
             continue
 
         mf = manifest_by_tid.get(tid, {})
@@ -823,7 +838,9 @@ def run_gig_merge(
         result.merged += 1
 
     # ── Quarantine pass ───────────────────────────────────────────────────────
-    quarantine_dir = Path.home() / "Music Unsorted" / "quarantine" / gig_id
+    if quarantine_root is None:
+        quarantine_root = Path.home() / "Music Unsorted" / "quarantine"
+    quarantine_dir = quarantine_root / gig_id
     gig_track_ids = {str(r.get("track_id", "")) for r in gig_rows}
 
     if gig_dir.audio_dir.exists():
@@ -834,10 +851,13 @@ def run_gig_merge(
             if stem not in gig_track_ids:
                 quarantine_dir.mkdir(parents=True, exist_ok=True)
                 dest = quarantine_dir / audio_file.name
-                shutil.move(str(audio_file), dest)
-                file_sha = _sha256_file(dest)
-                print(f"  QUARANTINE: {audio_file.name} → {dest} (sha={file_sha[:12]}…)")
-                result.quarantined += 1
+                try:
+                    shutil.move(str(audio_file), dest)
+                    file_sha = _sha256_file(dest)
+                    print(f"  QUARANTINE: {audio_file.name} → {dest} (sha={file_sha[:12]}…)")
+                    result.quarantined += 1
+                except Exception as exc:
+                    print(f"  WARNING: could not quarantine {audio_file.name}: {exc}")
 
     # ── Final csv_lock write ──────────────────────────────────────────────────
     with csv_lock(csv_path):
@@ -850,8 +870,7 @@ def run_gig_merge(
 
     # ── Audit log ─────────────────────────────────────────────────────────────
     if audit_entries:
-        audit_path = (csv_path.parent.parent / "LOGS" /
-                      f"gig-merge-{gig_id}-{ts_tag}.csv")
+        audit_path = logs_dir / f"gig-merge-{gig_id}-{ts_tag}.csv"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         audit_fields = [
             "track_id", "field_name", "baseline_value", "live_value",

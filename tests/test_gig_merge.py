@@ -377,13 +377,14 @@ def test_run_gig_merge_quarantines_unknown_files(tmp_path):
     unknown = gig_dir.audio_dir / "unknown-track-xyz.mp3"
     unknown.write_bytes(b"mystery music" * 100)
 
+    quarantine_root = tmp_path / "quarantine"
     with patch("djlib.rekordbox_reader.fetch_gig_tracks", return_value={}):
-        result = run_gig_merge("friday", csv_path, gig_dir=gig_dir)
+        result = run_gig_merge("friday", csv_path, gig_dir=gig_dir,
+                               quarantine_root=quarantine_root)
 
     assert result.quarantined == 1
     assert not unknown.exists()  # moved out of audio/
-    quarantine_dir = Path.home() / "Music Unsorted" / "quarantine" / "friday"
-    assert (quarantine_dir / "unknown-track-xyz.mp3").exists()
+    assert (quarantine_root / "friday" / "unknown-track-xyz.mp3").exists()
 
 
 # ── run_gig_merge: backup ─────────────────────────────────────────────────────
