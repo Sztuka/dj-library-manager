@@ -20,11 +20,26 @@ Conflict (fresh≠baseline AND live≠baseline AND fresh≠live):
 
 Only fields listed in MERGE_FIELDS are evaluated; all other fields are taken
 from `live` unchanged.
+
+Known limitations:
+  play_count — LWW (fresh wins on conflict) rather than MAX. If sync
+    incremented the count while the DJ also played the track, the lower
+    of the two counts wins when fresh < live. In practice this means at
+    most a few plays are under-counted; the alternative (MAX) would
+    overcounts after a rollback. LWW is the simpler invariant.
+
+  cue_points_rb — compared as raw JSON strings. serialize_rb_cues always
+    uses separators=(",",":") so format is deterministic as long as all
+    writers use the same serializer. A whitespace difference would be a
+    false "fresh changed" — treat as harmless overwrite.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+log = logging.getLogger(__name__)
 
 # Fields that may be updated in Rekordbox during a gig and should be
 # considered for LWW merge.  Must be a subset of LIBRARY_FIELDNAMES.
@@ -70,14 +85,15 @@ def merge_track(
         resolved_row is a copy of `live` with LWW-applied fields.
         audit_entries lists every field where at least one value differed.
     """
-    fields = merge_fields if merge_fields is not None else MERGE_FIELDS
+    # Use a copy so callers cannot mutate MERGE_FIELDS via the default
+    fields = list(merge_fields) if merge_fields is not None else list(MERGE_FIELDS)
     resolved = dict(live)
     audit: List[AuditEntry] = []
 
     for fname in fields:
-        b = str(baseline.get(fname, "") or "")
-        l = str(live.get(fname, "") or "")
-        f = str(fresh.get(fname, "") or "")
+        b  = str(baseline.get(fname, "") or "")
+        lv = str(live.get(fname, "") or "")
+        f  = str(fresh.get(fname, "") or "")
 
         # If fresh has no data for this field (not returned by rekordbox_reader),
         # treat as "no change from DJ side" — keep live.
@@ -85,8 +101,8 @@ def merge_track(
             continue
 
         fresh_changed = f != b
-        live_changed  = l != b
-        conflict      = fresh_changed and live_changed and f != l
+        live_changed  = lv != b
+        conflict      = fresh_changed and live_changed and f != lv
 
         if fresh_changed:
             resolved[fname] = f
@@ -102,7 +118,7 @@ def merge_track(
                 track_id=track_id,
                 field_name=fname,
                 baseline_value=b,
-                live_value=l,
+                live_value=lv,
                 fresh_value=f,
                 resolved_value=resolved[fname],
                 source=source,
@@ -135,6 +151,21 @@ def merge_gig_tracks(
 
     for baseline in gig_rows:
         tid = str(baseline.get("track_id", "") or "")
+        if not tid:
+            log.warning("merge_gig_tracks: gig_row with empty track_id skipped")
+            continue
+
+        if tid not in live_rows_by_tid:
+            # Track vanished from library.csv between prep and merge.
+            # Fall back to baseline so merge_track still runs (fresh fields
+            # will be applied), but non-MERGE_FIELDS come from the old snapshot.
+            # This is data loss for fields edited outside the gig — logged so
+            # the operator can investigate.
+            log.warning(
+                "track_id=%s not found in library.csv — using gig.csv snapshot "
+                "as live fallback; edits to non-merge fields since gig-prep are lost",
+                tid,
+            )
         live = live_rows_by_tid.get(tid, baseline)
         fresh = fresh_by_tid.get(tid, {})
 

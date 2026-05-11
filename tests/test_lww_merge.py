@@ -254,6 +254,56 @@ def test_merge_gig_tracks_preserves_order():
     assert [r["track_id"] for r in resolved_rows] == [f"t{i}" for i in range(5)]
 
 
+def test_merge_gig_tracks_empty_track_id_skipped():
+    """Rows with empty track_id must be skipped with a warning, not silently merged."""
+    gig_rows = [
+        {"track_id": "",   "rating": "51",  "play_count": "", "cue_points_rb": "", "bpm": ""},
+        {"track_id": "t1", "rating": "102", "play_count": "", "cue_points_rb": "", "bpm": ""},
+    ]
+    live = {"t1": {"track_id": "t1", "rating": "102", "play_count": "", "cue_points_rb": "", "bpm": ""}}
+
+    resolved_rows, _ = merge_gig_tracks(gig_rows, live, {})
+    # Only t1 should appear — empty track_id row is skipped
+    assert len(resolved_rows) == 1
+    assert resolved_rows[0]["track_id"] == "t1"
+
+
+def test_merge_gig_tracks_missing_from_live_falls_back_to_baseline():
+    """Track absent from library.csv uses baseline snapshot for non-merge fields.
+
+    This is documented data loss: non-merge fields edited between prep and merge
+    are overwritten with the baseline snapshot. A warning is logged.
+    """
+    gig_rows = [{"track_id": "t1", "rating": "51", "play_count": "", "cue_points_rb": "", "bpm": "",
+                 "title": "Old Title"}]
+    live = {}  # track vanished from library.csv
+    fresh = {"t1": {"rating": "204", "play_count": "", "cue_points_rb": "", "bpm": ""}}
+
+    resolved_rows, audit = merge_gig_tracks(gig_rows, live, fresh)
+    assert len(resolved_rows) == 1
+    # fresh rating applied
+    assert resolved_rows[0]["rating"] == "204"
+    # title comes from baseline (old snapshot) — documented limitation
+    assert resolved_rows[0]["title"] == "Old Title"
+
+
+def test_play_count_lww_not_max():
+    """play_count uses LWW (fresh wins on conflict), not MAX.
+
+    Known limitation: if sync incremented count while DJ also played,
+    the lower fresh count wins. Documented trade-off vs overcount risk.
+    """
+    baseline = _row(play_count="3")
+    live     = _row(play_count="5")   # sync added 2 plays
+    fresh    = _row(play_count="4")   # DJ played once → baseline+1
+
+    resolved, audit = _merge(baseline, live, fresh)
+    # fresh wins conflict → "4" (lower than live "5") — known limitation
+    assert resolved["play_count"] == "4"
+    assert audit[0].conflict is True
+    assert audit[0].source == "fresh"
+
+
 def test_merge_gig_tracks_collects_all_audit_entries():
     gig_rows = [
         {"track_id": "t1", "rating": "51",  "play_count": "1", "cue_points_rb": "", "bpm": ""},
