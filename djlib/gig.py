@@ -207,6 +207,12 @@ class GigDir:
     gig_id: str
     root: Path = field(default_factory=_default_gig_root)
 
+    def __post_init__(self) -> None:
+        if not self.gig_id or Path(self.gig_id).parts != (self.gig_id,):
+            raise ValueError(
+                f"gig_id must be a simple non-empty name with no path separators: {self.gig_id!r}"
+            )
+
     @property
     def path(self) -> Path:
         return self.root / self.gig_id
@@ -900,8 +906,9 @@ def run_gig_merge(
 @dataclass
 class GigCleanupResult:
     deleted_files: int = 0
-    not_merged: int = 0    # tracks not yet on NAS — blocked cleanup
-    sha_failures: int = 0  # NAS verify failed — those files kept
+    not_merged: int = 0      # tracks not yet on NAS — blocked cleanup
+    sha_failures: int = 0    # NAS verify failed — those files kept
+    delete_failures: int = 0  # unlink() failed (read-only FS, locked file)
 
 
 def run_gig_cleanup(
@@ -943,9 +950,23 @@ def run_gig_cleanup(
 
     manifest_by_tid: Dict[str, Dict] = {}
     if gig_dir.manifest_path.exists():
-        with gig_dir.manifest_path.open(encoding="utf-8") as f:
-            manifest = json.load(f)
-        manifest_by_tid = {t["track_id"]: t for t in manifest.get("tracks", [])}
+        try:
+            with gig_dir.manifest_path.open(encoding="utf-8") as f:
+                manifest = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"manifest.json for {gig_id} is corrupt or truncated: {exc}"
+            ) from exc
+        for t in manifest.get("tracks", []):
+            tid_m = str(t.get("track_id", "") or "")
+            if tid_m in manifest_by_tid:
+                log.warning(
+                    "manifest for %s has duplicate track_id=%s — only first entry used; "
+                    "check audio/ for orphaned files",
+                    gig_id, tid_m,
+                )
+            else:
+                manifest_by_tid[tid_m] = t
 
     result = GigCleanupResult()
 
@@ -961,8 +982,18 @@ def run_gig_cleanup(
         tid = str(row.get("track_id", "") or "")
         if not tid:
             continue
-        live_loc = str((live_by_tid.get(tid) or {}).get("live_location", "") or "")
-        if live_loc != "nas":
+        if tid not in live_by_tid:
+            # Track vanished from library.csv — cannot confirm it's on NAS
+            log.warning(
+                "track_id=%s not found in library.csv — cannot confirm it is on NAS; "
+                "run gig-merge to re-establish state",
+                tid,
+            )
+            result.not_merged += 1
+            continue
+        live_loc = str(live_by_tid[tid].get("live_location", "") or "")
+        # Empty live_location = legacy track pre-dating gig-tracking → treat as "nas"
+        if live_loc and live_loc != "nas":
             log.warning(
                 "track_id=%s not on NAS (live_location=%r) — run gig-merge first",
                 tid, live_loc,
@@ -971,6 +1002,9 @@ def run_gig_cleanup(
 
     if result.not_merged:
         return result
+
+    # Resolve audio_dir once for path-containment checks below
+    audio_dir_resolved = gig_dir.audio_dir.resolve()
 
     # ── Per-track: optionally verify NAS, then delete MacBook file ────────────
     for row in gig_rows:
@@ -984,6 +1018,17 @@ def run_gig_cleanup(
             log.warning("track_id=%s has no local_path in manifest — skipping", tid)
             continue
         local_path = Path(local_path_str)
+
+        # Security: refuse to delete anything outside gig audio_dir
+        try:
+            local_path.resolve().relative_to(audio_dir_resolved)
+        except ValueError:
+            log.warning(
+                "track_id=%s local_path %s is outside audio_dir — refusing to delete",
+                tid, local_path,
+            )
+            continue
+
         nas_path     = Path(str(mf.get("src_path", "") or row.get("old_full_path", "")))
         manifest_sha = str(mf.get("sha256", "") or "")
 
@@ -993,10 +1038,26 @@ def run_gig_cleanup(
 
         if verify_nas:
             if not manifest_sha:
-                # No sha in manifest — can't verify; skip to be safe
                 log.warning(
                     "track_id=%s has no sha256 in manifest — skipping delete "
                     "(cannot verify NAS copy without a reference hash)",
+                    tid,
+                )
+                result.sha_failures += 1
+                continue
+            # Guard against empty nas_path (== Path(".")) before hashing
+            if not nas_path.parts:
+                log.warning(
+                    "track_id=%s has no src_path/old_full_path — cannot verify NAS copy",
+                    tid,
+                )
+                result.sha_failures += 1
+                continue
+            # Guard against self-verify (src and local are the same file)
+            if nas_path.resolve() == local_path.resolve():
+                log.warning(
+                    "track_id=%s src_path and local_path resolve to the same file — "
+                    "skipping delete (would verify file against itself)",
                     tid,
                 )
                 result.sha_failures += 1
@@ -1024,6 +1085,7 @@ def run_gig_cleanup(
             result.deleted_files += 1
         except OSError as exc:
             log.warning("could not delete %s: %s", local_path, exc)
+            result.delete_failures += 1
 
     # Remove audio/ if now empty (skip in dry_run); tolerate non-empty or OS errors
     if not dry_run and gig_dir.audio_dir.exists():

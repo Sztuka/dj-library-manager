@@ -398,6 +398,210 @@ def test_run_gig_cleanup_empty_gig_csv_returns_early(tmp_path):
 # ── rmdir non-empty audio/ doesn't crash ─────────────────────────────────────
 
 
+def test_run_gig_cleanup_default_gig_dir_creation(tmp_path, monkeypatch):
+    """run_gig_cleanup with gig_dir=None uses _default_gig_root() — default path resolution works."""
+    monkeypatch.setattr("djlib.gig._default_gig_root", lambda: tmp_path / "Gigs")
+    csv_path = _make_library_csv(tmp_path, [])
+
+    with pytest.raises(FileNotFoundError, match="gig.csv"):
+        run_gig_cleanup("friday", csv_path)  # no gig_dir= — proves default path used
+
+
+# ── GigDir gig_id validation ──────────────────────────────────────────────────
+
+
+def test_gigdir_rejects_path_traversal_gig_id():
+    with pytest.raises(ValueError, match="gig_id"):
+        GigDir(gig_id="../../etc")
+
+
+def test_gigdir_rejects_empty_gig_id():
+    with pytest.raises(ValueError, match="gig_id"):
+        GigDir(gig_id="")
+
+
+def test_gigdir_rejects_gig_id_with_slash():
+    with pytest.raises(ValueError, match="gig_id"):
+        GigDir(gig_id="friday/subdir")
+
+
+# ── Path traversal guard ──────────────────────────────────────────────────────
+
+
+def test_run_gig_cleanup_refuses_local_path_outside_audio_dir(tmp_path):
+    """local_path pointing outside audio_dir must be refused — no arbitrary file deletion."""
+    victim = tmp_path / "precious.csv"
+    victim.write_bytes(b"do not delete")
+
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas"},
+    ])
+    tracks = [{"track_id": "t1"}]
+    gig_dir, _ = _make_gig_dir(tmp_path, "friday", tracks)
+
+    # Overwrite manifest local_path to point outside audio_dir
+    with gig_dir.manifest_path.open() as f:
+        manifest = json.load(f)
+    manifest["tracks"][0]["local_path"] = str(victim)
+    with gig_dir.manifest_path.open("w") as f:
+        json.dump(manifest, f)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert victim.exists()          # precious file untouched
+    assert result.deleted_files == 0
+
+
+# ── Malformed manifest.json ───────────────────────────────────────────────────
+
+
+def test_run_gig_cleanup_malformed_manifest_raises_value_error(tmp_path):
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas"},
+    ])
+    gig_dir = GigDir(gig_id="friday", root=tmp_path / "Gigs")
+    gig_dir.ensure()
+
+    with gig_dir.gig_csv_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv_mod.DictWriter(f, fieldnames=LIBRARY_FIELDS)
+        w.writeheader()
+        w.writerow({k: "t1" if k == "track_id" else "" for k in LIBRARY_FIELDS})
+    # Write truncated JSON
+    gig_dir.manifest_path.write_text('{"gig_id": "friday", "tracks": [{"track')
+
+    with pytest.raises(ValueError, match="manifest.json"):
+        run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+
+# ── Duplicate track_id in manifest ───────────────────────────────────────────
+
+
+def test_run_gig_cleanup_duplicate_manifest_track_id_uses_first(tmp_path):
+    """Duplicate track_id in manifest: first entry used, warning logged, no crash."""
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas"},
+    ])
+    tracks = [{"track_id": "t1"}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    # Add second entry with same track_id but different (nonexistent) local_path
+    with gig_dir.manifest_path.open() as f:
+        manifest = json.load(f)
+    first_local = manifest["tracks"][0]["local_path"]
+    manifest["tracks"].append({
+        "track_id": "t1",
+        "local_path": "/nonexistent/t1_v2.mp3",
+        "src_path": "/nas/t1.mp3",
+        "sha256": "",
+    })
+    with gig_dir.manifest_path.open("w") as f:
+        json.dump(manifest, f)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    # First entry was processed — MacBook file deleted
+    assert not audio_by_tid["t1"].exists()
+    assert result.deleted_files == 1
+
+
+# ── verify_nas: empty src_path doesn't crash ─────────────────────────────────
+
+
+def test_run_gig_cleanup_verify_nas_empty_src_path_no_crash(tmp_path):
+    """verify_nas=True with empty src_path and old_full_path → sha_failures, no crash."""
+    audio_data = b"audio" * 100
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas", "old_full_path": ""},
+    ])
+    tracks = [{"track_id": "t1", "old_full_path": "", "audio_data": audio_data}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    # Overwrite manifest: sha256 present, src_path empty
+    with gig_dir.manifest_path.open() as f:
+        manifest = json.load(f)
+    manifest["tracks"][0]["src_path"] = ""
+    with gig_dir.manifest_path.open("w") as f:
+        json.dump(manifest, f)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir, verify_nas=True)
+
+    assert result.sha_failures == 1
+    assert result.deleted_files == 0
+    assert audio_by_tid["t1"].exists()
+
+
+# ── verify_nas: self-verify guard ─────────────────────────────────────────────
+
+
+def test_run_gig_cleanup_verify_nas_refuses_if_src_equals_local(tmp_path):
+    """verify_nas=True with src_path == local_path → sha_failures, file kept."""
+    audio_data = b"audio" * 100
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas"},
+    ])
+    tracks = [{"track_id": "t1", "audio_data": audio_data}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    # Make src_path point to the same file as local_path
+    local = str(audio_by_tid["t1"])
+    with gig_dir.manifest_path.open() as f:
+        manifest = json.load(f)
+    manifest["tracks"][0]["src_path"] = local
+    with gig_dir.manifest_path.open("w") as f:
+        json.dump(manifest, f)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir, verify_nas=True)
+
+    assert result.sha_failures == 1
+    assert result.deleted_files == 0
+    assert audio_by_tid["t1"].exists()
+
+
+# ── Empty live_location treated as nas ────────────────────────────────────────
+
+
+def test_run_gig_cleanup_empty_live_location_treated_as_nas(tmp_path):
+    """Legacy tracks with live_location='' are treated as 'nas' — cleanup proceeds."""
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": ""},  # pre-gig-tracking legacy row
+    ])
+    tracks = [{"track_id": "t1"}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert result.not_merged == 0
+    assert result.deleted_files == 1
+    assert not audio_by_tid["t1"].exists()
+
+
+# ── delete_failures counted ───────────────────────────────────────────────────
+
+
+def test_run_gig_cleanup_counts_delete_failures(tmp_path, monkeypatch):
+    """unlink() failure increments delete_failures (not silently swallowed)."""
+    csv_path = _make_library_csv(tmp_path, [
+        {"track_id": "t1", "live_location": "nas"},
+    ])
+    tracks = [{"track_id": "t1"}]
+    gig_dir, audio_by_tid = _make_gig_dir(tmp_path, "friday", tracks)
+
+    original_unlink = audio_by_tid["t1"].unlink
+
+    def failing_unlink(*args, **kwargs):
+        raise PermissionError("read-only filesystem")
+
+    monkeypatch.setattr(type(audio_by_tid["t1"]), "unlink", lambda self, *a, **k: failing_unlink())
+
+    result = run_gig_cleanup("friday", csv_path, gig_dir=gig_dir)
+
+    assert result.delete_failures == 1
+    assert result.deleted_files == 0
+
+
+# ── rmdir non-empty audio/ doesn't crash ─────────────────────────────────────
+
+
 def test_run_gig_cleanup_rmdir_tolerates_ds_store(tmp_path):
     """.DS_Store (or any leftover) in audio/ prevents rmdir but doesn't crash."""
     csv_path = _make_library_csv(tmp_path, [

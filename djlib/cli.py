@@ -3961,6 +3961,9 @@ def cmd_gig_cleanup(args: argparse.Namespace) -> None:
     print(f"    Deleted : {result.deleted_files} file(s)")
     if result.sha_failures:
         print(f"    Kept (NAS SHA mismatch): {result.sha_failures} — investigate before deleting")
+    if result.delete_failures:
+        print(f"    Failed to delete: {result.delete_failures} — check file permissions")
+    if result.sha_failures or result.delete_failures:
         raise SystemExit(1)
 
 
