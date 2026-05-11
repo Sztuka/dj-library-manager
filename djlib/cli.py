@@ -3881,6 +3881,51 @@ def cmd_gig_prep(args: argparse.Namespace) -> None:
         lock.release()
 
 
+def cmd_gig_merge(args: argparse.Namespace) -> None:
+    """Phase 3: merge post-gig Rekordbox state back to library.csv."""
+    from djlib.gig import GigDir, GigMergeResult, run_gig_merge
+
+    gig_dir = GigDir(gig_id=args.gig_id)
+    dry_run = getattr(args, "dry_run", False)
+    resume  = getattr(args, "resume", False)
+    create_missing_dirs = getattr(args, "create_missing_dirs", False)
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}gig-merge: {args.gig_id}")
+    print(f"  Gig dir : {gig_dir.path}")
+
+    try:
+        result: GigMergeResult = run_gig_merge(
+            gig_id=args.gig_id,
+            csv_path=CSV_PATH,
+            gig_dir=gig_dir,
+            resume=resume,
+            dry_run=dry_run,
+            create_missing_dirs=create_missing_dirs,
+        )
+    except FileNotFoundError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1)
+
+    if dry_run:
+        return
+
+    print(f"\n  Done.")
+    print(f"    Merged  : {result.merged}")
+    if result.skipped_already_merged:
+        print(f"    Skipped : {result.skipped_already_merged} (already on NAS)")
+    if result.quarantined:
+        print(f"    Quarant : {result.quarantined} unknown files")
+    if result.conflicts:
+        print(f"    Conflicts: {result.conflicts} (fresh won — see audit log)")
+    if result.failed_sha:
+        print(f"    FAILED (SHA mismatch) : {result.failed_sha}")
+    if result.failed_nas_missing:
+        print(f"    FAILED (NAS missing)  : {result.failed_nas_missing}"
+              "  (re-run with --create-missing-dirs to create directories)")
+    if result.failed_sha or result.failed_nas_missing:
+        raise SystemExit(1)
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4074,6 +4119,14 @@ def build_parser() -> argparse.ArgumentParser:
     gig.add_argument("--dry-run", action="store_true", help="Print plan without copying anything")
     gig.add_argument("--resume", action="store_true", help="Resume interrupted prep (skips already-verified tracks)")
     gig.set_defaults(func=cmd_gig_prep)
+
+    merge = sp.add_parser("gig-merge", help="Merge post-gig Rekordbox state back to library.csv (Phase 3)")
+    merge.add_argument("gig_id", help="Gig identifier used during gig-prep, e.g. friday-2026-05-15")
+    merge.add_argument("--dry-run", action="store_true", help="Print plan without writing anything")
+    merge.add_argument("--resume", action="store_true", help="Resume interrupted merge (skips already-merged tracks)")
+    merge.add_argument("--create-missing-dirs", action="store_true",
+                       help="Create NAS parent directories if missing (default: abort track)")
+    merge.set_defaults(func=cmd_gig_merge)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")

@@ -228,6 +228,10 @@ class GigDir:
     def gig_csv_path(self) -> Path:
         return self.path / "gig.csv"
 
+    @property
+    def merge_state_path(self) -> Path:
+        return self.path / "merge.state"
+
     def ensure(self) -> None:
         self.audio_dir.mkdir(parents=True, exist_ok=True)
 
@@ -566,5 +570,306 @@ def _run_gig_prep_copy_locked(
             write_rekordbox_xml(rb_tracks, gig_id, xml_path)
         except Exception as exc:
             print(f"  WARNING: could not write rekordbox.xml: {exc}")
+
+    return result
+
+
+# ── Gig-merge WAL ─────────────────────────────────────────────────────────────
+
+
+MERGE_FILE_COPIED   = "file_copied_to_nas"
+MERGE_ROW_MERGED    = "row_merged"
+MERGE_NAS_MISSING   = "nas_path_missing"
+MERGE_SHA_MISMATCH  = "sha_mismatch"
+MERGE_SKIPPED       = "skipped_already_merged"
+
+
+class MergeState:
+    """Append-only JSON Lines WAL for crash-safe gig-merge (mirrors PrepState)."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def append_event(self, track_id: str, event: str, **kwargs: object) -> None:
+        entry = {
+            "track_id": track_id,
+            "event": event,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            **kwargs,
+        }
+        with self._path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+    def get_track_states(self) -> Dict[str, str]:
+        states: Dict[str, str] = {}
+        if not self._path.exists():
+            return states
+        with self._path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    tid = entry.get("track_id", "")
+                    evt = entry.get("event", "")
+                    if tid and evt:
+                        states[tid] = evt
+                except json.JSONDecodeError:
+                    pass
+        return states
+
+
+# ── Gig-merge result ──────────────────────────────────────────────────────────
+
+
+@dataclass
+class GigMergeResult:
+    merged: int = 0
+    skipped_already_merged: int = 0
+    failed_sha: int = 0
+    failed_nas_missing: int = 0
+    quarantined: int = 0
+    conflicts: int = 0
+
+
+# ── Gig-merge orchestrator ────────────────────────────────────────────────────
+
+
+def run_gig_merge(
+    gig_id: str,
+    csv_path: Path,
+    gig_dir: Optional["GigDir"] = None,
+    resume: bool = False,
+    dry_run: bool = False,
+    create_missing_dirs: bool = False,
+) -> GigMergeResult:
+    """Merge post-gig Rekordbox state back to library.csv and copy files to NAS.
+
+    Sequence:
+      1. Load gig.csv (baseline) + manifest.json
+      2. Fetch Rekordbox DB for fresh field values
+      3. Backup library.csv
+      4. Per track: SHA-verify MacBook file, copy to NAS, LWW merge
+      5. Quarantine unknown files in audio/ dir
+      6. csv_lock: write resolved rows, reset live_location="nas"
+      7. Write audit log to LOGS/
+
+    Args:
+        gig_id:              gig identifier, must match a directory in GIG_ROOT
+        csv_path:            path to library.csv
+        gig_dir:             GigDir instance (defaults to standard location)
+        resume:              skip tracks already recorded as row_merged in WAL
+        dry_run:             print plan only, no writes
+        create_missing_dirs: mkdir -p NAS parent dir if missing (default: abort)
+    """
+    from djlib.library_schema import LIBRARY_FIELDNAMES, load_library_csv, save_library_csv
+    from djlib.locks import csv_lock
+
+    if gig_dir is None:
+        gig_dir = GigDir(gig_id=gig_id)
+
+    if not gig_dir.gig_csv_path.exists():
+        raise FileNotFoundError(
+            f"gig.csv not found at {gig_dir.gig_csv_path} — "
+            "was gig-prep run for this gig_id?"
+        )
+    if not gig_dir.manifest_path.exists():
+        raise FileNotFoundError(f"manifest.json not found at {gig_dir.manifest_path}")
+
+    # Load baseline snapshot
+    import csv as csv_mod
+    with gig_dir.gig_csv_path.open(encoding="utf-8") as f:
+        gig_rows = list(csv_mod.DictReader(f))
+
+    with gig_dir.manifest_path.open(encoding="utf-8") as f:
+        manifest = json.load(f)
+    manifest_by_tid: Dict[str, Dict] = {
+        t["track_id"]: t for t in manifest.get("tracks", [])
+    }
+
+    result = GigMergeResult()
+    merge_state = MergeState(gig_dir.path / "merge.state")
+
+    if dry_run:
+        print(f"[dry-run] gig-merge {gig_id}: {len(gig_rows)} tracks in gig.csv")
+        for row in gig_rows:
+            tid = row.get("track_id", "")
+            src = manifest_by_tid.get(tid, {}).get("local_path", "?")
+            dest = row.get("old_full_path", "?")
+            print(f"  {tid[:8]}…  {Path(src).name} → {dest}")
+        return result
+
+    # Fetch fresh data from Rekordbox
+    fresh_by_tid: Dict[str, Dict[str, str]] = {}
+    try:
+        from djlib.rekordbox_reader import fetch_gig_tracks
+        fresh_by_tid = fetch_gig_tracks(gig_rows, db_path=None)
+    except FileNotFoundError as exc:
+        print(f"  WARNING: Rekordbox DB not found — merge will use baseline values: {exc}")
+    except Exception as exc:
+        print(f"  WARNING: Could not read Rekordbox DB: {exc}")
+
+    # Pre-merge backup
+    merged_at = datetime.now(timezone.utc).isoformat()
+    ts_tag = merged_at.replace(":", "-").replace("+", "Z")[:19]
+    backup_path = csv_path.parent.parent / "LOGS" / f"library-backup-{gig_id}-{ts_tag}.csv"
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(csv_path, backup_path)
+
+    # Replay WAL for resume
+    prior_states = merge_state.get_track_states() if resume else {}
+
+    # Load current library for LWW live side
+    with csv_lock(csv_path):
+        current_rows = load_library_csv(csv_path)
+    live_by_tid: Dict[str, Dict[str, str]] = {
+        str(r.get("track_id", "")): r for r in current_rows
+    }
+
+    audit_entries = []
+
+    # ── Per-track: copy-back then LWW ────────────────────────────────────────
+    from djlib.lww_merge import merge_track
+
+    resolved_rows_by_tid: Dict[str, Dict[str, str]] = {}
+
+    for row in gig_rows:
+        tid = str(row.get("track_id", "") or "")
+        if not tid:
+            continue
+
+        live_row = live_by_tid.get(tid, {})
+        live_loc = str(live_row.get("live_location", "") or "")
+
+        # Idempotent: already merged in a previous run
+        if live_loc == "nas" or live_loc == "":
+            merge_state.append_event(tid, MERGE_SKIPPED)
+            result.skipped_already_merged += 1
+            resolved_rows_by_tid[tid] = live_row or dict(row)
+            continue
+
+        # Resume: skip copy + LWW if already fully merged in WAL
+        prior = prior_states.get(tid, "")
+        if prior == MERGE_ROW_MERGED:
+            result.skipped_already_merged += 1
+            resolved_rows_by_tid[tid] = live_row or dict(row)
+            continue
+
+        mf = manifest_by_tid.get(tid, {})
+        macbook_path = Path(str(mf.get("local_path", "") or ""))
+        nas_path     = Path(str(row.get("old_full_path", "") or ""))
+        manifest_sha = str(mf.get("sha256", "") or "")
+
+        # ── Step 1: copy MacBook → NAS (unless resume already did it) ────────
+        if prior != MERGE_FILE_COPIED:
+            if not macbook_path.exists():
+                print(f"  ERROR {tid[:8]}…: MacBook file missing: {macbook_path}")
+                merge_state.append_event(tid, MERGE_SHA_MISMATCH,
+                                         reason="macbook_file_missing")
+                result.failed_sha += 1
+                continue
+
+            # Verify MacBook file hasn't been corrupted since prep
+            if manifest_sha:
+                actual_sha = _sha256_file(macbook_path)
+                if actual_sha != manifest_sha:
+                    print(f"  ERROR {tid[:8]}…: SHA mismatch (MacBook bit-rot?)")
+                    merge_state.append_event(tid, MERGE_SHA_MISMATCH,
+                                             expected=manifest_sha[:12],
+                                             actual=actual_sha[:12])
+                    result.failed_sha += 1
+                    continue
+
+            if not nas_path.parent.exists():
+                if create_missing_dirs:
+                    nas_path.parent.mkdir(parents=True, exist_ok=True)
+                else:
+                    print(f"  ERROR {tid[:8]}…: NAS directory missing: {nas_path.parent}"
+                          "  (use --create-missing-dirs to create it)")
+                    merge_state.append_event(tid, MERGE_NAS_MISSING,
+                                             path=str(nas_path))
+                    result.failed_nas_missing += 1
+                    continue
+
+            try:
+                copy_track_atomic(macbook_path, nas_path)
+                merge_state.append_event(tid, MERGE_FILE_COPIED,
+                                         src=str(macbook_path),
+                                         dest=str(nas_path))
+            except Exception as exc:
+                print(f"  ERROR {tid[:8]}…: copy failed: {exc}")
+                merge_state.append_event(tid, MERGE_SHA_MISMATCH, reason=str(exc))
+                result.failed_sha += 1
+                continue
+
+        # ── Step 2: LWW merge ─────────────────────────────────────────────────
+        fresh = fresh_by_tid.get(tid, {})
+        resolved, track_audit = merge_track(
+            track_id=tid,
+            baseline=dict(row),
+            live=live_row or dict(row),
+            fresh=fresh,
+        )
+        resolved["live_location"] = "nas"
+        resolved["live_path"]     = ""
+        resolved_rows_by_tid[tid] = resolved
+        audit_entries.extend(track_audit)
+        result.conflicts += sum(1 for e in track_audit if e.conflict)
+
+        merge_state.append_event(tid, MERGE_ROW_MERGED)
+        result.merged += 1
+
+    # ── Quarantine pass ───────────────────────────────────────────────────────
+    quarantine_dir = Path.home() / "Music Unsorted" / "quarantine" / gig_id
+    gig_track_ids = {str(r.get("track_id", "")) for r in gig_rows}
+
+    if gig_dir.audio_dir.exists():
+        for audio_file in gig_dir.audio_dir.iterdir():
+            if not audio_file.is_file():
+                continue
+            stem = audio_file.stem  # track_id is the filename stem
+            if stem not in gig_track_ids:
+                quarantine_dir.mkdir(parents=True, exist_ok=True)
+                dest = quarantine_dir / audio_file.name
+                shutil.move(str(audio_file), dest)
+                file_sha = _sha256_file(dest)
+                print(f"  QUARANTINE: {audio_file.name} → {dest} (sha={file_sha[:12]}…)")
+                result.quarantined += 1
+
+    # ── Final csv_lock write ──────────────────────────────────────────────────
+    with csv_lock(csv_path):
+        rows = load_library_csv(csv_path)
+        by_tid = {str(r.get("track_id", "")): r for r in rows}
+        for tid, resolved in resolved_rows_by_tid.items():
+            if tid in by_tid:
+                by_tid[tid].update(resolved)
+        save_library_csv(csv_path, rows)
+
+    # ── Audit log ─────────────────────────────────────────────────────────────
+    if audit_entries:
+        audit_path = (csv_path.parent.parent / "LOGS" /
+                      f"gig-merge-{gig_id}-{ts_tag}.csv")
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        audit_fields = [
+            "track_id", "field_name", "baseline_value", "live_value",
+            "fresh_value", "resolved_value", "source", "conflict",
+        ]
+        with audit_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=audit_fields)
+            writer.writeheader()
+            for e in audit_entries:
+                writer.writerow({
+                    "track_id":       e.track_id,
+                    "field_name":     e.field_name,
+                    "baseline_value": e.baseline_value,
+                    "live_value":     e.live_value,
+                    "fresh_value":    e.fresh_value,
+                    "resolved_value": e.resolved_value,
+                    "source":         e.source,
+                    "conflict":       str(e.conflict),
+                })
 
     return result
