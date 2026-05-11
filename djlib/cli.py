@@ -3988,6 +3988,53 @@ def cmd_gig_cleanup(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_reconvert(args: argparse.Namespace) -> None:
+    """Batch-convert all WAV/FLAC in library.csv to AIFF in-place."""
+    from djlib.reconvert import run_reconvert, ReconvertResult
+
+    dry_run = getattr(args, "dry_run", False)
+    resume  = getattr(args, "resume", False)
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}reconvert: WAV/FLAC → AIFF")
+    print(f"  Library : {CSV_PATH}")
+    print(f"  Logs    : {LOGS_DIR}")
+
+    try:
+        result: ReconvertResult = run_reconvert(
+            csv_path=CSV_PATH,
+            logs_dir=LOGS_DIR,
+            dry_run=dry_run,
+            resume=resume,
+        )
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"\nERROR: {type(exc).__name__}: {exc}")
+        raise SystemExit(1)
+
+    if dry_run:
+        return
+
+    print(f"\n  Done.")
+    print(f"    Converted          : {result.converted}")
+    print(f"    Skipped (AIFF exists): {result.skipped_already_aiff}")
+    if result.skipped_wal:
+        print(f"    Skipped (WAL/resume): {result.skipped_wal}")
+    if result.failed:
+        print(f"    Failed             : {result.failed}")
+
+    if result.originals_to_delete:
+        print(f"\n  Original WAV/FLAC files to delete manually ({len(result.originals_to_delete)}):")
+        for p in result.originals_to_delete:
+            print(f"    {p}")
+        print("\n  Verify playback in Rekordbox/Traktor, then delete originals.")
+        print("  Run 'sync-dj-libraries' to update Rekordbox/Traktor paths.")
+
+    if result.failed:
+        raise SystemExit(1)
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4196,6 +4243,20 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--verify-nas", action="store_true",
                          help="SHA-256 verify NAS copy before deleting each MacBook file")
     cleanup.set_defaults(func=cmd_gig_cleanup)
+
+    reconvert = sp.add_parser(
+        "reconvert",
+        help="Batch-convert all WAV/FLAC files in library.csv to AIFF (Rekordbox-friendly)",
+    )
+    reconvert.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be converted without converting",
+    )
+    reconvert.add_argument(
+        "--resume", action="store_true",
+        help="Resume a previously interrupted reconvert using the existing WAL",
+    )
+    reconvert.set_defaults(func=cmd_reconvert)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")
