@@ -54,6 +54,8 @@ def scrape_url(url: str) -> Dict[str, str]:
         return _scrape_soundcloud(url)
     if "beatport.com" in host:
         return _scrape_beatport(url)
+    if "hypeddit.com" in host:
+        return _scrape_hypeddit(url)
     if "youtube.com" in host or "youtu.be" in host:
         return _scrape_generic(url, source="youtube")
     if "1001tracklists.com" in host:
@@ -294,6 +296,81 @@ def _parse_sc_title(sc_title: str, sc_user: str) -> tuple[str, str, str]:
     title = re.sub(r'\s*\((?:free\s+)?(?:download|dl|buy)\)?\s*$', '', title, flags=re.IGNORECASE).strip()
 
     return artist, title, version
+
+
+# ---------------------------------------------------------------------------
+# Hypeddit
+# ---------------------------------------------------------------------------
+
+def _scrape_hypeddit(url: str) -> Dict[str, str]:
+    """Scrape Hypeddit track page.
+
+    Hypeddit stores genre and SoundCloud URL in hidden form inputs that
+    og:tags don't expose:
+        <input type="hidden" name="genre"         value="Afro House">
+        <input type="hidden" name="permalink_url" value="https://soundcloud.com/...">
+
+    Falls back to og:tags for title/artist.
+    """
+    resp = requests.get(url, timeout=_TIMEOUT, headers={"User-Agent": _USER_AGENT}, allow_redirects=True)
+    resp.raise_for_status()
+    html = resp.text
+
+    result = _empty_result("hypeddit", url=url)
+
+    # Extract hidden input fields by name
+    def _hidden(name: str) -> str:
+        m = re.search(
+            rf'<input[^>]+name=["\']?{re.escape(name)}["\']?[^>]+value=["\']([^"\']*)["\']',
+            html, re.IGNORECASE,
+        ) or re.search(
+            rf'<input[^>]+value=["\']([^"\']*)["\'][^>]+name=["\']?{re.escape(name)}["\']?',
+            html, re.IGNORECASE,
+        )
+        return m.group(1).strip() if m else ""
+
+    genre = _hidden("genre")
+    sc_url = _hidden("permalink_url")
+
+    # og:tags for title/artist
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        og: Dict[str, str] = {}
+        for meta in soup.find_all("meta"):
+            prop = meta.get("property", "") or meta.get("name", "")
+            content = meta.get("content", "")
+            if prop and content:
+                og[prop] = content
+        og_title = og.get("og:title", "")
+        if " - " in og_title:
+            parts = og_title.split(" - ", 1)
+            result["artist"] = parts[0].strip()
+            result["title"] = parts[1].strip()
+        elif og_title:
+            result["title"] = og_title
+    except Exception:
+        pass
+
+    if genre:
+        result["genre"] = genre
+
+    # If SC URL is available and track is live, try to get year via oEmbed
+    if sc_url and "soundcloud.com" in sc_url:
+        result["url"] = sc_url
+        try:
+            sc_data = _sc_oembed(sc_url)
+            if sc_data:
+                if not result["artist"]:
+                    result["artist"] = sc_data.get("artist", "")
+                if not result["title"]:
+                    result["title"] = sc_data.get("title", "")
+                if sc_data.get("year"):
+                    result["year"] = sc_data["year"]
+        except Exception:
+            pass
+
+    return result
 
 
 # ---------------------------------------------------------------------------

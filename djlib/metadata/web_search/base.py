@@ -231,7 +231,17 @@ def _build_search_queries(
             "purpose": "User tag cloud (strong for non-EDM: pop, R&B, hip-hop)",
         })
 
-    # === Q5: SoundCloud (niche remixes, bootlegs, free DLs — use filename) ===
+    # === Q5: Hypeddit (free DJ edits/bootlegs — genre in hidden form field) ===
+    # Hypeddit is strong for unofficial edits not on Beatport/Traxsource.
+    # The scraper extracts genre from <input name="genre"> which is reliable.
+    if base_q:
+        queries.append({
+            "query": f"{base_q_full} site:hypeddit.com",
+            "site": "hypeddit",
+            "purpose": "Hypeddit DJ edit page (genre from hidden form field)",
+        })
+
+    # === Q6: SoundCloud (niche remixes, bootlegs, free DLs — use filename) ===
     sc_q = filename_stem or base_q_full
     if sc_q:
         queries.append({
@@ -240,7 +250,7 @@ def _build_search_queries(
             "purpose": "SoundCloud track page (niche remixes, bootlegs)",
         })
 
-    # === Q6 (remixes only): Remixer identity — broad query ===
+    # === Q7 (remixes only): Remixer identity — broad query ===
     # Who is this producer?  Finds Wikipedia, RA, DJMag profiles, interviews.
     # Broad query (no site:) because remixer info can be anywhere.
     if is_remix and remixer:
