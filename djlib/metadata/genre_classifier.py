@@ -235,9 +235,14 @@ def _build_prompt(
     web_search_signal = ""
     if web_search_context and not web_search_context.startswith("(No web search"):
         web_search_signal = (
-            "\n3. WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites. "
-            "Genre labels from Beatport, Discogs, and other sources are a reliable indicator but may "
-            "reflect the source's own taxonomy (not ours). Use all web results to inform the genre decision."
+            "\n3. WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites.\n"
+            "   EXACT MATCH RULE (highest priority): If a result from Beatport, Traxsource, Discogs, "
+            "or SoundCloud has a URL and title that closely matches THIS specific track (same artist "
+            "and title), its genre tag and year are THE MOST AUTHORITATIVE signals — they override "
+            "your general knowledge of the artist's genre. A Beatport genre tag for the exact track "
+            "is ground truth for electronic music. Apply this genre directly.\n"
+            "   If results are ambiguous or match a different version/artist, treat them as supporting "
+            "evidence only and fall back to artist knowledge."
             f"{remix_leak_warning}\n"
         )
 
