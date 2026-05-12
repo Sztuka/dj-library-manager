@@ -169,13 +169,28 @@ def _build_prompt(
 
     track_info = "\n".join(parts)
 
-    is_remix = bool(re.search(
-        r'\b(?:remix|edit|bootleg|rework|refix|mashup|flip)\b',
-        version, re.IGNORECASE,
-    ))
+    _REMIX_KW = re.compile(r'\b(?:remix|edit|bootleg|rework|refix|mashup|mash-?up|flip)\b', re.IGNORECASE)
+    is_remix = bool(_REMIX_KW.search(version) or _REMIX_KW.search(title))
+
+    # Detect "Original Artist x Producer" / "A vs B" mashup credit in artist field.
+    # Pattern: the first named entity is the original song source, the second is the DJ/producer.
+    _MASHUP_CREDIT = re.compile(r'^(.+?)\s+(?:[xX×]|vs\.?|versus)\s+(.+)$')
+    _mc = _MASHUP_CREDIT.match(artist)
+    mashup_original = _mc.group(1).strip() if _mc else ""
+    mashup_producer = _mc.group(2).strip() if _mc else ""
 
     remix_instruction = ""
-    if is_remix:
+    if mashup_original and mashup_producer:
+        remix_instruction = (
+            f"\n\nCRITICAL — MASHUP/PRODUCER CLASSIFICATION RULE:\n"
+            f'"{mashup_original}" is the ORIGINAL SONG SOURCE (provides the sample/melody). '
+            f'"{mashup_producer}" is the DJ or PRODUCER who created this version.\n'
+            f"You MUST classify by {mashup_producer}'s production style and genre scene, "
+            f"NOT by {mashup_original}'s genre. "
+            f"The original artist is only the sample source — their genre is almost always WRONG here.\n"
+            f"Use your knowledge of {mashup_producer}'s known releases and scene affiliation."
+        )
+    elif is_remix:
         remix_instruction = (
             "\n\nCRITICAL — REMIX/EDIT CLASSIFICATION RULE:\n"
             "This track is a REMIX or EDIT. You MUST classify it by the REMIX STYLE, "
@@ -210,7 +225,7 @@ def _build_prompt(
     )
 
     remix_leak_warning = ""
-    if not is_remix:
+    if not is_remix and not mashup_producer:
         remix_leak_warning = (
             " IMPORTANT: This track is NOT a remix. If web results mention remixes or "
             "alternative versions, classify based on the ORIGINAL track's genre, not the remix's."
@@ -235,6 +250,11 @@ def _build_prompt(
         f"1. ARTIST/TITLE KNOWLEDGE — your world knowledge of the artist's known genre is the "
         f"STRONGEST signal. If you recognize the artist, their genre almost always determines "
         f"the classification. A track by a known rock band is Rock regardless of BPM.\n"
+        + (
+            f"   NOTE: For this track, '{mashup_original}' is the SAMPLE SOURCE only — "
+            f"do NOT use their genre. '{mashup_producer}' is the producer; use their genre.\n"
+            if mashup_original and mashup_producer else ""
+        ) +
         f"2. REMIXER/EDITOR identity — for remixes, the remixer's scene/style overrides the original artist's genre.\n"
         f"{web_search_signal}"
         f"{bpm_signal_num}. BPM — supplementary range indicator, mainly useful for ELECTRONIC genres only."
