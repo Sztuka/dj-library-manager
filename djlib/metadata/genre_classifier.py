@@ -172,23 +172,25 @@ def _build_prompt(
     _REMIX_KW = re.compile(r'\b(?:remix|edit|bootleg|rework|refix|mashup|mash-?up|flip)\b', re.IGNORECASE)
     is_remix = bool(_REMIX_KW.search(version) or _REMIX_KW.search(title))
 
-    # Detect "Original Artist x Producer" / "A vs B" mashup credit in artist field.
-    # Pattern: the first named entity is the original song source, the second is the DJ/producer.
+    # Detect "Artist A x Artist B" mashup credit in the artist field.
+    # Both A and B are SOURCE MATERIAL — the actual mashup creator is often unnamed.
+    # Neither artist's genre reliably predicts the mashup's genre; web search is primary.
     _MASHUP_CREDIT = re.compile(r'^(.+?)\s+(?:[xX×]|vs\.?|versus)\s+(.+)$')
     _mc = _MASHUP_CREDIT.match(artist)
-    mashup_original = _mc.group(1).strip() if _mc else ""
-    mashup_producer = _mc.group(2).strip() if _mc else ""
+    is_multi_source_mashup = bool(_mc) and is_remix  # x/vs credit + mashup keyword in title/version
 
     remix_instruction = ""
-    if mashup_original and mashup_producer:
+    if is_multi_source_mashup:
+        artists_listed = artist
         remix_instruction = (
-            f"\n\nCRITICAL — MASHUP/PRODUCER CLASSIFICATION RULE:\n"
-            f'"{mashup_original}" is the ORIGINAL SONG SOURCE (provides the sample/melody). '
-            f'"{mashup_producer}" is the DJ or PRODUCER who created this version.\n'
-            f"You MUST classify by {mashup_producer}'s production style and genre scene, "
-            f"NOT by {mashup_original}'s genre. "
-            f"The original artist is only the sample source — their genre is almost always WRONG here.\n"
-            f"Use your knowledge of {mashup_producer}'s known releases and scene affiliation."
+            f"\n\nCRITICAL — MULTI-SOURCE MASHUP CLASSIFICATION RULE:\n"
+            f'This is a mashup combining elements from: {artists_listed}.\n'
+            f"NONE of the listed artists necessarily determines the genre — they are source material only. "
+            f"The actual mashup creator is often unlisted.\n"
+            f"For mashups, you MUST prioritize: (1) web search results showing genre tags on DJ platforms "
+            f"(SoundCloud, Beatport), then (2) BPM range. "
+            f"Ignore the listed artists' known genres — a mashup of a pop song into an Afro House "
+            f"production is Afro House, not Pop."
         )
     elif is_remix:
         remix_instruction = (
@@ -225,7 +227,7 @@ def _build_prompt(
     )
 
     remix_leak_warning = ""
-    if not is_remix and not mashup_producer:
+    if not is_remix and not is_multi_source_mashup:
         remix_leak_warning = (
             " IMPORTANT: This track is NOT a remix. If web results mention remixes or "
             "alternative versions, classify based on the ORIGINAL track's genre, not the remix's."
@@ -251,9 +253,9 @@ def _build_prompt(
         f"STRONGEST signal. If you recognize the artist, their genre almost always determines "
         f"the classification. A track by a known rock band is Rock regardless of BPM.\n"
         + (
-            f"   NOTE: For this track, '{mashup_original}' is the SAMPLE SOURCE only — "
-            f"do NOT use their genre. '{mashup_producer}' is the producer; use their genre.\n"
-            if mashup_original and mashup_producer else ""
+            f"   EXCEPTION for this track: the listed artists ({artist}) are SOURCE MATERIAL for a mashup "
+            f"— their genres do NOT apply. Use web search and BPM instead.\n"
+            if is_multi_source_mashup else ""
         ) +
         f"2. REMIXER/EDITOR identity — for remixes, the remixer's scene/style overrides the original artist's genre.\n"
         f"{web_search_signal}"
