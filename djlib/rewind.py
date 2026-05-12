@@ -382,7 +382,31 @@ def _run(
         rewound_set = set(rewound_ids)
         with csv_lock(csv_path):
             rows = load_library_csv(csv_path)
+            rewound_rows = [r for r in rows if r.get("track_id", "") in rewound_set]
             remaining = [r for r in rows if r.get("track_id", "") not in rewound_set]
+            _save_play_count_ledger(rewound_rows, wal_path)
             save_library_csv(csv_path, remaining)
 
     return result
+
+
+def _save_play_count_ledger(rows: List[Dict], wal_path: Optional[Path]) -> None:
+    """Write stem → historic_play_count mapping next to the WAL file."""
+    if not rows or wal_path is None:
+        return
+    ledger: Dict[str, int] = {}
+    for r in rows:
+        src_path = str(r.get("old_full_path") or r.get("original_path") or "").strip()
+        if not src_path:
+            continue
+        stem = Path(src_path).stem
+        existing = int(r.get("historic_play_count") or 0)
+        current = int(r.get("play_count") or 0)
+        total = existing + current
+        if total > 0 or stem:
+            ledger[stem] = total
+    ledger_path = wal_path.with_suffix(".playcounts.json")
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    with ledger_path.open("w", encoding="utf-8") as f:
+        json.dump(ledger, f, indent=2, ensure_ascii=False)
+    log.info("Play count ledger saved: %s (%d stems)", ledger_path.name, len(ledger))

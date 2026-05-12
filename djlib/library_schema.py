@@ -82,6 +82,8 @@ LIBRARY_FIELDNAMES: List[str] = [
     # ── Bibliographic metadata ──────────────────────────────────────────
     "artist",
     "title",
+    "year",
+    "grouping",
     # ── Musical attributes (DJ-software-owned) ──────────────────────────
     "bpm",
     "key",
@@ -109,6 +111,8 @@ LIBRARY_FIELDNAMES: List[str] = [
     # ── Cue points (populated from DJ software on every sync) ──────────
     "cue_points_rb",    # JSON: {"v":1,"cues":[...]} from Rekordbox
     "cue_points_tk",    # JSON: {"v":1,"cues":[...]} from Traktor
+    # ── Play count history (djlib-owned, never overwritten by sync) ────
+    "historic_play_count",  # sum of play_counts captured before rewind/reconvert
 ]
 
 # Default retention for the backup folder. Syncs can happen several times a

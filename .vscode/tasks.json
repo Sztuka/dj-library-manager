@@ -4,7 +4,7 @@
     {
       "label": "STEP 0 — Setup: create venv & install deps",
       "type": "shell",
-      "command": "/usr/bin/env bash -lc 'python3 -m venv .venv && source .venv/bin/activate && pip install -U pip && pip install -r requirements.txt && pip install -e .'",
+      "command": "/usr/bin/env bash -lc '[ -d .venv ] || python3 -m venv .venv && source .venv/bin/activate && pip install -U pip && pip install --quiet -r requirements.txt && pip install --quiet -e . && python scripts/check_vendor_updates.py'",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },

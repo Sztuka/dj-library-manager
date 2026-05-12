@@ -213,66 +213,105 @@ def read_tags(path: Path) -> Dict[str, str]:
         "album": album,
     }
 
+_AIFF_EXTS = {".aiff", ".aif"}
+
+
+def _write_tags_id3_frames(path: Path, updates: Dict[str, str]) -> None:
+    """Write tags to AIFF (and any ID3-only format) using raw ID3 Frame objects.
+
+    mutagen's easy=True mode doesn't work reliably for AIFF — it exposes raw
+    ID3 tags which require Frame instances, not plain strings.
+    """
+    from mutagen.id3 import (
+        TALB, TBPM, TCON, TDRC, TIT1, TIT2, TKEY, TPE1,
+        ID3NoHeaderError,
+    )
+    try:
+        from mutagen.aiff import AIFF
+        audio = AIFF(str(path))
+    except Exception as exc:
+        raise ValueError(f"Cannot open AIFF: {path}: {exc}") from exc
+
+    if audio.tags is None:
+        audio.add_tags()
+
+    frame_map = {
+        "artist":   lambda v: TPE1(encoding=3, text=[v]),
+        "title":    lambda v: TIT2(encoding=3, text=[v]),
+        "genre":    lambda v: TCON(encoding=3, text=[v]),
+        "year":     lambda v: TDRC(encoding=3, text=[v]),
+        "album":    lambda v: TALB(encoding=3, text=[v]),
+        "grouping": lambda v: TIT1(encoding=3, text=[v]),
+        "bpm":      lambda v: TBPM(encoding=3, text=[v]),
+        "key_camelot": lambda v: TKEY(encoding=3, text=[v]),
+    }
+
+    for our_key, make_frame in frame_map.items():
+        if our_key not in updates:
+            continue
+        val = str(updates[our_key] or "")
+        frame_id = make_frame("x").FrameID  # get e.g. "TPE1"
+        if val:
+            audio.tags[frame_id] = make_frame(val)
+        else:
+            audio.tags.delall(frame_id)
+
+    audio.save()
+
+
 def write_tags(path: Path, updates: Dict[str, str]) -> None:
+    """Write metadata tags to an audio file.
+
+    Supported keys: artist, title, bpm, key_camelot, genre, year, album, grouping.
+    AIFF files use raw ID3 Frame objects (EasyID3 is MP3-only in mutagen).
     """
-    Zapisz metadane do pliku audio.
-    Obsługiwane klucze: artist, title, bpm, key_camelot, genre, comment, year, album
-    """
-    # Handle all tags in one operation to avoid multiple saves
-    print(f"   DEBUG write_tags({path.name}): updates = {updates}")
-    
+    if path.suffix.lower() in _AIFF_EXTS:
+        _write_tags_id3_frames(path, updates)
+        return
+
     f = MutFile(str(path), easy=True)
     if f is None:
         raise ValueError(f"Nie można otworzyć pliku audio: {path}")
-    
+
     if f.tags is None:
         f.add_tags()
-    
+
     tags = f.tags
-    
-    # Mapuj nasze klucze na mutagen easy tags
+
     mapping = {
         "artist": "artist",
         "title": "title",
         "bpm": "bpm",
         "genre": "genre",
         "comment": "comment",
-        "year": "date",  # Use 'date' for year in easy mode
+        "year": "date",
         "album": "album",
-        "grouping": "grouping",  # TIT1 (ID3) / ©grp (M4A) — for occasion/collection tags
+        "grouping": "grouping",
     }
-    
+
     for our_key, mutagen_key in mapping.items():
         if our_key in updates:
             val = updates[our_key]
-            if val or our_key in ["album", "year"]:  # Always write year/album, even if empty (to clear)
-                print(f"      Setting {mutagen_key} = {repr(val)}")
+            if val or our_key in ["album", "year"]:
                 tags[mutagen_key] = val
-    
-    # Specjalna obsługa key_camelot -> initialkey (raw tag dla MP3/ID3)
+
     if "key_camelot" in updates:
         key_val = updates["key_camelot"]
         if key_val:
-            # Fallback: spróbuj easy tags z "key"
             try:
                 tags["key"] = key_val
             except Exception:
-                pass  # ignoruj jeśli nie działa
-    
-    # Save all tags at once
-    print(f"      Saving tags to {path.name}...")
+                pass
+
     f.save()
-    print(f"      ✅ Tags saved successfully!")
-    
-    # After saving easy tags, handle special cases with raw tags if needed
+
     if "key_camelot" in updates and updates["key_camelot"]:
         key_val = updates["key_camelot"]
         try:
             raw = MutFile(str(path))
             if raw and hasattr(raw, 'tags') and raw.tags:
-                # ID3 TKEY for MP3
+                from mutagen.id3 import TKEY as ID3TKEY
                 try:
-                    from mutagen.id3 import TKEY as ID3TKEY
                     raw.tags.add(ID3TKEY(encoding=3, text=key_val))
                     raw.save()
                 except Exception:

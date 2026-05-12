@@ -251,12 +251,47 @@ def api_library_index():
     return jsonify(sorted(keys))
 
 
+_TRANSCODE_EXTS = {".aiff", ".aif", ".flac", ".wav"}
+
+
+def _stream_transcoded(p: Path) -> "Response":
+    """Transcode audio to MP3 via ffmpeg and stream to browser."""
+    import subprocess
+
+    cmd = [
+        "ffmpeg", "-i", str(p),
+        "-vn",
+        "-f", "mp3",
+        "-ab", "192k",
+        "-",
+    ]
+
+    def generate():
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            while True:
+                chunk = proc.stdout.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            proc.stdout.close()
+            proc.wait()
+
+    return Response(
+        generate(),
+        mimetype="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.route("/api/audio")
 def api_audio():
     """Stream an audio file from the local filesystem.
 
-    Supports Range requests for seeking (handled by Flask's send_file
-    with conditional=True).
+    Formats browsers can't play natively (AIFF, FLAC, WAV) are transcoded
+    to MP3 via ffmpeg. MP3/M4A/OGG are served directly.
+    Supports Range requests for seekable formats.
     """
     path_str = request.args.get("path", "")
     if not path_str:
@@ -265,6 +300,9 @@ def api_audio():
     p = Path(path_str).expanduser().resolve()
     if not p.exists():
         return jsonify({"error": f"File not found: {path_str}"}), 404
+
+    if p.suffix.lower() in _TRANSCODE_EXTS:
+        return _stream_transcoded(p)
 
     mime = mimetypes.guess_type(str(p))[0] or "audio/mpeg"
     resp = send_file(p, mimetype=mime, conditional=True)
