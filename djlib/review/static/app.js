@@ -98,6 +98,10 @@
   const playerTime = document.getElementById("player-time");
   const toast = document.getElementById("toast");
   const contextMenu = document.getElementById("context-menu");
+  const reviewModeLabel = document.getElementById("review-mode-label");
+  const enrichProgressWrap = document.getElementById("enrich-progress-wrap");
+  const enrichProgressBar = document.getElementById("enrich-progress-bar");
+  const enrichStepLabel = document.getElementById("enrich-step-label");
   const aiBanner = document.getElementById("ai-banner");
   const aiBannerGenre = document.getElementById("ai-banner-genre");
   const aiBannerConfidence = document.getElementById("ai-banner-confidence");
@@ -862,9 +866,25 @@
     reviewToolbar.classList.remove("hidden");
 
     var label = ghostReview.locked
-      ? "ENRICHING " + ghostReview.done + "/" + ghostReview.total + "…"
+      ? ghostReview.done + "/" + ghostReview.total
       : ghostReview.done + "/" + ghostReview.total + " done";
     reviewProgress.textContent = label;
+
+    if (ghostReview.locked) {
+      reviewModeLabel.textContent = "ENRICHING";
+      reviewModeLabel.classList.add("enriching");
+      enrichProgressWrap.classList.remove("hidden");
+      var pct = ghostReview.total > 0
+        ? ((ghostReview.done + (ghostReview.subProgress || 0)) / ghostReview.total) * 100
+        : 0;
+      enrichProgressBar.style.width = Math.min(100, pct) + "%";
+      enrichStepLabel.textContent = ghostReview.currentStep || "";
+    } else {
+      reviewModeLabel.textContent = "REVIEW";
+      reviewModeLabel.classList.remove("enriching");
+      enrichProgressWrap.classList.add("hidden");
+      enrichStepLabel.textContent = "";
+    }
 
     var ticked = ghostCountTicked();
     reviewTickedCount.textContent = ticked + " ticked";
@@ -1210,6 +1230,9 @@
           if (data.error) { exitReviewMode(true); return; }
 
           ghostReview.done = data.done;
+          ghostReview.subProgress = data.sub_progress || 0;
+          ghostReview.currentStep = data.current_step || "";
+          ghostReview.currentTrack = data.current_track || "";
 
           // Hydrate new results into ghost rows
           var newResults = data.new_results || {};

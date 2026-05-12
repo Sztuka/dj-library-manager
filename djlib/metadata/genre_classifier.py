@@ -348,11 +348,17 @@ def classify_genre(
     key: str = "",
     filename: str = "",
     max_retries: int = 1,
+    on_step: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Classify a track into a canonical genre label.
 
     Signal sources: SearXNG web search + Last.fm tags + artist/title knowledge.
     Model: ``gpt-5-nano``. AB-tested at 75.5% exact / 90.5% family accuracy.
+
+    Args:
+        on_step: optional callable(step_name: str, progress: float) called before
+            each pipeline phase. Useful for progress reporting in batch enrichment.
+            Steps: "web_search" (0.05), "lastfm" (0.55), "classifying" (0.65).
 
     Returns:
         ``{"genre": str, "confidence": float, "reasoning": str, "year": str,
@@ -362,6 +368,13 @@ def classify_genre(
         ClassifierError: on OpenAI timeout/error after ``max_retries + 1``
             attempts, or missing OpenAI key.
     """
+    def _step(name: str, progress: float) -> None:
+        if on_step:
+            try:
+                on_step(name, progress)
+            except Exception:
+                pass
+
     api_key = get_openai_api_key()
     if not api_key:
         raise ClassifierError("OpenAI API key not configured (get_openai_api_key returned empty)")
@@ -371,8 +384,11 @@ def classify_genre(
     if not (artist or title):
         raise ClassifierError("Cannot classify: empty artist and title")
 
+    _step("web_search", 0.05)
     ws_ctx = _fetch_web_search(artist, title, version, filename)
+    _step("lastfm", 0.55)
     lf_tags = _fetch_lastfm_tags(artist, title)
+    _step("classifying", 0.65)
 
     prompt = _build_prompt(
         artist=artist, title=title, version=version, bpm=bpm, key=key,

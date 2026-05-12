@@ -98,8 +98,12 @@
 
     <!-- ── Ghost-row review toolbar (visible only in review mode) ── -->
     <div id="review-toolbar" class="review-toolbar hidden">
-      <span class="review-mode-label">REVIEW</span>
+      <span class="review-mode-label" id="review-mode-label">REVIEW</span>
       <span id="review-progress" class="review-progress">0/0</span>
+      <div id="enrich-progress-wrap" class="enrich-progress-wrap hidden">
+        <div id="enrich-progress-bar" class="enrich-progress-bar"></div>
+      </div>
+      <span id="enrich-step-label" class="enrich-step-label"></span>
       <div class="review-sep"></div>
       <span class="review-bulk-label">Apply col:</span>
       <button class="review-bulk-btn" data-field="genre">Genre</button>

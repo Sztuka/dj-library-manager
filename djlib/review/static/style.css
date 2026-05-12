@@ -2175,6 +2175,56 @@ kbd {
   flex-shrink: 0;
 }
 
+.review-mode-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fbbf24;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  min-width: 72px;
+  transition: color 0.2s;
+}
+
+.review-mode-label.enriching {
+  color: #60a5fa;
+  animation: enrich-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes enrich-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.enrich-progress-wrap {
+  width: 160px;
+  height: 5px;
+  background: rgba(96, 165, 250, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.enrich-progress-wrap.hidden {
+  display: none;
+}
+
+.enrich-progress-bar {
+  height: 100%;
+  background: #60a5fa;
+  border-radius: 3px;
+  width: 0%;
+  transition: width 0.4s ease-out;
+}
+
+.enrich-step-label {
+  font-size: 10.5px;
+  color: #60a5fa;
+  opacity: 0.8;
+  white-space: nowrap;
+  min-width: 120px;
+}
+
 #review-progress {
   font-size: 11.5px;
   color: var(--text-dim);

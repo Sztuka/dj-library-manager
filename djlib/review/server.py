@@ -1820,6 +1820,18 @@ def api_swap_artist_title():
 # ── Ghost-row review: batch enrich endpoints ─────────────────────────────────
 
 
+_ENRICH_STEP_LABELS: Dict[str, str] = {
+    "web_search": "Web search",
+    "lastfm": "Last.fm tags",
+    "classifying": "Classifying genre",
+    "year_mb": "Year · MusicBrainz",
+    "year_discogs": "Year · Discogs",
+    "year_ai": "Year · AI",
+    "identify": "Identifying artist/title",
+    "writing": "Writing result",
+}
+
+
 def _enrich_one_for_batch(
     row: Dict[str, str],
     fields: List[str],
@@ -1837,18 +1849,28 @@ def _enrich_one_for_batch(
     if not artist and not title:
         return None
 
+    def _report(step: str, sub: float) -> None:
+        with _BATCH_JOBS_LOCK:
+            job["current_track"] = f"{artist} — {title}"
+            job["current_step"] = _ENRICH_STEP_LABELS.get(step, step)
+            job["sub_progress"] = round(sub, 3)
+
+    _report("web_search", 0.0)
+
     try:
         bpm_str = (row.get("bpm") or row.get("tag_bpm_original") or "").strip()
         key_str = (row.get("key_camelot") or row.get("tag_key_original") or "").strip()
         fp = row.get("file_path", "")
         filename_hint = Path(fp).name if fp else ""
 
-        cls = _classify_genre(
+        from djlib.metadata.genre_classifier import classify_genre
+        cls = classify_genre(
             artist, title,
             version=version,
             bpm=bpm_str,
             key=key_str,
             filename=filename_hint,
+            on_step=lambda step, sub: _report(step, sub),
         )
     except Exception as exc:
         _log.warning("Batch enrich failed for %s: %s", tid, exc)
@@ -1874,6 +1896,7 @@ def _enrich_one_for_batch(
 
         # 1. MusicBrainz — most reliable, skip for remixes/edits (like enrich.py does)
         # Rate-limited via _MB_SEMAPHORE: MusicBrainz enforces max 1 req/s
+        _report("year_mb", 0.88)
         if not version:
             with _MB_SEMAPHORE:
                 try:
@@ -1892,6 +1915,7 @@ def _enrich_one_for_batch(
 
         # 2. Discogs — covers remixes and edits as standalone singles; query
         #    regardless of version. Rate-limited via _DISCOGS_SEMAPHORE: 25 req/min anon → 2.5s gap
+        _report("year_discogs", 0.92)
         if not year_val:
             with _DISCOGS_SEMAPHORE:
                 try:
@@ -1938,6 +1962,7 @@ def _enrich_one_for_batch(
             }
 
     # artist / title / version_info — from identify if requested
+    _report("identify", 0.96)
     id_needed = any(f in fields for f in ("artist", "title", "version_info"))
     if id_needed:
         api_key = get_openai_api_key()
@@ -1967,11 +1992,14 @@ def _enrich_one_for_batch(
             except Exception as exc:
                 _log.warning("Batch identify failed for %s: %s", tid, exc)
 
+    _report("writing", 0.99)
     if payload:
         _sidecar_set(tid, payload)
 
     with _BATCH_JOBS_LOCK:
         job["done"] += 1
+        job["sub_progress"] = 0.0
+        job["current_step"] = ""
         job["results"][tid] = {"fields": list(payload.keys()), "ok": True}
 
     return payload
@@ -2020,6 +2048,9 @@ def api_enrich_batch():
         "cancelled": False,
         "state": "running",
         "results": {},
+        "current_track": "",
+        "current_step": "",
+        "sub_progress": 0.0,
     }
 
     with _BATCH_JOBS_LOCK:
@@ -2062,6 +2093,9 @@ def api_enrich_status():
             "total": job["total"],
             "state": job["state"],
             "new_results": dict(job["results"]),
+            "current_track": job.get("current_track", ""),
+            "current_step": job.get("current_step", ""),
+            "sub_progress": job.get("sub_progress", 0.0),
         }
         # Delta delivery: clear results after sending so next poll only gets new ones
         job["results"] = {}
