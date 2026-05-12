@@ -255,34 +255,22 @@ _TRANSCODE_EXTS = {".aiff", ".aif", ".flac", ".wav"}
 
 
 def _stream_transcoded(p: Path) -> "Response":
-    """Transcode audio to MP3 via ffmpeg and stream to browser."""
-    import subprocess
+    """Transcode audio to MP3 via ffmpeg, buffer fully, then serve with range support.
 
-    cmd = [
-        "ffmpeg", "-i", str(p),
-        "-vn",
-        "-f", "mp3",
-        "-ab", "192k",
-        "-",
-    ]
+    Buffering (vs streaming) gives the browser a Content-Length so it can:
+    - display the correct duration instead of Infinity
+    - seek to arbitrary positions
+    Typical AIFF/FLAC → MP3 192kbps ≈ 8–12 MB, transcodes in ~1–3 s.
+    """
+    import subprocess, io
 
-    def generate():
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        try:
-            while True:
-                chunk = proc.stdout.read(8192)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            proc.stdout.close()
-            proc.wait()
-
-    return Response(
-        generate(),
-        mimetype="audio/mpeg",
-        headers={"Cache-Control": "no-store"},
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(p), "-vn", "-f", "mp3", "-ab", "192k", "-"],
+        capture_output=True,
     )
+    buf = io.BytesIO(result.stdout)
+    buf.seek(0)
+    return send_file(buf, mimetype="audio/mpeg", conditional=True, max_age=3600)
 
 
 @app.route("/api/audio")

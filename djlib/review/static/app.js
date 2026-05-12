@@ -96,10 +96,8 @@
   );
   const waveformCanvas = document.getElementById("waveform-canvas");
   const playerTime = document.getElementById("player-time");
-  const genreSources = document.getElementById("genre-sources");
   const toast = document.getElementById("toast");
   const contextMenu = document.getElementById("context-menu");
-  const nowFilename = document.getElementById("now-filename");
   const aiBanner = document.getElementById("ai-banner");
   const aiBannerGenre = document.getElementById("ai-banner-genre");
   const aiBannerConfidence = document.getElementById("ai-banner-confidence");
@@ -338,7 +336,7 @@
 
   // -- Helpers ------------------------------------------------
   function fmtTime(sec) {
-    if (!sec || isNaN(sec)) return "0:00";
+    if (!sec || !isFinite(sec) || isNaN(sec)) return "0:00";
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return m + ":" + String(s).padStart(2, "0");
@@ -1870,15 +1868,6 @@
       toRow.classList.add("active");
       toRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
-    // Update player info
-    const track = filteredTracks[toIndex];
-    if (track) {
-      nowArtist.textContent = track.artist || "Unknown Artist";
-      const ver = track.version_info ? " (" + track.version_info + ")" : "";
-      nowTitle.textContent = (track.title || "Unknown Title") + ver;
-      updateFilenameDisplay(track);
-      updateGenreSources(track);
-    }
     updateBatchBar();
     updateSelectAllState();
   }
@@ -1901,87 +1890,8 @@
       newDataRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
 
-    // Player info
-    nowArtist.textContent = track.artist || "Unknown Artist";
-    const ver = track.version_info ? " (" + track.version_info + ")" : "";
-    nowTitle.textContent = (track.title || "Unknown Title") + ver;
-
-    // Filename in footer
-    updateFilenameDisplay(track);
-
-    // Genre sources
-    updateGenreSources(track);
-
     // Preload next track audio
     preloadNextTrack();
-  }
-
-  function updateGenreSources(track) {
-    const parts = [];
-    if (track.genres_musicbrainz)
-      parts.push(
-        '<span class="gs gs-mb">MB: ' +
-          escHtml(track.genres_musicbrainz) +
-          "</span>",
-      );
-    if (track.genres_lastfm)
-      parts.push(
-        '<span class="gs gs-lfm">Last.fm: ' +
-          escHtml(track.genres_lastfm) +
-          "</span>",
-      );
-    if (track.genres_soundcloud)
-      parts.push(
-        '<span class="gs gs-sc">SC: ' +
-          escHtml(track.genres_soundcloud) +
-          "</span>",
-      );
-    if (track.genres_beatport)
-      parts.push(
-        '<span class="gs gs-bp">BP: ' +
-          escHtml(track.genres_beatport) +
-          "</span>",
-      );
-    if (track.genre_suggest)
-      parts.push(
-        '<span class="gs gs-suggest clickable" data-genre="' +
-          escHtml(track.genre_suggest).replace(/"/g, "&quot;") +
-          '">\u2192 ' +
-          escHtml(track.genre_suggest) +
-          "</span>",
-      );
-    // AI batch classify results (from library review or batch scripts)
-    if (track.ai_genre) {
-      var aiLabel = 'AI: ' + escHtml(track.ai_genre);
-      if (track.ai_confidence) aiLabel += ' (' + Math.round(track.ai_confidence * 100) + '%)';
-      parts.push(
-        '<span class="gs gs-ai clickable" data-genre="' +
-          escHtml(track.ai_genre).replace(/"/g, '&quot;') +
-          '" data-ai-artist="' + escHtml(track.ai_artist || '').replace(/"/g, '&quot;') +
-          '" data-ai-title="' + escHtml(track.ai_title || '').replace(/"/g, '&quot;') +
-          '" data-ai-version="' + escHtml(track.ai_version || '').replace(/"/g, '&quot;') +
-          '" title="' + escHtml(track.ai_reasoning || '').replace(/"/g, '&quot;') +
-          '">' + aiLabel + '</span>',
-      );
-    }
-    genreSources.innerHTML = parts.join("");
-
-    // Make genre suggestion clickable to apply it
-    genreSources
-      .querySelectorAll(".gs-suggest.clickable")
-      .forEach(function (el) {
-        el.addEventListener("click", function () {
-          applyGenreSuggestionFromBadge(el);
-        });
-      });
-    // Make AI batch suggestion clickable to apply all AI fields
-    genreSources
-      .querySelectorAll(".gs-ai.clickable")
-      .forEach(function (el) {
-        el.addEventListener("click", function () {
-          applyAiBatchSuggestion(el);
-        });
-      });
   }
 
   function applyGenreSuggestionFromBadge(el) {
@@ -2087,23 +1997,6 @@
     const parts = path.replace(/\\/g, "/").split("/");
     return parts[parts.length - 1] || "";
   }
-
-  function updateFilenameDisplay(track) {
-    const path = audioPath(track);
-    const basename = getBasename(path);
-    nowFilename.textContent = basename;
-    nowFilename.title = path || "No file path";
-  }
-
-  // Click on filename → copy to clipboard
-  nowFilename.addEventListener("click", function () {
-    const text = nowFilename.textContent;
-    if (text) {
-      navigator.clipboard.writeText(text).then(function () {
-        showToast("Copied: " + text, "");
-      });
-    }
-  });
 
   // -- Context menu -------------------------------------------
   let contextTrack = null;
@@ -3202,6 +3095,17 @@
   // -- Audio playback -----------------------------------------
   let playingIndex = -1;
 
+  function updatePlayerBar(track) {
+    if (!track) {
+      nowArtist.textContent = "\u2014";
+      nowTitle.textContent = "\u2014";
+      return;
+    }
+    nowArtist.textContent = track.artist || "Unknown Artist";
+    const ver = track.version_info ? " (" + track.version_info + ")" : "";
+    nowTitle.textContent = (track.title || "Unknown Title") + ver;
+  }
+
   function playTrack(index) {
     if (index < 0 || index >= filteredTracks.length) return;
     const track = filteredTracks[index];
@@ -3213,6 +3117,7 @@
 
     selectRow(index);
     playingIndex = index;
+    updatePlayerBar(track);
     audio.src = "/api/audio?path=" + encodeURIComponent(path);
     audio.play().catch(function (e) {
       console.warn("Playback failed:", e);
@@ -3241,6 +3146,7 @@
     audio.currentTime = 0;
     playingIndex = -1;
     nowIndicator.classList.remove("visible");
+    updatePlayerBar(null);
   }
 
   function navigateRow(delta, shiftHeld) {
