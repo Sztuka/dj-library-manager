@@ -982,19 +982,17 @@
       if (!GHOST_FIELDS.includes(field)) {
         // Not enrichable: empty cell
         td.innerHTML = "";
-        if (field === "done" || field === "_select") {
-          // Apply-row button in last action column
-          if (field === "done") {
-            var applyBtn = document.createElement("button");
-            applyBtn.className = "ghost-apply-row-btn";
-            applyBtn.title = "Apply this row";
-            applyBtn.textContent = "✓";
-            applyBtn.dataset.tid = tid;
-            applyBtn.addEventListener("click", function () {
-              applyGhostRow(tid);
-            });
-            td.appendChild(applyBtn);
-          }
+        if (field === "_select") {
+          // Repurpose the select checkbox column as a per-row apply button in ghost rows
+          var applyBtn = document.createElement("button");
+          applyBtn.className = "ghost-apply-row-btn";
+          applyBtn.title = "Apply this row";
+          applyBtn.textContent = "✓";
+          applyBtn.dataset.tid = tid;
+          applyBtn.addEventListener("click", function () {
+            applyGhostRow(tid);
+          });
+          td.appendChild(applyBtn);
         }
         tr.appendChild(td);
         return;
@@ -3863,4 +3861,245 @@
       if (currentSource === "unsorted") hydrateAllFromSidecar();
     });
   });
+
+  // ── Artists normalization tab ────────────────────────────────────────────
+  (function () {
+    const artistsTabBtn = document.getElementById("artists-tab-btn");
+    const artistsPanel = document.getElementById("artists-panel");
+    const tableContainer = document.getElementById("table-container");
+    const artistsRefreshBtn = document.getElementById("artists-refresh-btn");
+    const artistsShowDismissed = document.getElementById("artists-show-dismissed");
+    const artistsClusterCount = document.getElementById("artists-cluster-count");
+    const artistsClusterList = document.getElementById("artists-cluster-list");
+
+    let artistsActive = false;
+    let focusedClusterIdx = -1;
+    let currentClusters = [];
+
+    function showArtistsPanel() {
+      artistsActive = true;
+      tableContainer.style.display = "none";
+      artistsPanel.classList.remove("hidden");
+      artistsTabBtn.classList.add("active");
+      loadArtistClusters();
+    }
+
+    function hideArtistsPanel() {
+      artistsActive = false;
+      artistsPanel.classList.add("hidden");
+      tableContainer.style.display = "";
+      artistsTabBtn.classList.remove("active");
+    }
+
+    function confidenceTier(score) {
+      if (score >= 90) return "high";
+      if (score >= 70) return "med";
+      return "low";
+    }
+
+    async function loadArtistClusters() {
+      const showDismissed = artistsShowDismissed.checked ? "1" : "0";
+      artistsClusterList.innerHTML = '<div class="artists-empty">Loading…</div>';
+      try {
+        const resp = await fetch("/api/artist-clusters?show_dismissed=" + showDismissed);
+        currentClusters = await resp.json();
+        renderClusters(currentClusters);
+      } catch (e) {
+        artistsClusterList.innerHTML = '<div class="artists-empty">Error loading clusters.</div>';
+      }
+    }
+
+    function renderClusters(clusters) {
+      focusedClusterIdx = -1;
+      if (!clusters.length) {
+        artistsClusterList.innerHTML = '<div class="artists-empty">No artist variants found — your library looks clean.</div>';
+        artistsClusterCount.textContent = "";
+        return;
+      }
+      artistsClusterCount.textContent = clusters.length + " cluster" + (clusters.length !== 1 ? "s" : "");
+      artistsClusterList.innerHTML = "";
+      clusters.forEach(function (cluster, idx) {
+        const card = buildClusterCard(cluster, idx);
+        artistsClusterList.appendChild(card);
+      });
+      if (clusters.length > 0) focusCluster(0);
+    }
+
+    function buildClusterCard(cluster, idx) {
+      const card = document.createElement("div");
+      card.className = "artist-cluster-card";
+      card.dataset.idx = idx;
+
+      const tier = confidenceTier(cluster.confidence);
+      const methodLabel = cluster.method === "mbz" ? "MBZ" : "fuzzy";
+      const summary = cluster.members.join(" · ");
+
+      card.innerHTML =
+        '<div class="artist-cluster-header">' +
+          '<span class="artist-cluster-toggle">▶</span>' +
+          '<span class="confidence-badge confidence-' + tier + '">' + Math.round(cluster.confidence) + '%</span>' +
+          '<span class="method-badge' + (cluster.method === "mbz" ? " mbz" : "") + '">' + methodLabel + '</span>' +
+          '<span class="cluster-members-summary">' + escHtml(summary) + '</span>' +
+          '<span class="cluster-track-count">' + (cluster.track_count || 0) + ' tracks</span>' +
+        '</div>' +
+        '<div class="artist-cluster-body" style="display:none">' +
+          '<div class="cluster-members-list">' +
+            cluster.members.map(function (m) {
+              return '<div class="cluster-member-row">' + escHtml(m) + '</div>';
+            }).join("") +
+          '</div>' +
+          '<div class="cluster-canonical-row">' +
+            '<span class="cluster-canonical-label">Canonical:</span>' +
+            '<input class="cluster-canonical-input" type="text" value="' + escHtml(cluster.canonical || cluster.members[0]) + '" />' +
+          '</div>' +
+          '<div class="cluster-actions">' +
+            '<button class="cluster-merge-btn">Merge &amp; tag</button>' +
+            '<button class="cluster-skip-btn">Skip</button>' +
+          '</div>' +
+        '</div>';
+
+      // Toggle expand on header click
+      card.querySelector(".artist-cluster-header").addEventListener("click", function () {
+        toggleCluster(card, idx);
+      });
+
+      card.querySelector(".cluster-merge-btn").addEventListener("click", function (e) {
+        e.stopPropagation();
+        mergeCluster(cluster, card, idx);
+      });
+
+      card.querySelector(".cluster-skip-btn").addEventListener("click", function (e) {
+        e.stopPropagation();
+        dismissCluster(cluster, idx);
+      });
+
+      return card;
+    }
+
+    function toggleCluster(card, idx) {
+      const body = card.querySelector(".artist-cluster-body");
+      const toggle = card.querySelector(".artist-cluster-toggle");
+      const isOpen = body.style.display !== "none";
+      body.style.display = isOpen ? "none" : "";
+      toggle.textContent = isOpen ? "▶" : "▼";
+      focusCluster(idx);
+    }
+
+    function focusCluster(idx) {
+      document.querySelectorAll(".artist-cluster-card").forEach(function (c) {
+        c.classList.remove("focused");
+      });
+      focusedClusterIdx = idx;
+      const card = artistsClusterList.querySelector('[data-idx="' + idx + '"]');
+      if (card) {
+        card.classList.add("focused");
+        card.scrollIntoView({ block: "nearest" });
+      }
+    }
+
+    async function mergeCluster(cluster, card, idx) {
+      const input = card.querySelector(".cluster-canonical-input");
+      const canonical = (input ? input.value : "").trim();
+      if (!canonical) { showToast("Enter a canonical name first"); return; }
+
+      const mergeBtn = card.querySelector(".cluster-merge-btn");
+      mergeBtn.disabled = true;
+      mergeBtn.textContent = "Merging…";
+
+      try {
+        const resp = await fetch("/api/artist-clusters/merge", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ canonical: canonical, variants: cluster.members, apply_tags: true }),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+          showToast("Merged: " + canonical + " (" + ((result.updated_unsorted || 0) + (result.updated_library || 0)) + " tracks)");
+          loadArtistClusters();
+        } else {
+          showToast("Error: " + (result.error || "unknown"));
+          mergeBtn.disabled = false;
+          mergeBtn.textContent = "Merge & tag";
+        }
+      } catch (e) {
+        showToast("Network error");
+        mergeBtn.disabled = false;
+        mergeBtn.textContent = "Merge & tag";
+      }
+    }
+
+    async function dismissCluster(cluster, idx) {
+      try {
+        await fetch("/api/artist-clusters/dismiss", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ members: cluster.members }),
+        });
+        showToast("Skipped: " + cluster.members.join(" · "));
+        loadArtistClusters();
+      } catch (e) {
+        showToast("Network error");
+      }
+    }
+
+    // Keyboard shortcuts when artists panel is active
+    document.addEventListener("keydown", function (e) {
+      if (!artistsActive) return;
+      if (e.target.tagName === "INPUT") return;
+
+      const cards = Array.from(artistsClusterList.querySelectorAll(".artist-cluster-card"));
+      if (!cards.length) return;
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const next = e.key === "ArrowDown"
+          ? Math.min(focusedClusterIdx + 1, cards.length - 1)
+          : Math.max(focusedClusterIdx - 1, 0);
+        focusCluster(next);
+        return;
+      }
+
+      if (e.key === "Enter" && focusedClusterIdx >= 0) {
+        e.preventDefault();
+        toggleCluster(cards[focusedClusterIdx], focusedClusterIdx);
+        return;
+      }
+
+      if ((e.key === "m" || e.key === "M") && focusedClusterIdx >= 0) {
+        e.preventDefault();
+        const card = cards[focusedClusterIdx];
+        mergeCluster(currentClusters[focusedClusterIdx], card, focusedClusterIdx);
+        return;
+      }
+
+      if ((e.key === "s" || e.key === "S") && focusedClusterIdx >= 0) {
+        e.preventDefault();
+        dismissCluster(currentClusters[focusedClusterIdx], focusedClusterIdx);
+        return;
+      }
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hideArtistsPanel();
+        return;
+      }
+    });
+
+    // Wire up buttons
+    artistsTabBtn.addEventListener("click", function () {
+      if (artistsActive) {
+        hideArtistsPanel();
+      } else {
+        showArtistsPanel();
+      }
+    });
+
+    // Hide artists panel when source select changes
+    sourceSelect.addEventListener("change", function () {
+      if (artistsActive) hideArtistsPanel();
+    });
+
+    artistsRefreshBtn.addEventListener("click", loadArtistClusters);
+    artistsShowDismissed.addEventListener("change", loadArtistClusters);
+  }());
 })();

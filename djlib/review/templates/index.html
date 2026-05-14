@@ -18,6 +18,7 @@
           <option value="library">Library</option>
           <option value="processed">Processed</option>
         </select>
+        <button id="artists-tab-btn" class="artists-tab-btn" title="Normalize artist names">Artists</button>
       </div>
       <div class="toolbar-center">
         <input
@@ -124,6 +125,19 @@
       <span id="review-ticked-count" class="review-ticked-count">0 ticked</span>
       <button id="review-apply-btn" class="review-apply-btn" disabled>Apply ticked</button>
       <button id="review-cancel-btn" class="review-cancel-btn">✕ Cancel</button>
+    </div>
+
+    <!-- ── Artists normalization panel ─────────────────────────── -->
+    <div id="artists-panel" class="artists-panel hidden">
+      <div class="artists-toolbar">
+        <button id="artists-refresh-btn" class="artists-refresh-btn">↺ Refresh</button>
+        <label class="artists-dismissed-toggle">
+          <input type="checkbox" id="artists-show-dismissed" /> Show dismissed
+        </label>
+        <span id="artists-cluster-count" class="artists-cluster-count"></span>
+        <span class="artists-hint">Click a cluster to expand · <kbd>M</kbd> Merge · <kbd>S</kbd> Skip</span>
+      </div>
+      <div id="artists-cluster-list" class="artists-cluster-list"></div>
     </div>
 
     <!-- ── Track table ─────────────────────────────────────────── -->

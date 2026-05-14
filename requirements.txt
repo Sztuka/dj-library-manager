@@ -21,3 +21,4 @@ keyring           # secure credential storage (Beatport email/password)
 traktor-nml-utils @ file:vendor/traktor_nml_utils-3.3.0-py3-none-any.whl  # bezpieczny zapis/parsowanie Traktor collection.nml (3.3.0 dla Traktor 3.11+)
 google-genai      # Gemini Audio multimodal analysis (AB test variant nano+GA)
 pydub             # audio clip extraction for Gemini (ffmpeg wrapper)
+rapidfuzz         # fuzzy artist name clustering for artist_normalizer

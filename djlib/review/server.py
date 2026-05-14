@@ -1913,10 +1913,11 @@ def _enrich_one_for_batch(
                 finally:
                     time.sleep(1.1)  # ensure 1 req/s across all workers
 
-        # 2. Discogs — covers remixes and edits as standalone singles; query
-        #    regardless of version. Rate-limited via _DISCOGS_SEMAPHORE: 25 req/min anon → 2.5s gap
+        # 2. Discogs — skip for remixes/edits: Discogs searches by original artist+title
+        #    and returns the original release year, not the remix upload year.
+        #    Only query when there is no version string (i.e. this is an original track).
         _report("year_discogs", 0.92)
-        if not year_val:
+        if not year_val and not version:
             with _DISCOGS_SEMAPHORE:
                 try:
                     from djlib.metadata import discogs
@@ -2276,6 +2277,138 @@ def api_dedup_staging():
         "total_after": total_before - len(to_remove),
         "duplicates": report,
     })
+
+
+# ── Artist normalization ─────────────────────────────────────────────────────
+
+_ALIASES_PATH = _REPO / "data" / "artist_aliases.yml"
+
+
+@app.route("/api/artist-clusters")
+def api_artist_clusters() -> Response:
+    from djlib.artist_normalizer import (
+        collect_artists, cluster_artists, load_aliases, _split_compound, _normalize_key,
+    )
+
+    show_dismissed = request.args.get("show_dismissed", "0") == "1"
+    library_rows = _load_library_csv()
+    unsorted_rows = load_unsorted_rows(UNSORTED_CSV)
+    aliases = load_aliases(_ALIASES_PATH)
+    artists = collect_artists(library_rows, unsorted_rows)
+
+    track_counts: Dict[str, int] = {}
+    for row in list(library_rows) + list(unsorted_rows):
+        raw = (row.get("artist") or "").strip()
+        for atom in _split_compound(raw):
+            key = _normalize_key(atom)
+            track_counts[key] = track_counts.get(key, 0) + 1
+
+    clusters = cluster_artists(artists, aliases, show_dismissed=show_dismissed)
+    for c in clusters:
+        c["track_count"] = sum(track_counts.get(_normalize_key(m), 0) for m in c["members"])
+
+    return jsonify(clusters)
+
+
+@app.route("/api/artist-clusters/merge", methods=["POST"])
+def api_artist_clusters_merge() -> Response:
+    from djlib.artist_normalizer import (
+        write_pending_entry, promote_pending_to_canonical,
+        write_artist_tags, write_audit_log, _normalize_key, _split_compound,
+        _cluster_fingerprint,
+    )
+    from djlib.library_schema import load_library_csv, save_library_csv
+
+    body = request.get_json(silent=True) or {}
+    canonical = (body.get("canonical") or "").strip()
+    variants = [v.strip() for v in (body.get("variants") or []) if str(v).strip()]
+    apply_tags = bool(body.get("apply_tags", True))
+
+    if not canonical or not variants:
+        return jsonify({"ok": False, "error": "canonical and variants required"}), 400
+
+    fingerprint = _cluster_fingerprint(variants)
+
+    # Collect affected file paths from both CSVs
+    variant_keys = {_normalize_key(v) for v in variants}
+    affected_paths: List[str] = []
+    for row in list(load_unsorted_rows(UNSORTED_CSV)) + list(_load_library_csv()):
+        raw = (row.get("artist") or "").strip()
+        atoms = _split_compound(raw)
+        if any(_normalize_key(a) in variant_keys for a in atoms):
+            p = row.get("file_path") or row.get("old_full_path") or ""
+            if p:
+                affected_paths.append(p)
+
+    affected_paths = list(dict.fromkeys(affected_paths))  # deduplicate, preserve order
+
+    # Write pending entry before any tag writes
+    write_pending_entry(_ALIASES_PATH, fingerprint, canonical, variants)
+
+    failed_tags: List[str] = []
+    if apply_tags and affected_paths:
+        failed_tags = write_artist_tags(affected_paths, canonical)
+        if failed_tags:
+            return jsonify({"ok": False, "error": f"{len(failed_tags)} tag write(s) failed", "failed_tags": failed_tags}), 500
+
+    # Promote pending → canonical
+    promote_pending_to_canonical(_ALIASES_PATH, fingerprint, canonical, variants)
+
+    # Update unsorted.csv
+    with _CSV_LOCK, csv_lock(UNSORTED_CSV):
+        u_rows = load_unsorted_rows(UNSORTED_CSV)
+        updated_unsorted = 0
+        for row in u_rows:
+            raw = (row.get("artist") or "").strip()
+            atoms = _split_compound(raw)
+            if any(_normalize_key(a) in variant_keys for a in atoms):
+                row["artist"] = canonical
+                updated_unsorted += 1
+        if updated_unsorted:
+            write_unsorted_rows(UNSORTED_CSV, u_rows, [])
+
+    # Update library.csv
+    lib_path = _REPO / "data" / "library.csv"
+    updated_library = 0
+    with _CSV_LOCK, csv_lock(lib_path):
+        lib_rows = load_library_csv(lib_path)
+        for row in lib_rows:
+            raw = (row.get("artist") or "").strip()
+            atoms = _split_compound(raw)
+            if any(_normalize_key(a) in variant_keys for a in atoms):
+                row["artist"] = canonical
+                row["artist_normalized"] = "yes"
+                updated_library += 1
+        if updated_library:
+            save_library_csv(lib_path, lib_rows)
+
+    write_audit_log(
+        LOGS_DIR, canonical, variants,
+        tracks_affected=updated_unsorted + updated_library,
+        method="manual",
+        confidence=100,
+    )
+
+    return jsonify({
+        "ok": True,
+        "canonical": canonical,
+        "updated_unsorted": updated_unsorted,
+        "updated_library": updated_library,
+        "failed_tags": failed_tags,
+    })
+
+
+@app.route("/api/artist-clusters/dismiss", methods=["POST"])
+def api_artist_clusters_dismiss() -> Response:
+    from djlib.artist_normalizer import dismiss_cluster
+
+    body = request.get_json(silent=True) or {}
+    members = [m.strip() for m in (body.get("members") or []) if str(m).strip()]
+    if not members:
+        return jsonify({"ok": False, "error": "members required"}), 400
+
+    dismiss_cluster(_ALIASES_PATH, members)
+    return jsonify({"ok": True})
 
 
 # ── Server entry point ───────────────────────────────────────────────────────
