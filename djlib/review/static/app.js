@@ -4130,10 +4130,8 @@
       var pushBtn = document.createElement("button");
       pushBtn.className = "cta primary";
       pushBtn.textContent = "PUSH";
-      pushBtn.title = "Push playlists to Rekordbox";
-      pushBtn.addEventListener("click", function () {
-        showToast("PUSH: use CLI djlib push-playlists", "");
-      });
+      pushBtn.title = "Push djlib playlists to Rekordbox (Rekordbox must be closed)";
+      pushBtn.addEventListener("click", startPushPlaylists);
       ctaGroup.appendChild(pushBtn);
     }
   }
@@ -4374,6 +4372,12 @@
   var exportBannerClose = document.getElementById("export-banner-close");
   var _exportPollTimer = null;
 
+  var pushBanner = document.getElementById("push-banner");
+  var pushBannerLabel = document.getElementById("push-banner-label");
+  var pushBannerBar = document.getElementById("push-banner-bar");
+  var pushBannerClose = document.getElementById("push-banner-close");
+  var _pushPollTimer = null;
+
   function startExport(readyCount) {
     if (!confirm("Export " + readyCount + " track" + (readyCount !== 1 ? "s" : "") + " to library?\n\nFiles will be moved to their destination folders and Rekordbox will be updated.")) return;
 
@@ -4420,6 +4424,53 @@
       exportBanner.classList.add("hidden");
       exportBannerBar.style.width = "0";
       exportBannerBar.classList.remove("indeterminate");
+    });
+  }
+
+  function startPushPlaylists() {
+    if (!confirm("Push playlists to Rekordbox?\n\nRekordbox must be closed. Existing djlib-managed playlists will be rebuilt.")) return;
+    fetch("/api/push-playlists", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { showToast(d.error, ""); return; }
+        pushBanner.classList.remove("hidden");
+        pushBannerBar.classList.add("indeterminate");
+        pushBannerLabel.textContent = "Pushing playlists to Rekordbox…";
+        pushBannerClose.classList.add("hidden");
+        _pollPush();
+      })
+      .catch(function () { showToast("Could not start push", ""); });
+  }
+
+  function _pollPush() {
+    fetch("/api/push-playlists-status")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.state === "running") {
+          _pushPollTimer = setTimeout(_pollPush, 1000);
+        } else if (d.state === "done") {
+          pushBannerBar.classList.remove("indeterminate");
+          pushBannerBar.style.width = "100%";
+          pushBannerLabel.textContent = d.message || "Push complete";
+          pushBannerClose.classList.remove("hidden");
+        } else if (d.state === "error") {
+          pushBannerBar.classList.remove("indeterminate");
+          pushBannerBar.style.width = "0";
+          pushBannerLabel.textContent = "Push failed: " + (d.message || "unknown error");
+          pushBannerClose.classList.remove("hidden");
+        }
+      })
+      .catch(function () {
+        _pushPollTimer = setTimeout(_pollPush, 1500);
+      });
+  }
+
+  if (pushBannerClose) {
+    pushBannerClose.addEventListener("click", function () {
+      if (_pushPollTimer) { clearTimeout(_pushPollTimer); _pushPollTimer = null; }
+      pushBanner.classList.add("hidden");
+      pushBannerBar.style.width = "0";
+      pushBannerBar.classList.remove("indeterminate");
     });
   }
 

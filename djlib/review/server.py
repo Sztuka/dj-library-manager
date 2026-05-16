@@ -2619,6 +2619,51 @@ def api_export_status() -> Response:
         return jsonify(dict(_export_status))
 
 
+# ── Push Playlists ───────────────────────────────────────────────────────────
+
+_push_lock = threading.Lock()
+_push_status: Dict[str, Any] = {"state": "idle"}
+
+
+@app.route("/api/push-playlists", methods=["POST"])
+def api_push_playlists() -> Response:
+    """Push djlib playlists field to Rekordbox. Rekordbox must be closed."""
+    global _push_status
+    with _push_lock:
+        if _push_status.get("state") in ("running", "starting"):
+            return jsonify({"error": "Push already running"}), 409
+        _push_status = {"state": "running", "message": "Pushing playlists to Rekordbox…"}
+
+    def _run() -> None:
+        global _push_status
+        try:
+            from djlib.rekordbox_playlists import push_playlists
+            result = push_playlists(library_csv_path=CSV_PATH, dry_run=False, only=None)
+            total_tracks = sum(result.values())
+            pl_count = len(result)
+            msg = f"Pushed {pl_count} playlist{'s' if pl_count != 1 else ''}, {total_tracks} tracks"
+            with _push_lock:
+                _push_status = {
+                    "state": "done",
+                    "pushed": total_tracks,
+                    "playlists": pl_count,
+                    "message": msg,
+                }
+        except Exception as e:
+            log.error("push-playlists failed: %s", e)
+            with _push_lock:
+                _push_status = {"state": "error", "message": str(e)}
+
+    threading.Thread(target=_run, daemon=True, name="push-playlists").start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/push-playlists-status")
+def api_push_playlists_status() -> Response:
+    with _push_lock:
+        return jsonify(dict(_push_status))
+
+
 # ── Server entry point ───────────────────────────────────────────────────────
 
 def run_server(
