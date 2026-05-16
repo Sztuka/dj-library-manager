@@ -244,6 +244,7 @@
       },
       { key: "genre", label: "Genre", width: "11%", type: "genre-select" },
       { key: "occasion_tags", label: "Group", width: "90px", type: "editable", cls: "col-group" },
+      { key: "playlists", label: "Playlists", width: "130px", type: "playlist-multi" },
       { key: "disposition", label: "Disp", width: "88px", type: "disposition-select" },
       {
         key: "year",
@@ -253,7 +254,9 @@
         cls: "col-bpm",
       },
       { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
+      { key: "duration_seconds", label: "Time", width: "55px", cls: "col-bpm", fmt: fmtDuration },
       { key: "key_camelot", label: "Key", width: "40px", cls: "col-key" },
+      { key: "color", label: "Clr", width: "26px", type: "color-dot" },
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
     ],
     library: [
@@ -264,7 +267,7 @@
       { key: "key", label: "Key", width: "44px", cls: "col-key" },
       {
         key: "duration_seconds",
-        label: "Dur",
+        label: "Time",
         width: "55px",
         cls: "col-bpm",
         fmt: fmtDuration,
@@ -280,6 +283,7 @@
         type: "source-badge",
       },
       { key: "date_added", label: "Added", width: "90px" },
+      { key: "playlists", label: "Playlists", width: "130px", type: "playlist-multi" },
     ],
     processed: [
       { key: "_index", label: "#", width: "36px" },
@@ -686,6 +690,10 @@
       }
     }
     updateStats();
+    updateCtaGroup();
+    // Update current tab's track count badge
+    var countEl = document.getElementById("tab-count-" + currentSource);
+    if (countEl) countEl.textContent = allTracks.length || "";
   }
 
   // -- Stats bar ----------------------------------------------
@@ -1382,6 +1390,12 @@
       }
       hr.appendChild(th);
     }
+    // Kebab column header (editable sources only)
+    if (isEditableSource()) {
+      var kebabTh = document.createElement("th");
+      kebabTh.className = "col-kebab";
+      hr.appendChild(kebabTh);
+    }
     tableHead.appendChild(hr);
 
     // Body
@@ -1526,13 +1540,62 @@
             td.innerHTML = '<span class="badge-in-lib">LIB</span>';
             td.title = "Already in library (artist + title match)";
           }
+        } else if (col.type === "playlist-multi") {
+          renderPlaylistCell(td, track);
+          td.classList.add("cell-playlist");
+          td.addEventListener(
+            "click",
+            (function (td, track) {
+              return function (e) {
+                e.stopPropagation();
+                openPlaylistPanel(td, track);
+              };
+            })(td, track),
+          );
         } else {
           const raw = track[col.key] || "";
           td.textContent = col.fmt ? col.fmt(raw) : raw;
           td.title = raw;
         }
 
+        // Missing metadata indicators (only on editable sources)
+        if (isEditableSource()) {
+          if ((col.key === "artist" || col.key === "title" || col.key === "year" || col.key === "genre") && !(track[col.key] || "").trim()) {
+            var mis = document.createElement("span");
+            mis.className = "t-miss";
+            mis.textContent = "?";
+            td.appendChild(mis);
+          }
+          if ((col.key === "bpm" || col.key === "key_camelot") && !(track[col.key] || "").trim()) {
+            var mic = document.createElement("span");
+            mic.className = "t-miss-crit";
+            mic.textContent = "!";
+            td.appendChild(mic);
+          }
+        }
+
         tr.appendChild(td);
+      }
+
+      // Kebab ⋮ column (editable sources only)
+      if (isEditableSource()) {
+        var kebabTd = document.createElement("td");
+        kebabTd.className = "col-kebab";
+        var kebabBtn = document.createElement("button");
+        kebabBtn.className = "row-kebab";
+        kebabBtn.textContent = "⋮";
+        kebabBtn.title = "More actions";
+        kebabTd.appendChild(kebabBtn);
+        kebabBtn.addEventListener(
+          "click",
+          (function (track) {
+            return function (e) {
+              e.stopPropagation();
+              showKebabMenu(e, track);
+            };
+          })(track)
+        );
+        tr.appendChild(kebabTd);
       }
 
       // Row events
@@ -1697,11 +1760,12 @@
     const n = selectedSet.size;
     if (n === 0) {
       batchBar.classList.add("hidden");
-      return;
+    } else {
+      batchBar.classList.remove("hidden");
+      batchCount.textContent = n + " selected";
+      batchApplyCount.textContent = n;
     }
-    batchBar.classList.remove("hidden");
-    batchCount.textContent = n + " selected";
-    batchApplyCount.textContent = n;
+    updateCtaGroup();
   }
 
   function updateSelectAllState() {
@@ -2076,16 +2140,13 @@
     true,
   );
 
-  // Handle context menu actions
-  contextMenu.addEventListener("click", function (e) {
-    const btn = e.target.closest("button");
-    if (!btn || btn.disabled || !contextTrack) return;
-
-    const action = btn.dataset.action;
-    const artist = (contextTrack.artist || "").trim();
-    const title = (contextTrack.title || "").trim();
-    const version = (contextTrack.version_info || "").trim();
-    const path = audioPath(contextTrack);
+  // Shared menu action handler (used by context menu + kebab menu)
+  function handleMenuAction(action, track) {
+    if (!track) return;
+    const artist = (track.artist || "").trim();
+    const title = (track.title || "").trim();
+    const version = (track.version_info || "").trim();
+    const path = audioPath(track);
     const baseQuery =
       artist && title
         ? artist + " - " + title
@@ -2144,29 +2205,79 @@
         }
         break;
       case "ai-suggest-genre":
-        requestAiGenreSuggest(contextTrack);
+        requestAiGenreSuggest(track);
         break;
       case "identify-track":
-        requestAiIdentify(contextTrack);
+        requestAiIdentify(track);
         break;
       case "ai-classify":
-        requestAiClassify(contextTrack);
+        requestAiClassify(track);
         break;
       case "ai-chat":
-        openAiChat(contextTrack);
+        openAiChat(track);
         break;
       case "enrich-track":
         if (currentSource === "unsorted" && !ghostReview.locked)
-          startBatchEnrich([trackId(contextTrack)]);
+          startBatchEnrich([trackId(track)]);
         break;
       case "swap-artist-title":
-        requestSwapArtistTitle(contextTrack);
+        requestSwapArtistTitle(track);
         break;
       case "scrape-url":
-        openUrlInputDialog(contextTrack);
+        openUrlInputDialog(track);
         break;
     }
+  }
+
+  // Handle context menu actions
+  contextMenu.addEventListener("click", function (e) {
+    const btn = e.target.closest("button");
+    if (!btn || btn.disabled || !contextTrack) return;
+    handleMenuAction(btn.dataset.action, contextTrack);
     hideContextMenu();
+  });
+
+  // -- Kebab menu -----------------------------------------------
+  const kebabMenu = document.getElementById("kebab-menu");
+  let kebabTrack = null;
+
+  function showKebabMenu(e, track) {
+    kebabTrack = track;
+    const path = audioPath(track);
+    const hasPath = !!path;
+    const isUnsorted = currentSource === "unsorted";
+
+    kebabMenu.querySelectorAll("button.kebab-item").forEach(function (btn) {
+      const action = btn.dataset.action;
+      if (action === "show-finder" || action === "copy-filename") btn.disabled = !hasPath;
+      if (action === "enrich-track" || action === "swap-artist-title" || action === "scrape-url") btn.disabled = !isUnsorted;
+    });
+
+    const menuW = 210;
+    const menuH = 330;
+    let x = e.clientX;
+    let y = e.clientY;
+    if (x + menuW > window.innerWidth) x = window.innerWidth - menuW - 8;
+    if (y + menuH > window.innerHeight) y = window.innerHeight - menuH - 8;
+    kebabMenu.style.left = x + "px";
+    kebabMenu.style.top = y + "px";
+    kebabMenu.classList.remove("hidden");
+  }
+
+  function hideKebabMenu() {
+    kebabMenu.classList.add("hidden");
+    kebabTrack = null;
+  }
+
+  document.addEventListener("click", function (e) {
+    if (!kebabMenu.contains(e.target)) hideKebabMenu();
+  });
+
+  kebabMenu.addEventListener("click", function (e) {
+    const btn = e.target.closest("button.kebab-item");
+    if (!btn || btn.disabled || !kebabTrack) return;
+    handleMenuAction(btn.dataset.action, kebabTrack);
+    hideKebabMenu();
   });
 
   // -- AI Genre Suggest ---------------------------------------
@@ -3522,6 +3633,213 @@
     }
   }
 
+  // -- Playlists ------------------------------------------------
+  var allPlaylistNames = [];
+  var activePlaylistPanel = null; // {panel, track, selected}
+
+  function loadPlaylistNames() {
+    fetch("/api/playlists")
+      .then(function (r) { return r.json(); })
+      .then(function (names) { allPlaylistNames = names || []; })
+      .catch(function () {});
+  }
+
+  function parsePlaylists(raw) {
+    if (!raw) return [];
+    return raw.split("|").map(function (s) { return s.trim(); }).filter(Boolean);
+  }
+
+  function renderPlaylistCell(td, track) {
+    var playlists = parsePlaylists(track.playlists);
+    td.innerHTML = "";
+    var max = 2;
+    playlists.slice(0, max).forEach(function (c) {
+      var chip = document.createElement("span");
+      chip.className = "playlist-chip";
+      chip.textContent = c;
+      td.appendChild(chip);
+    });
+    if (playlists.length > max) {
+      var more = document.createElement("span");
+      more.className = "playlist-chip playlist-chip-more";
+      more.textContent = "+" + (playlists.length - max);
+      td.appendChild(more);
+    }
+  }
+
+  function openPlaylistPanel(anchorTd, track) {
+    closePlaylistPanel(false);
+
+    var source = currentSource;
+    var selected = parsePlaylists(track.playlists).slice();
+    var rect = anchorTd.getBoundingClientRect();
+
+    var panel = document.createElement("div");
+    panel.className = "playlist-panel";
+    panel.style.top = (rect.bottom + window.scrollY) + "px";
+    panel.style.left = rect.left + "px";
+
+    function rebuild(filterVal) {
+      panel.innerHTML = "";
+
+      // Selected chips
+      if (selected.length > 0) {
+        var selectedWrap = document.createElement("div");
+        selectedWrap.className = "playlist-panel-selected";
+        selected.forEach(function (c) {
+          var chip = document.createElement("span");
+          chip.className = "playlist-chip playlist-chip-removable";
+          chip.innerHTML = escHtml(c) + '<button class="playlist-chip-remove" title="Remove">×</button>';
+          chip.querySelector(".playlist-chip-remove").addEventListener("click", function (e) {
+            e.stopPropagation();
+            selected = selected.filter(function (x) { return x !== c; });
+            rebuild(input.value);
+          });
+          selectedWrap.appendChild(chip);
+        });
+        panel.appendChild(selectedWrap);
+      }
+
+      // Filter input
+      var input = document.createElement("input");
+      input.className = "playlist-panel-input";
+      input.placeholder = "Filter or create…";
+      input.value = filterVal || "";
+      panel.appendChild(input);
+
+      // Options list
+      var list = document.createElement("div");
+      list.className = "playlist-panel-list";
+      var query = (filterVal || "").toLowerCase().trim();
+      var filtered = allPlaylistNames.filter(function (n) {
+        return n.toLowerCase().includes(query) && !selected.includes(n);
+      });
+
+      var highlighted = 0;
+
+      function buildOptions() {
+        list.innerHTML = "";
+        filtered.forEach(function (name, i) {
+          var opt = document.createElement("div");
+          opt.className = "playlist-panel-option" + (i === highlighted ? " highlighted" : "");
+          opt.textContent = name;
+          opt.addEventListener("mousedown", function (e) {
+            e.preventDefault();
+            if (!selected.includes(name)) selected.push(name);
+            rebuild(input.value);
+          });
+          list.appendChild(opt);
+        });
+        // Create option
+        var exactMatch = allPlaylistNames.some(function (n) { return n.toLowerCase() === query; });
+        if (query && !exactMatch && !selected.map(function(s){return s.toLowerCase();}).includes(query)) {
+          var createOpt = document.createElement("div");
+          createOpt.className = "playlist-panel-option playlist-panel-create" + (filtered.length === highlighted ? " highlighted" : "");
+          createOpt.textContent = 'Create "' + query + '"';
+          createOpt.addEventListener("mousedown", function (e) {
+            e.preventDefault();
+            var newName = input.value.trim();
+            if (newName && !selected.includes(newName)) {
+              selected.push(newName);
+              if (!allPlaylistNames.includes(newName)) allPlaylistNames.push(newName);
+            }
+            rebuild("");
+          });
+          list.appendChild(createOpt);
+        }
+      }
+      buildOptions();
+      panel.appendChild(list);
+
+      input.addEventListener("input", function () {
+        highlighted = 0;
+        query = input.value.toLowerCase().trim();
+        filtered = allPlaylistNames.filter(function (n) {
+          return n.toLowerCase().includes(query) && !selected.includes(n);
+        });
+        buildOptions();
+      });
+
+      input.addEventListener("keydown", function (e) {
+        var totalOpts = list.querySelectorAll(".playlist-panel-option").length;
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          highlighted = Math.min(highlighted + 1, totalOpts - 1);
+          buildOptions();
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          highlighted = Math.max(highlighted - 1, 0);
+          buildOptions();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          var opts = list.querySelectorAll(".playlist-panel-option");
+          if (opts[highlighted]) opts[highlighted].dispatchEvent(new MouseEvent("mousedown"));
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          closePlaylistPanel(true);
+        }
+      });
+
+      // Focus input after rebuild
+      setTimeout(function () { input.focus(); }, 0);
+    }
+
+    rebuild("");
+    document.body.appendChild(panel);
+    activePlaylistPanel = { panel: panel, track: track, source: source, getSelected: function() { return selected; } };
+
+    // Close on outside click
+    setTimeout(function () {
+      document.addEventListener("mousedown", _playlistPanelOutsideClick);
+    }, 0);
+  }
+
+  function _playlistPanelOutsideClick(e) {
+    if (activePlaylistPanel && !activePlaylistPanel.panel.contains(e.target)) {
+      closePlaylistPanel(true);
+    }
+  }
+
+  function closePlaylistPanel(save) {
+    if (!activePlaylistPanel) return;
+    var panel = activePlaylistPanel.panel;
+    var track = activePlaylistPanel.track;
+    var source = activePlaylistPanel.source;
+    var selected = activePlaylistPanel.getSelected();
+    document.removeEventListener("mousedown", _playlistPanelOutsideClick);
+    panel.remove();
+    activePlaylistPanel = null;
+
+    if (save) {
+      var prevPlaylists = parsePlaylists(track.playlists);
+      var changed = JSON.stringify(prevPlaylists.slice().sort()) !== JSON.stringify(selected.slice().sort());
+      if (changed) {
+        track.playlists = selected.join("|");
+        // Re-render the cell
+        var row = tbody.querySelector("tr[data-tid='" + (track.track_id || "") + "']");
+        if (row) {
+          var td = row.querySelector(".cell-playlist");
+          if (td) renderPlaylistCell(td, track);
+        }
+        fetch("/api/track/" + encodeURIComponent(track.track_id) + "/playlists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playlists: selected, source: source }),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.ok) {
+              showToast("Playlists saved", "");
+              loadPlaylistNames();
+            } else {
+              showToast("Save failed: " + (data.error || ""), "");
+            }
+          })
+          .catch(function () { showToast("Save failed", ""); });
+      }
+    }
+  }
+
   // -- Keyboard -----------------------------------------------
   document.addEventListener("keydown", function (e) {
     // Ctrl/Cmd+K: toggle AI Chat (works even from input fields)
@@ -3629,6 +3947,18 @@
         }
         break;
 
+      case "KeyC":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && (currentSource === "library" || currentSource === "unsorted")) {
+          e.preventDefault();
+          if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+            var playlistTrack = filteredTracks[currentIndex];
+            var playlistRow = tbody.querySelector("tr[data-idx='" + currentIndex + "']");
+            var playlistTd = playlistRow ? playlistRow.querySelector(".cell-playlist") : null;
+            if (playlistTd) openPlaylistPanel(playlistTd, playlistTrack);
+          }
+        }
+        break;
+
       case "KeyN":
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
@@ -3702,6 +4032,113 @@
         populateKeyFilter();
       }
     });
+  });
+
+  // -- Source tab click handlers ---------------------------------
+  var sourceTabs = document.getElementById("source-tabs");
+  if (sourceTabs) {
+    sourceTabs.addEventListener("click", function (e) {
+      var btn = e.target.closest(".tab-btn");
+      if (!btn) return;
+      var src = btn.dataset.source;
+
+      // Artists tab: the IIFE's artistsTabBtn click listener fires next and
+      // handles showArtistsPanel / hideArtistsPanel including active state.
+      if (src === "artists") return;
+
+      // Playlists tab — stub for now
+      if (src === "playlists") {
+        sourceTabs.querySelectorAll(".tab-btn").forEach(function (b) {
+          b.classList.toggle("active", b === btn);
+        });
+        showToast("Playlists view coming soon", "");
+        return;
+      }
+
+      // Regular source tabs — update visual, update hidden select, dispatch change
+      sourceTabs.querySelectorAll(".tab-btn").forEach(function (b) {
+        b.classList.toggle("active", b === btn);
+      });
+      sourceSelect.value = src;
+      sourceSelect.dispatchEvent(new Event("change"));
+    });
+  }
+
+  // -- CTA group renderer ----------------------------------------
+  var ctaGroup = document.getElementById("cta-group");
+
+  function updateCtaGroup() {
+    if (!ctaGroup) return;
+    ctaGroup.innerHTML = "";
+
+    var selCount = selectedSet.size;
+
+    if (currentSource === "unsorted") {
+      var scanBtn = document.createElement("button");
+      scanBtn.className = "cta secondary";
+      scanBtn.textContent = "SCAN";
+      scanBtn.title = "Scan unsorted folder for new audio files";
+      scanBtn.addEventListener("click", function () {
+        showToast("SCAN: wiring to backend coming in PR B", "");
+      });
+      ctaGroup.appendChild(scanBtn);
+
+      var enrichCount = selCount > 0 ? selCount : allTracks.length;
+      var enrichBtn = document.createElement("button");
+      enrichBtn.className = "cta secondary";
+      enrichBtn.innerHTML = "ENRICH" + (enrichCount ? ' <span class="cta-n">' + enrichCount + "</span>" : "");
+      enrichBtn.title = "Enrich selected (or all) tracks via online APIs";
+      enrichBtn.disabled = allTracks.length === 0;
+      enrichBtn.addEventListener("click", function () {
+        var tids = selCount > 0 ? Array.from(selectedSet) : allTracks.map(trackId);
+        startBatchEnrich(tids);
+      });
+      ctaGroup.appendChild(enrichBtn);
+
+      var exportCount = selCount > 0 ? selCount : filteredTracks.filter(function (t) { return (t.disposition || "") !== ""; }).length;
+      var exportBtn = document.createElement("button");
+      exportBtn.className = "cta primary";
+      exportBtn.innerHTML = "EXPORT" + (exportCount ? ' <span class="cta-n">' + exportCount + "</span>" : "");
+      exportBtn.title = "Move tracks to library and sync Rekordbox";
+      exportBtn.disabled = exportCount === 0;
+      exportBtn.addEventListener("click", function () {
+        showToast("EXPORT: wiring to backend coming in PR B", "");
+      });
+      ctaGroup.appendChild(exportBtn);
+
+    } else if (currentSource === "library" || currentSource === "library-review" || currentSource === "library-fix") {
+      var syncBtn = document.createElement("button");
+      syncBtn.className = "cta secondary";
+      syncBtn.textContent = "SYNC";
+      syncBtn.title = "Sync library with Rekordbox/Traktor";
+      syncBtn.addEventListener("click", function () {
+        showToast("SYNC: use CLI djlib sync-dj-libraries", "");
+      });
+      ctaGroup.appendChild(syncBtn);
+
+    } else if (currentSource === "playlists") {
+      var plRefreshBtn = document.createElement("button");
+      plRefreshBtn.className = "cta secondary";
+      plRefreshBtn.textContent = "REFRESH";
+      plRefreshBtn.addEventListener("click", function () {
+        showToast("Playlists view coming soon", "");
+      });
+      ctaGroup.appendChild(plRefreshBtn);
+
+      var pushBtn = document.createElement("button");
+      pushBtn.className = "cta primary";
+      pushBtn.textContent = "PUSH";
+      pushBtn.title = "Push playlists to Rekordbox";
+      pushBtn.addEventListener("click", function () {
+        showToast("PUSH: use CLI djlib push-playlists", "");
+      });
+      ctaGroup.appendChild(pushBtn);
+    }
+  }
+
+  // Recalculate CTAs whenever source changes or selection changes
+  sourceSelect.addEventListener("change", function () {
+    updateCtaGroup();
   });
 
   searchInput.addEventListener("input", function () {
@@ -3855,6 +4292,8 @@
   });
 
   // ── On load: hydrate ghost rows from sidecar (surviving page refresh) ──────
+  loadPlaylistNames();
+
   Promise.all([loadGenres(), loadLibraryIndex()]).then(function () {
     loadTracks("unsorted").then(function () {
       // After table is rendered, show any pending proposals from sidecar
@@ -3880,6 +4319,8 @@
       artistsActive = true;
       tableContainer.style.display = "none";
       artistsPanel.classList.remove("hidden");
+      // Sync tab active state
+      document.querySelectorAll("#source-tabs .tab-btn").forEach(function (b) { b.classList.remove("active"); });
       artistsTabBtn.classList.add("active");
       loadArtistClusters();
     }
@@ -3889,6 +4330,10 @@
       artistsPanel.classList.add("hidden");
       tableContainer.style.display = "";
       artistsTabBtn.classList.remove("active");
+      // Re-activate the current source tab
+      document.querySelectorAll("#source-tabs .tab-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.source === currentSource);
+      });
     }
 
     function confidenceTier(score) {

@@ -3,23 +3,34 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DJ Library — Review</title>
+    <title>crate · DJ library manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/static/style.css?v={{ v }}" />
   </head>
   <body>
     <!-- ── Toolbar ─────────────────────────────────────────────── -->
     <header id="toolbar">
-      <div class="toolbar-left">
-        <h1>🎧 Review</h1>
-        <select id="source-select">
-          <option value="unsorted" selected>Unsorted</option>
-          <option value="library-review">Library Review</option>
-          <option value="library-fix">Library Fix</option>
-          <option value="library">Library</option>
-          <option value="processed">Processed</option>
-        </select>
-        <button id="artists-tab-btn" class="artists-tab-btn" title="Normalize artist names">Artists</button>
+      <div class="toolbar-brand">
+        <div class="brand-mark">C</div>
+        <span class="brand-name">crate <em>· DJ library manager</em></span>
       </div>
+      <nav id="source-tabs" class="source-tabs">
+        <button class="tab-btn active" data-source="unsorted">Unsorted <span class="tab-count" id="tab-count-unsorted"></span></button>
+        <button class="tab-btn" data-source="library">Library <span class="tab-count" id="tab-count-library"></span></button>
+        <button class="tab-btn" data-source="processed">Processed <span class="tab-count" id="tab-count-processed"></span></button>
+        <button class="tab-btn" id="artists-tab-btn" data-source="artists">Artists</button>
+        <button class="tab-btn" data-source="playlists">Playlists</button>
+      </nav>
+      <!-- hidden for JS compatibility — all existing sourceSelect listeners continue to work -->
+      <select id="source-select" style="display:none">
+        <option value="unsorted" selected>Unsorted</option>
+        <option value="library-review">Library Review</option>
+        <option value="library-fix">Library Fix</option>
+        <option value="library">Library</option>
+        <option value="processed">Processed</option>
+      </select>
       <div class="toolbar-center">
         <input
           type="text"
@@ -63,6 +74,7 @@
         <label class="auto-play-toggle" title="Auto-play when navigating rows">
           <input type="checkbox" id="auto-play-checkbox" /> Auto-play
         </label>
+        <div id="cta-group" class="cta-group"></div>
       </div>
     </header>
 
@@ -205,7 +217,7 @@
       <kbd>Dbl-click</kbd> Edit cell
     </div>
 
-    <!-- ── Context menu ───────────────────────────────────────── -->
+    <!-- ── Context menu (legacy — fallback for right-click) ─────── -->
     <div id="context-menu" class="context-menu hidden">
       <button data-action="enrich-track" id="ctx-enrich">
         🔄 Re-enrich (APIs)
@@ -233,6 +245,26 @@
       <button data-action="show-finder">📁 Show in Finder</button>
       <button data-action="copy-filename">📋 Copy filename</button>
       <button data-action="copy-artist-title">📋 Copy artist — title</button>
+    </div>
+
+    <!-- ── Kebab menu (row ⋮ button) ───────────────────────────── -->
+    <div id="kebab-menu" class="kebab-menu hidden">
+      <div class="kebab-section-label">Metadata</div>
+      <button class="kebab-item" data-action="enrich-track">Re-enrich (APIs)</button>
+      <button class="kebab-item" data-action="swap-artist-title">Swap artist ↔ title</button>
+      <button class="kebab-item" data-action="ai-suggest-genre">Suggest genre (AI)</button>
+      <button class="kebab-item" data-action="identify-track">Identify track (AI)</button>
+      <button class="kebab-item" data-action="scrape-url">Paste URL…</button>
+      <div class="kebab-sep"></div>
+      <div class="kebab-section-label">Search elsewhere</div>
+      <button class="kebab-item" data-action="search-google">Search Google</button>
+      <button class="kebab-item" data-action="search-beatport">Search Beatport</button>
+      <button class="kebab-item" data-action="search-soundcloud">Search SoundCloud</button>
+      <div class="kebab-sep"></div>
+      <div class="kebab-section-label">File</div>
+      <button class="kebab-item" data-action="show-finder">Show in Finder</button>
+      <button class="kebab-item" data-action="copy-filename">Copy filename</button>
+      <button class="kebab-item" data-action="copy-artist-title">Copy artist — title</button>
     </div>
 
     <!-- ── AI suggestion banner ────────────────────────────────── -->
