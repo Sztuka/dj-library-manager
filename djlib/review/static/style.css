@@ -2946,7 +2946,7 @@ kbd {
 .ghost-conf-mid  { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
 .ghost-conf-low  { background: rgba(239, 68, 68, 0.18);  color: #f87171; }
 
-/* Per-row apply button */
+/* Per-row accept button (in col-kebab cell of ghost rows) */
 .ghost-apply-row-btn {
   font-size: 10.5px;
   padding: 2px 8px;
@@ -2957,10 +2957,14 @@ kbd {
   cursor: pointer;
   font-family: var(--font-ui);
   white-space: nowrap;
+  transition: background 0.12s, opacity 0.12s;
 }
-
-.ghost-apply-row-btn:hover {
-  background: rgba(52, 211, 153, 0.18);
+.ghost-apply-row-btn:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.22);
+}
+.ghost-apply-row-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 /* Applied row fade-out animation */

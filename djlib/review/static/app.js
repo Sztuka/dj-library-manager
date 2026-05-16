@@ -988,20 +988,7 @@
 
       var field = col.key;
       if (!GHOST_FIELDS.includes(field)) {
-        // Not enrichable: empty cell
         td.innerHTML = "";
-        if (field === "_select") {
-          // Repurpose the select checkbox column as a per-row apply button in ghost rows
-          var applyBtn = document.createElement("button");
-          applyBtn.className = "ghost-apply-row-btn";
-          applyBtn.title = "Apply this row";
-          applyBtn.textContent = "✓";
-          applyBtn.dataset.tid = tid;
-          applyBtn.addEventListener("click", function () {
-            applyGhostRow(tid);
-          });
-          td.appendChild(applyBtn);
-        }
         tr.appendChild(td);
         return;
       }
@@ -1038,6 +1025,23 @@
 
       tr.appendChild(td);
     });
+
+    // Add col-kebab cell with "Accept N" button (mirrors data rows, fixes column alignment)
+    if (isEditableSource()) {
+      var tickedMap = ghostReview.ticked[tid] || {};
+      var nTicked = Object.keys(tickedMap).filter(function (f) { return tickedMap[f]; }).length;
+      var kebabTd = document.createElement("td");
+      kebabTd.className = "col-kebab ghost-cell";
+      var acceptBtn = document.createElement("button");
+      acceptBtn.className = "ghost-apply-row-btn";
+      acceptBtn.dataset.tid = tid;
+      acceptBtn.textContent = "Accept " + nTicked;
+      acceptBtn.disabled = nTicked === 0;
+      acceptBtn.title = nTicked === 0 ? "No fields selected" : "Apply " + nTicked + " field" + (nTicked === 1 ? "" : "s") + " for this track";
+      acceptBtn.addEventListener("click", function () { applyGhostRow(tid); });
+      kebabTd.appendChild(acceptBtn);
+      tr.appendChild(kebabTd);
+    }
 
     // Find the data row for this track and insert ghost row after it
     var dataRow = tableBody.querySelector('tr[data-tid="' + tid + '"]');
