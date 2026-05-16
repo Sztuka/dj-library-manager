@@ -82,6 +82,8 @@ LIBRARY_FIELDNAMES: List[str] = [
     # ── Bibliographic metadata ──────────────────────────────────────────
     "artist",
     "title",
+    "year",
+    "grouping",
     # ── Musical attributes (DJ-software-owned) ──────────────────────────
     "bpm",
     "key",
@@ -109,6 +111,11 @@ LIBRARY_FIELDNAMES: List[str] = [
     # ── Cue points (populated from DJ software on every sync) ──────────
     "cue_points_rb",    # JSON: {"v":1,"cues":[...]} from Rekordbox
     "cue_points_tk",    # JSON: {"v":1,"cues":[...]} from Traktor
+    # ── Play count history (djlib-owned, never overwritten by sync) ────
+    "historic_play_count",  # sum of play_counts captured before rewind/reconvert
+    # ── Artist normalization (djlib-owned, blocks sync artist overwrite) ─
+    "mb_artist_id",         # MusicBrainz artist MBID for the primary artist credit
+    "artist_normalized",    # "yes" | "" — set after artist_normalizer merge; blocks DJ-software artist overwrite on sync
 ]
 
 # Default retention for the backup folder. Syncs can happen several times a
@@ -199,6 +206,9 @@ DJLIB_OWNED_FIELDS: List[str] = [
     # Default empty string = track is on NAS (nominal state).
     "live_location",
     "live_path",
+    # Artist normalization: both fields survive syncs unconditionally.
+    "mb_artist_id",
+    "artist_normalized",
 ]
 
 
@@ -249,6 +259,9 @@ def merge_with_existing_library(
                 prev_val = prev.get(field, "")
                 if prev_val not in ("", None):
                     out[field] = prev_val
+            # If artist was manually normalized, protect it from DJ-software overwrite.
+            if str(prev.get("artist_normalized", "") or "") == "yes":
+                out["artist"] = prev.get("artist", out.get("artist", ""))
             seen_tids.add(tid)
 
         if not out.get("added_date"):

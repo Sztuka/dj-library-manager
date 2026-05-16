@@ -131,6 +131,9 @@ def test_djlib_owned_fields_list_is_stable():
         # so a sync during an active gig doesn't overwrite the live_location.
         "live_location",
         "live_path",
+        # Artist normalization: survive syncs so normalized names aren't overwritten.
+        "mb_artist_id",
+        "artist_normalized",
     }
 
 

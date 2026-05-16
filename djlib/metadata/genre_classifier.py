@@ -169,13 +169,30 @@ def _build_prompt(
 
     track_info = "\n".join(parts)
 
-    is_remix = bool(re.search(
-        r'\b(?:remix|edit|bootleg|rework|refix|mashup|flip)\b',
-        version, re.IGNORECASE,
-    ))
+    _REMIX_KW = re.compile(r'\b(?:remix|edit|bootleg|rework|refix|mashup|mash-?up|flip)\b', re.IGNORECASE)
+    is_remix = bool(_REMIX_KW.search(version) or _REMIX_KW.search(title))
+
+    # Detect "Artist A x Artist B" mashup credit in the artist field.
+    # Both A and B are SOURCE MATERIAL — the actual mashup creator is often unnamed.
+    # Neither artist's genre reliably predicts the mashup's genre; web search is primary.
+    _MASHUP_CREDIT = re.compile(r'^(.+?)\s+(?:[xX×]|vs\.?|versus)\s+(.+)$')
+    _mc = _MASHUP_CREDIT.match(artist)
+    is_multi_source_mashup = bool(_mc) and is_remix  # x/vs credit + mashup keyword in title/version
 
     remix_instruction = ""
-    if is_remix:
+    if is_multi_source_mashup:
+        artists_listed = artist
+        remix_instruction = (
+            f"\n\nCRITICAL — MULTI-SOURCE MASHUP CLASSIFICATION RULE:\n"
+            f'This is a mashup combining elements from: {artists_listed}.\n'
+            f"NONE of the listed artists necessarily determines the genre — they are source material only. "
+            f"The actual mashup creator is often unlisted.\n"
+            f"For mashups, you MUST prioritize: (1) web search results showing genre tags on DJ platforms "
+            f"(SoundCloud, Beatport), then (2) BPM range. "
+            f"Ignore the listed artists' known genres — a mashup of a pop song into an Afro House "
+            f"production is Afro House, not Pop."
+        )
+    elif is_remix:
         remix_instruction = (
             "\n\nCRITICAL — REMIX/EDIT CLASSIFICATION RULE:\n"
             "This track is a REMIX or EDIT. You MUST classify it by the REMIX STYLE, "
@@ -210,7 +227,7 @@ def _build_prompt(
     )
 
     remix_leak_warning = ""
-    if not is_remix:
+    if not is_remix and not is_multi_source_mashup:
         remix_leak_warning = (
             " IMPORTANT: This track is NOT a remix. If web results mention remixes or "
             "alternative versions, classify based on the ORIGINAL track's genre, not the remix's."
@@ -218,9 +235,14 @@ def _build_prompt(
     web_search_signal = ""
     if web_search_context and not web_search_context.startswith("(No web search"):
         web_search_signal = (
-            "\n3. WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites. "
-            "Genre labels from Beatport, Discogs, and other sources are a reliable indicator but may "
-            "reflect the source's own taxonomy (not ours). Use all web results to inform the genre decision."
+            "\n3. WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites.\n"
+            "   EXACT MATCH RULE (highest priority): If a result from Beatport, Traxsource, Discogs, "
+            "or SoundCloud has a URL and title that closely matches THIS specific track (same artist "
+            "and title), its genre tag and year are THE MOST AUTHORITATIVE signals — they override "
+            "your general knowledge of the artist's genre. A Beatport genre tag for the exact track "
+            "is ground truth for electronic music. Apply this genre directly.\n"
+            "   If results are ambiguous or match a different version/artist, treat them as supporting "
+            "evidence only and fall back to artist knowledge."
             f"{remix_leak_warning}\n"
         )
 
@@ -235,6 +257,11 @@ def _build_prompt(
         f"1. ARTIST/TITLE KNOWLEDGE — your world knowledge of the artist's known genre is the "
         f"STRONGEST signal. If you recognize the artist, their genre almost always determines "
         f"the classification. A track by a known rock band is Rock regardless of BPM.\n"
+        + (
+            f"   EXCEPTION for this track: the listed artists ({artist}) are SOURCE MATERIAL for a mashup "
+            f"— their genres do NOT apply. Use web search and BPM instead.\n"
+            if is_multi_source_mashup else ""
+        ) +
         f"2. REMIXER/EDITOR identity — for remixes, the remixer's scene/style overrides the original artist's genre.\n"
         f"{web_search_signal}"
         f"{bpm_signal_num}. BPM — supplementary range indicator, mainly useful for ELECTRONIC genres only."
@@ -245,15 +272,18 @@ def _build_prompt(
         f"primary signal. Do NOT let BPM override artist knowledge — a hip-hop track at 170 BPM "
         f"is still Hip-Hop (BPM detector may have measured double-time).\n\n"
         f"Also extract the release year for THIS exact track/version, in this priority order:\n"
-        f"  (a) If web search results explicitly mention a year for THIS track → use that year.\n"
-        f"  (b) Otherwise, if you recognize this track/artist from training knowledge and have "
-        f"a reasonable estimate of the release year → return that year. Web search snippets "
-        f"often omit the release year even when the track is found, so absence of a year in "
-        f"snippets does NOT mean you should return null — fall back to training knowledge.\n"
-        f"  (c) Other years mentioned in web snippets (compilation dates, 'Top Artists 2023' "
-        f"lists, unrelated releases) are NOT this track's year — ignore them.\n"
-        f"  (d) Return null only if you genuinely have no estimate.\n"
-        f"For remixes/edits, use the remix/edit release year, NOT the original song's year.\n\n"
+        f"  (a) EXACT MATCH on DJ platform (Beatport, Traxsource, Discogs, SoundCloud): if a web "
+        f"search result closely matches THIS track (same artist + title) and shows a year or upload "
+        f"date — use that year. This is the most reliable source for remixes and edits, and it "
+        f"OVERRIDES your training knowledge of when the original song was released.\n"
+        f"  (b) Other web search snippets that mention a year in context of THIS track → use it.\n"
+        f"  (c) Fall back to training knowledge ONLY when web search found nothing useful. "
+        f"For remixes/edits, training knowledge of the original song's year is almost always WRONG "
+        f"— prefer null over guessing the original release year.\n"
+        f"  (d) Return null if you have no reliable estimate.\n"
+        f"CRITICAL: For remixes, edits, and mashups — the year is the REMIX release year, "
+        f"NOT the original song's year. If the original was from 1983 but the remix was uploaded "
+        f"to SoundCloud in 2022, return 2022.\n\n"
         f"If signals are weak or conflicting, choose the broadest matching genre family "
         f"and set confidence below 0.5.\n\n"
         f"Respond with JSON: {{\"genre\": \"...\", \"confidence\": 0.0-1.0, "
@@ -318,11 +348,17 @@ def classify_genre(
     key: str = "",
     filename: str = "",
     max_retries: int = 1,
+    on_step: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Classify a track into a canonical genre label.
 
     Signal sources: SearXNG web search + Last.fm tags + artist/title knowledge.
     Model: ``gpt-5-nano``. AB-tested at 75.5% exact / 90.5% family accuracy.
+
+    Args:
+        on_step: optional callable(step_name: str, progress: float) called before
+            each pipeline phase. Useful for progress reporting in batch enrichment.
+            Steps: "web_search" (0.05), "lastfm" (0.55), "classifying" (0.65).
 
     Returns:
         ``{"genre": str, "confidence": float, "reasoning": str, "year": str,
@@ -332,6 +368,13 @@ def classify_genre(
         ClassifierError: on OpenAI timeout/error after ``max_retries + 1``
             attempts, or missing OpenAI key.
     """
+    def _step(name: str, progress: float) -> None:
+        if on_step:
+            try:
+                on_step(name, progress)
+            except Exception:
+                pass
+
     api_key = get_openai_api_key()
     if not api_key:
         raise ClassifierError("OpenAI API key not configured (get_openai_api_key returned empty)")
@@ -341,8 +384,11 @@ def classify_genre(
     if not (artist or title):
         raise ClassifierError("Cannot classify: empty artist and title")
 
+    _step("web_search", 0.05)
     ws_ctx = _fetch_web_search(artist, title, version, filename)
+    _step("lastfm", 0.55)
     lf_tags = _fetch_lastfm_tags(artist, title)
+    _step("classifying", 0.65)
 
     prompt = _build_prompt(
         artist=artist, title=title, version=version, bpm=bpm, key=key,

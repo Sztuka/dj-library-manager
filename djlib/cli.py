@@ -250,7 +250,11 @@ def cmd_scan(args: argparse.Namespace) -> None:
     staging_rows = _load_unsorted()
     known_hashes = {r.get("file_hash", "") for r in library_rows if r.get("file_hash")}
     known_fps = {r.get("fingerprint", "") for r in library_rows if r.get("fingerprint")}
-    known_hashes.update({r.get("file_hash", "") for r in staging_rows if r.get("file_hash")})
+    # staging hash → row ref so we can update file_path when the file moved
+    staging_hash_to_row: Dict[str, Dict[str, str]] = {
+        r["file_hash"]: r for r in staging_rows if r.get("file_hash")
+    }
+    known_hashes.update(staging_hash_to_row.keys())
     known_fps.update({r.get("fingerprint", "") for r in staging_rows if r.get("fingerprint")})
     
     # ── Load rejected registry (previously rejected files should not re-enter) ──
@@ -344,6 +348,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
     _last_status_write = 0
 
     new_rows: List[Dict[str, str]] = []
+    _path_updates_count = 0
     for p in all_files:
         # Skip if file path already in staging or library (prevents duplicates when tags change)
         if str(p) in known_paths:
@@ -352,6 +357,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
         
         fhash = file_sha256(p)
         if fhash in known_hashes:
+            # If this hash belongs to a staging row whose path has changed, update it
+            staging_row = staging_hash_to_row.get(fhash)
+            if staging_row and staging_row.get("file_path") != str(p):
+                log.info("scan: updating path for %s → %s", staging_row.get("file_path"), p)
+                staging_row["file_path"] = str(p)
+                _path_updates_count += 1
             processed += 1
             continue
         
@@ -388,16 +399,27 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
         # Skip acoustic duplicates (same fingerprint = same audio, different path/quality)
         if is_dup:
+            # Before flagging as duplicate, check if this IS the staging row — just
+            # moved to a subfolder and hash-changed because Rekordbox wrote tags to it.
+            staging_winner = fp_to_row.get(fp)
+            if staging_winner is not None and staging_winner.get("file_path") != str(p):
+                old_path = staging_winner.get("file_path", "")
+                if not Path(old_path).exists():
+                    # Old path gone, new path is the same file — update staging row
+                    staging_winner["file_path"] = str(p)
+                    staging_winner["file_hash"] = fhash
+                    _path_updates_count += 1
+                    processed += 1
+                    continue
             # Record this path on the winner's row so cmd_apply can merge cues later
-            winner = fp_to_row.get(fp)
-            if winner is not None:
+            if staging_winner is not None:
                 try:
-                    existing = winner.get("duplicate_paths") or "[]"
+                    existing = staging_winner.get("duplicate_paths") or "[]"
                     dup_list: list = json.loads(existing) if existing.strip() else []
                     dup_str = str(p)
                     if dup_str not in dup_list:
                         dup_list.append(dup_str)
-                        winner["duplicate_paths"] = json.dumps(dup_list)
+                        staging_winner["duplicate_paths"] = json.dumps(dup_list)
                 except Exception:
                     pass
             print(f"   ⊘ [DUPLICATE] {p.name} — fingerprint already known, skipping")
@@ -557,9 +579,12 @@ def cmd_scan(args: argparse.Namespace) -> None:
         print(f"   ⊘ Removed {removed_dups} duplicate row(s) from unsorted.csv")
         staging_rows = cleaned
 
-    if new_rows or removed_dups:
+    if new_rows or removed_dups or _path_updates_count:
         _save_unsorted(staging_rows)
-        print(f"Scanned {len(new_rows)} files. Saved to {UNSORTED_CSV}.")
+        msg = f"Scanned {len(new_rows)} files."
+        if _path_updates_count:
+            msg += f" Updated {_path_updates_count} moved file path(s)."
+        print(f"{msg} Saved to {UNSORTED_CSV}.")
     else:
         print("No new files to add.")
 
@@ -1176,6 +1201,29 @@ def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
         _save_unsorted(rows)
     print(f"🛠️  Fix titles from filenames: updated={updated}")
 
+def _load_play_count_ledger(logs_dir: Path) -> Dict[str, int]:
+    """Merge all rewind *.playcounts.json ledgers into one stem→count dict."""
+    import json as _json
+    merged: Dict[str, int] = {}
+    for p in sorted(logs_dir.glob("*.playcounts.json")):
+        try:
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            for stem, count in data.items():
+                merged[stem] = merged.get(stem, 0) + int(count or 0)
+        except Exception:
+            pass
+    return merged
+
+
+def _resolve_historic_play_count(row: Dict, ledger: Dict[str, int]) -> str:
+    """Return accumulated historic_play_count for this row."""
+    existing = int(row.get("historic_play_count") or 0)
+    stem = Path(str(row.get("file_path") or row.get("original_path") or "")).stem
+    ledger_count = ledger.get(stem, 0)
+    total = existing + ledger_count
+    return str(total) if total else ""
+
+
 def cmd_apply(args: argparse.Namespace) -> None:
     """Apply approved changes from unsorted.csv.
 
@@ -1202,6 +1250,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
         print("Brak wierszy z ustawionym disposition (library/reject/mixes).")
         return
     library_rows = load_records(CSV_PATH)
+    _play_count_ledger = _load_play_count_ledger(LOGS_DIR)
     rejected_registry = load_rejected(REJECTED_CSV_PATH)  # Load rejected registry for appending
     processed_ids: set[str] = set()
     # Track DJ software IDs to remove for rejected files
@@ -1518,6 +1567,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     i += 1
         
         shutil.move(str(src), str(dest_path))
+        r["old_full_path"] = str(dest_path)
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
 
@@ -1624,6 +1674,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "title": final_title,
             "version_info": version_pref,
             "genre": r.get("genre") or r.get("genre_suggest") or "",
+            "year": r.get("year") or r.get("release_year") or "",
+            "grouping": r.get("grouping") or "",
             "bpm": r.get("bpm") or "",
             "key_camelot": r.get("key_camelot") or "",
             "analysis_source": analysis_source,
@@ -1640,6 +1692,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "traktor_id": r.get("traktor_id") or "",
             # Legacy fields
             "target_subfolder": target_subfolder or "",
+            # Play count history: ledger lookup by stem (survives rewind cycles)
+            "historic_play_count": _resolve_historic_play_count(r, _play_count_ledger),
         }
         
         # Update library.csv record (library/mixes destinations)
@@ -3967,6 +4021,132 @@ def cmd_gig_cleanup(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_rewind(args: argparse.Namespace) -> None:
+    """Move WAV/FLAC from library back to unsorted as verified AIFF."""
+    from djlib.rewind import run_rewind, RewindResult
+
+    dry_run = getattr(args, "dry_run", False)
+    resume  = getattr(args, "resume", False)
+
+    from djlib.rewind import _originals_dir
+    originals = _originals_dir(INBOX_DIR)
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}rewind: WAV/FLAC → AIFF → unsorted")
+    print(f"  Library  : {CSV_PATH}")
+    print(f"  Unsorted : {INBOX_DIR}")
+    print(f"  Originals: {originals}")
+    print()
+
+    try:
+        result: RewindResult = run_rewind(
+            csv_path=CSV_PATH,
+            unsorted_dir=INBOX_DIR,
+            logs_dir=LOGS_DIR,
+            dry_run=dry_run,
+            resume=resume,
+        )
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"\nERROR: {type(exc).__name__}: {exc}")
+        raise SystemExit(1)
+
+    if dry_run:
+        return
+
+    print(f"\n  Done.")
+    print(f"    Rewound             : {result.rewound}")
+    if result.skipped_wal:
+        print(f"    Skipped (resumed)   : {result.skipped_wal}")
+    if result.failed_hash_mismatch:
+        print(f"    Failed (hash mismatch): {result.failed_hash_mismatch}  ← audio may be corrupt")
+    if result.failed_conversion:
+        print(f"    Failed (conversion) : {result.failed_conversion}")
+    if result.failed_other:
+        print(f"    Failed (other)      : {result.failed_other}")
+
+    if result.rewound:
+        print(f"\n  Next steps:")
+        print(f"    1. Import AIFF files from {INBOX_DIR} to Rekordbox")
+        print(f"       (let Rekordbox analyze BPM + key before scanning)")
+        print(f"    2. Run: python -m djlib.cli scan")
+        print(f"    3. Review UI → apply")
+        print(f"    4. Delete originals from {originals} when ready")
+
+    if result.failed_hash_mismatch or result.failed_conversion or result.failed_other:
+        raise SystemExit(1)
+
+
+def cmd_retag(args: argparse.Namespace) -> None:
+    """Re-write audio tags to library files from library.csv metadata.
+
+    Use after a bug fix in write_tags to repair files that were applied
+    with broken tag writing (e.g. AIFF files missing genre/year/artist).
+    """
+    from djlib.tags import write_tags
+    from djlib.library_schema import load_library_csv
+
+    dry_run = getattr(args, "dry_run", False)
+    filter_ext = getattr(args, "ext", None)
+    filter_stem = getattr(args, "stem", None)
+    overrides: Dict[str, str] = {}
+    for item in getattr(args, "set_fields", []) or []:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            overrides[k.strip()] = v.strip()
+
+    rows = load_library_csv(CSV_PATH)
+
+    ok = skipped = failed = 0
+    for row in rows:
+        path_str = (
+            str(row.get("file_path") or "").strip()
+            or str(row.get("final_path") or "").strip()
+            or str(row.get("old_full_path") or "").strip()
+        )
+        if not path_str:
+            continue
+        p = Path(path_str)
+        if not p.exists():
+            continue
+        if filter_ext and p.suffix.lower() != filter_ext.lower():
+            continue
+        if filter_stem and filter_stem.lower() not in p.stem.lower():
+            continue
+
+        updates = {
+            "artist":      row.get("artist") or "",
+            "title":       row.get("title") or "",
+            "genre":       row.get("genre") or "",
+            "year":        row.get("year") or row.get("release_year") or "",
+            "bpm":         row.get("bpm") or "",
+            "key_camelot": row.get("key_camelot") or "",
+            "album":       row.get("album") or "",
+            "grouping":    row.get("grouping") or row.get("occasion_tags") or "",
+        }
+        updates.update(overrides)
+        if not any(updates.values()):
+            skipped += 1
+            continue
+
+        if dry_run:
+            print(f"  DRY-RUN: {p.name} — {updates}")
+            ok += 1
+            continue
+
+        try:
+            write_tags(p, updates)
+            print(f"  ✓ {p.name}")
+            ok += 1
+        except Exception as exc:
+            print(f"  ✗ {p.name}: {exc}")
+            failed += 1
+
+    print(f"\nRetag: {ok} ok, {skipped} skipped (no data), {failed} failed.")
+    if failed:
+        raise SystemExit(1)
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4175,6 +4355,31 @@ def build_parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--verify-nas", action="store_true",
                          help="SHA-256 verify NAS copy before deleting each MacBook file")
     cleanup.set_defaults(func=cmd_gig_cleanup)
+
+    rewind = sp.add_parser(
+        "rewind",
+        help="Move WAV/FLAC from library back to unsorted as verified AIFF (for re-scan)",
+    )
+    rewind.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be converted and moved without doing anything",
+    )
+    rewind.add_argument(
+        "--resume", action="store_true",
+        help="Resume an interrupted rewind using the existing WAL",
+    )
+    rewind.set_defaults(func=cmd_rewind)
+
+    retag = sp.add_parser(
+        "retag",
+        help="Re-write audio tags to library files from library.csv (repair after tag-write bug)",
+    )
+    retag.add_argument("--dry-run", action="store_true", help="Show what would be written")
+    retag.add_argument("--ext", help="Only retag files with this extension (e.g. .aiff)")
+    retag.add_argument("--stem", help="Only retag files whose stem contains this string")
+    retag.add_argument("--set", dest="set_fields", action="append", metavar="KEY=VALUE",
+                       help="Override a field for all matched files (repeatable, e.g. --set year=2024)")
+    retag.set_defaults(func=cmd_retag)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")

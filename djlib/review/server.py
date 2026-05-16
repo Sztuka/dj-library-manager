@@ -39,7 +39,7 @@ from djlib.config import (
     get_openai_api_key,
 )
 from djlib.filename import parse_from_filename
-from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
+from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, EXPORT_DISPOSITIONS
 from djlib.locks import csv_lock
 
 # ── Flask app ────────────────────────────────────────────────────────────────
@@ -251,12 +251,35 @@ def api_library_index():
     return jsonify(sorted(keys))
 
 
+_TRANSCODE_EXTS = {".aiff", ".aif", ".flac", ".wav"}
+
+
+def _stream_transcoded(p: Path) -> "Response":
+    """Transcode audio to MP3 via ffmpeg, buffer fully, then serve with range support.
+
+    Buffering (vs streaming) gives the browser a Content-Length so it can:
+    - display the correct duration instead of Infinity
+    - seek to arbitrary positions
+    Typical AIFF/FLAC → MP3 192kbps ≈ 8–12 MB, transcodes in ~1–3 s.
+    """
+    import subprocess, io
+
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(p), "-vn", "-f", "mp3", "-ab", "192k", "-"],
+        capture_output=True,
+    )
+    buf = io.BytesIO(result.stdout)
+    buf.seek(0)
+    return send_file(buf, mimetype="audio/mpeg", conditional=True, max_age=3600)
+
+
 @app.route("/api/audio")
 def api_audio():
     """Stream an audio file from the local filesystem.
 
-    Supports Range requests for seeking (handled by Flask's send_file
-    with conditional=True).
+    Formats browsers can't play natively (AIFF, FLAC, WAV) are transcoded
+    to MP3 via ffmpeg. MP3/M4A/OGG are served directly.
+    Supports Range requests for seekable formats.
     """
     path_str = request.args.get("path", "")
     if not path_str:
@@ -265,6 +288,9 @@ def api_audio():
     p = Path(path_str).expanduser().resolve()
     if not p.exists():
         return jsonify({"error": f"File not found: {path_str}"}), 404
+
+    if p.suffix.lower() in _TRANSCODE_EXTS:
+        return _stream_transcoded(p)
 
     mime = mimetypes.guess_type(str(p))[0] or "audio/mpeg"
     resp = send_file(p, mimetype=mime, conditional=True)
@@ -1794,6 +1820,18 @@ def api_swap_artist_title():
 # ── Ghost-row review: batch enrich endpoints ─────────────────────────────────
 
 
+_ENRICH_STEP_LABELS: Dict[str, str] = {
+    "web_search": "Web search",
+    "lastfm": "Last.fm tags",
+    "classifying": "Classifying genre",
+    "year_mb": "Year · MusicBrainz",
+    "year_discogs": "Year · Discogs",
+    "year_ai": "Year · AI",
+    "identify": "Identifying artist/title",
+    "writing": "Writing result",
+}
+
+
 def _enrich_one_for_batch(
     row: Dict[str, str],
     fields: List[str],
@@ -1811,18 +1849,28 @@ def _enrich_one_for_batch(
     if not artist and not title:
         return None
 
+    def _report(step: str, sub: float) -> None:
+        with _BATCH_JOBS_LOCK:
+            job["current_track"] = f"{artist} — {title}"
+            job["current_step"] = _ENRICH_STEP_LABELS.get(step, step)
+            job["sub_progress"] = round(sub, 3)
+
+    _report("web_search", 0.0)
+
     try:
         bpm_str = (row.get("bpm") or row.get("tag_bpm_original") or "").strip()
         key_str = (row.get("key_camelot") or row.get("tag_key_original") or "").strip()
         fp = row.get("file_path", "")
         filename_hint = Path(fp).name if fp else ""
 
-        cls = _classify_genre(
+        from djlib.metadata.genre_classifier import classify_genre
+        cls = classify_genre(
             artist, title,
             version=version,
             bpm=bpm_str,
             key=key_str,
             filename=filename_hint,
+            on_step=lambda step, sub: _report(step, sub),
         )
     except Exception as exc:
         _log.warning("Batch enrich failed for %s: %s", tid, exc)
@@ -1848,6 +1896,7 @@ def _enrich_one_for_batch(
 
         # 1. MusicBrainz — most reliable, skip for remixes/edits (like enrich.py does)
         # Rate-limited via _MB_SEMAPHORE: MusicBrainz enforces max 1 req/s
+        _report("year_mb", 0.88)
         if not version:
             with _MB_SEMAPHORE:
                 try:
@@ -1864,9 +1913,11 @@ def _enrich_one_for_batch(
                 finally:
                     time.sleep(1.1)  # ensure 1 req/s across all workers
 
-        # 2. Discogs — covers remixes and edits as standalone singles; query
-        #    regardless of version. Rate-limited via _DISCOGS_SEMAPHORE: 25 req/min anon → 2.5s gap
-        if not year_val:
+        # 2. Discogs — skip for remixes/edits: Discogs searches by original artist+title
+        #    and returns the original release year, not the remix upload year.
+        #    Only query when there is no version string (i.e. this is an original track).
+        _report("year_discogs", 0.92)
+        if not year_val and not version:
             with _DISCOGS_SEMAPHORE:
                 try:
                     from djlib.metadata import discogs
@@ -1912,6 +1963,7 @@ def _enrich_one_for_batch(
             }
 
     # artist / title / version_info — from identify if requested
+    _report("identify", 0.96)
     id_needed = any(f in fields for f in ("artist", "title", "version_info"))
     if id_needed:
         api_key = get_openai_api_key()
@@ -1941,11 +1993,14 @@ def _enrich_one_for_batch(
             except Exception as exc:
                 _log.warning("Batch identify failed for %s: %s", tid, exc)
 
+    _report("writing", 0.99)
     if payload:
         _sidecar_set(tid, payload)
 
     with _BATCH_JOBS_LOCK:
         job["done"] += 1
+        job["sub_progress"] = 0.0
+        job["current_step"] = ""
         job["results"][tid] = {"fields": list(payload.keys()), "ok": True}
 
     return payload
@@ -1994,6 +2049,9 @@ def api_enrich_batch():
         "cancelled": False,
         "state": "running",
         "results": {},
+        "current_track": "",
+        "current_step": "",
+        "sub_progress": 0.0,
     }
 
     with _BATCH_JOBS_LOCK:
@@ -2036,6 +2094,9 @@ def api_enrich_status():
             "total": job["total"],
             "state": job["state"],
             "new_results": dict(job["results"]),
+            "current_track": job.get("current_track", ""),
+            "current_step": job.get("current_step", ""),
+            "sub_progress": job.get("sub_progress", 0.0),
         }
         # Delta delivery: clear results after sending so next poll only gets new ones
         job["results"] = {}
@@ -2216,6 +2277,346 @@ def api_dedup_staging():
         "total_after": total_before - len(to_remove),
         "duplicates": report,
     })
+
+
+# ── Artist normalization ─────────────────────────────────────────────────────
+
+_ALIASES_PATH = _REPO / "data" / "artist_aliases.yml"
+
+
+@app.route("/api/artist-clusters")
+def api_artist_clusters() -> Response:
+    from djlib.artist_normalizer import (
+        collect_artists, cluster_artists, load_aliases, _split_compound, _normalize_key,
+    )
+
+    show_dismissed = request.args.get("show_dismissed", "0") == "1"
+    library_rows = _load_library_csv()
+    unsorted_rows = load_unsorted_rows(UNSORTED_CSV)
+    aliases = load_aliases(_ALIASES_PATH)
+    artists = collect_artists(library_rows, unsorted_rows)
+
+    track_counts: Dict[str, int] = {}
+    for row in list(library_rows) + list(unsorted_rows):
+        raw = (row.get("artist") or "").strip()
+        for atom in _split_compound(raw):
+            key = _normalize_key(atom)
+            track_counts[key] = track_counts.get(key, 0) + 1
+
+    clusters = cluster_artists(artists, aliases, show_dismissed=show_dismissed)
+    for c in clusters:
+        c["track_count"] = sum(track_counts.get(_normalize_key(m), 0) for m in c["members"])
+
+    return jsonify(clusters)
+
+
+@app.route("/api/artist-clusters/merge", methods=["POST"])
+def api_artist_clusters_merge() -> Response:
+    from djlib.artist_normalizer import (
+        write_pending_entry, promote_pending_to_canonical,
+        write_artist_tags, write_audit_log, _normalize_key, _split_compound,
+        _cluster_fingerprint,
+    )
+    from djlib.library_schema import load_library_csv, save_library_csv
+
+    body = request.get_json(silent=True) or {}
+    canonical = (body.get("canonical") or "").strip()
+    variants = [v.strip() for v in (body.get("variants") or []) if str(v).strip()]
+    apply_tags = bool(body.get("apply_tags", True))
+
+    if not canonical or not variants:
+        return jsonify({"ok": False, "error": "canonical and variants required"}), 400
+
+    fingerprint = _cluster_fingerprint(variants)
+
+    # Collect affected file paths from both CSVs
+    variant_keys = {_normalize_key(v) for v in variants}
+    affected_paths: List[str] = []
+    for row in list(load_unsorted_rows(UNSORTED_CSV)) + list(_load_library_csv()):
+        raw = (row.get("artist") or "").strip()
+        atoms = _split_compound(raw)
+        if any(_normalize_key(a) in variant_keys for a in atoms):
+            p = row.get("file_path") or row.get("old_full_path") or ""
+            if p:
+                affected_paths.append(p)
+
+    affected_paths = list(dict.fromkeys(affected_paths))  # deduplicate, preserve order
+
+    # Write pending entry before any tag writes
+    write_pending_entry(_ALIASES_PATH, fingerprint, canonical, variants)
+
+    failed_tags: List[str] = []
+    if apply_tags and affected_paths:
+        failed_tags = write_artist_tags(affected_paths, canonical)
+        if failed_tags:
+            return jsonify({"ok": False, "error": f"{len(failed_tags)} tag write(s) failed", "failed_tags": failed_tags}), 500
+
+    # Promote pending → canonical
+    promote_pending_to_canonical(_ALIASES_PATH, fingerprint, canonical, variants)
+
+    # Update unsorted.csv
+    with _CSV_LOCK, csv_lock(UNSORTED_CSV):
+        u_rows = load_unsorted_rows(UNSORTED_CSV)
+        updated_unsorted = 0
+        for row in u_rows:
+            raw = (row.get("artist") or "").strip()
+            atoms = _split_compound(raw)
+            if any(_normalize_key(a) in variant_keys for a in atoms):
+                row["artist"] = canonical
+                updated_unsorted += 1
+        if updated_unsorted:
+            write_unsorted_rows(UNSORTED_CSV, u_rows, [])
+
+    # Update library.csv
+    lib_path = _REPO / "data" / "library.csv"
+    updated_library = 0
+    with _CSV_LOCK, csv_lock(lib_path):
+        lib_rows = load_library_csv(lib_path)
+        for row in lib_rows:
+            raw = (row.get("artist") or "").strip()
+            atoms = _split_compound(raw)
+            if any(_normalize_key(a) in variant_keys for a in atoms):
+                row["artist"] = canonical
+                row["artist_normalized"] = "yes"
+                updated_library += 1
+        if updated_library:
+            save_library_csv(lib_path, lib_rows)
+
+    write_audit_log(
+        LOGS_DIR, canonical, variants,
+        tracks_affected=updated_unsorted + updated_library,
+        method="manual",
+        confidence=100,
+    )
+
+    return jsonify({
+        "ok": True,
+        "canonical": canonical,
+        "updated_unsorted": updated_unsorted,
+        "updated_library": updated_library,
+        "failed_tags": failed_tags,
+    })
+
+
+@app.route("/api/artist-clusters/dismiss", methods=["POST"])
+def api_artist_clusters_dismiss() -> Response:
+    from djlib.artist_normalizer import dismiss_cluster
+
+    body = request.get_json(silent=True) or {}
+    members = [m.strip() for m in (body.get("members") or []) if str(m).strip()]
+    if not members:
+        return jsonify({"ok": False, "error": "members required"}), 400
+
+    dismiss_cluster(_ALIASES_PATH, members)
+    return jsonify({"ok": True})
+
+
+# ── Playlists ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/playlists")
+def api_playlists() -> Response:
+    """Return sorted list of all playlist names currently in use across library.csv."""
+    rows = _load_library_csv()
+    names: set = set()
+    for row in rows:
+        raw = (row.get("playlists") or "").strip()
+        if raw:
+            for part in raw.split("|"):
+                part = part.strip()
+                if part:
+                    names.add(part)
+    return jsonify(sorted(names, key=str.lower))
+
+
+@app.route("/api/track/<track_id>/playlists", methods=["POST"])
+def api_track_playlists(track_id: str) -> Response:
+    """Set the playlists for a track. Body: {"playlists": ["PornoStar", "BiA"], "source": "unsorted"|"library"}"""
+    body = request.get_json(silent=True) or {}
+    new_playlists: List[str] = [c.strip() for c in (body.get("playlists") or []) if str(c).strip()]
+    for name in new_playlists:
+        if "|" in name:
+            return jsonify({"ok": False, "error": f"Playlist name may not contain '|': {name}"}), 400
+
+    source = (body.get("source") or "library").strip()
+    if source == "unsorted":
+        with _CSV_LOCK, csv_lock(UNSORTED_CSV):
+            rows = load_unsorted_rows(UNSORTED_CSV)
+            found = False
+            for row in rows:
+                if row.get("track_id") == track_id or row.get("file_hash") == track_id:
+                    row["playlists"] = "|".join(new_playlists)
+                    found = True
+                    break
+            if not found:
+                return jsonify({"ok": False, "error": "track not found"}), 404
+            write_unsorted_rows(UNSORTED_CSV, rows, [])
+    else:
+        csv_path = _REPO / "data" / "library.csv"
+        with csv_lock(csv_path):
+            rows = _load_library_csv()
+            found = False
+            for row in rows:
+                if row.get("track_id") == track_id:
+                    row["playlists"] = "|".join(new_playlists)
+                    found = True
+                    break
+            if not found:
+                return jsonify({"ok": False, "error": "track not found"}), 404
+            from djlib.library_schema import save_library_csv
+            save_library_csv(csv_path, rows)
+
+    return jsonify({"ok": True, "playlists": new_playlists})
+
+
+# ── Scan ─────────────────────────────────────────────────────────────────────
+
+_scan_lock = threading.Lock()
+_scan_running = False
+
+
+@app.route("/api/scan-start", methods=["POST"])
+def api_scan_start() -> Response:
+    """Start a background scan of the inbox folder.
+
+    cmd_scan writes progress to LOGS/scan_status.json automatically.
+    Poll /api/scan-status for progress.
+    """
+    global _scan_running
+    with _scan_lock:
+        if _scan_running:
+            return jsonify({"error": "Scan already running"}), 409
+        _scan_running = True
+
+    # Reset status file immediately so the first poll sees a clean "running" state
+    # (not stale data from a previous scan whose state="done" + processed=total).
+    status_path = LOGS_DIR / "scan_status.json"
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with status_path.open("w", encoding="utf-8") as f:
+            json.dump({"state": "running", "total": 0, "processed": 0, "added": 0}, f)
+    except Exception:
+        pass
+
+    def _run() -> None:
+        global _scan_running
+        try:
+            import argparse as _ap
+            from djlib.cli import cmd_scan
+            cmd_scan(_ap.Namespace(strict=False))
+        except Exception as e:
+            log.error("scan failed: %s", e)
+            try:
+                with status_path.open("w", encoding="utf-8") as f:
+                    json.dump({"state": "error", "message": str(e)}, f)
+            except Exception:
+                pass
+        finally:
+            _scan_running = False
+
+    threading.Thread(target=_run, daemon=True, name="scan").start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scan-status")
+def api_scan_status() -> Response:
+    """Return current scan progress by reading scan_status.json."""
+    status_path = LOGS_DIR / "scan_status.json"
+    running = _scan_running
+    if status_path.exists():
+        try:
+            with status_path.open(encoding="utf-8") as f:
+                data = json.load(f)
+            if running:
+                data["state"] = "running"
+            return jsonify(data)
+        except Exception:
+            pass
+    return jsonify({
+        "state": "running" if running else "idle",
+        "total": 0,
+        "processed": 0,
+        "added": 0,
+    })
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+_export_lock = threading.Lock()
+_export_status: Dict[str, Any] = {"state": "idle"}
+
+
+@app.route("/api/export-start", methods=["POST"])
+def api_export_start() -> Response:
+    """Move disposed tracks to library/mixes/reject and sync Rekordbox.
+
+    Runs cmd_apply in a background thread. Poll /api/export-status for state.
+    """
+    global _export_status
+
+    # Single atomic check-and-claim to prevent TOCTOU: two concurrent POSTs
+    # both passing the first check then both launching cmd_apply in parallel.
+    with _export_lock:
+        if _export_status.get("state") in ("running", "starting"):
+            return jsonify({"error": "Export already running"}), 409
+        _export_status = {"state": "starting", "total": 0, "moved": 0, "message": ""}
+
+    # I/O outside the lock — another request hitting here will see state="starting" and bail.
+    rows = load_unsorted_rows(UNSORTED_CSV)
+    ready_count = sum(
+        1 for r in rows
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS
+    )
+    if ready_count == 0:
+        with _export_lock:
+            _export_status = {"state": "idle"}
+        return jsonify({"error": "No tracks ready to export (set disposition first)"}), 400
+
+    with _export_lock:
+        _export_status = {
+            "state": "running",
+            "total": ready_count,
+            "moved": 0,
+            "message": "",
+        }
+
+    def _run() -> None:
+        global _export_status
+        try:
+            import argparse as _ap
+            from djlib.cli import cmd_apply
+            cmd_apply(_ap.Namespace(dry_run=False))  # dry_run required — Namespace() raises AttributeError
+            after_rows = load_unsorted_rows(UNSORTED_CSV)
+            after_ready = sum(
+                1 for r in after_rows
+                if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS
+            )
+            moved = ready_count - after_ready
+            with _export_lock:
+                _export_status = {
+                    "state": "done",
+                    "total": ready_count,
+                    "moved": moved,
+                    "message": f"Exported {moved} of {ready_count} tracks",
+                }
+        except Exception as e:
+            log.error("export failed: %s", e)
+            with _export_lock:
+                _export_status = {
+                    "state": "error",
+                    "total": ready_count,
+                    "moved": 0,
+                    "message": str(e),
+                }
+
+    threading.Thread(target=_run, daemon=True, name="export").start()
+    return jsonify({"ok": True, "total": ready_count})
+
+
+@app.route("/api/export-status")
+def api_export_status() -> Response:
+    """Poll export job status."""
+    with _export_lock:
+        return jsonify(dict(_export_status))
 
 
 # ── Server entry point ───────────────────────────────────────────────────────
