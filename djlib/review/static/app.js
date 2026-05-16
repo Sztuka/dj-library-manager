@@ -4298,11 +4298,14 @@
   var _scanPollTimer = null;
 
   function startScan() {
+    // Clear any ghost timer from a previous scan whose modal was closed mid-poll
+    if (_scanPollTimer) { clearTimeout(_scanPollTimer); _scanPollTimer = null; }
     fetch("/api/scan-start", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.error) { showToast(d.error, ""); return; }
         scanOverlay.classList.remove("hidden");
+        document.querySelector(".scan-card-title").textContent = "Scanning inbox…";
         scanBar.style.width = "0";
         scanStats.textContent = "Starting…";
         scanFileLabel.textContent = "";
@@ -4313,9 +4316,12 @@
   }
 
   function _pollScan() {
+    // Stop polling if modal was closed while a fetch was in-flight
+    if (scanOverlay.classList.contains("hidden")) return;
     fetch("/api/scan-status")
       .then(function (r) { return r.json(); })
       .then(function (d) {
+        if (scanOverlay.classList.contains("hidden")) return; // closed during fetch
         var pct = d.total > 0 ? Math.round((d.processed / d.total) * 100) : 0;
         scanBar.style.width = pct + "%";
         if (d.last_file) {
@@ -4330,7 +4336,6 @@
           scanStats.textContent = "Done — " + (d.added || 0) + " new tracks · " + (d.errors || 0) + " errors";
           document.querySelector(".scan-card-title").textContent = "Scan complete";
           scanCloseBtn.classList.remove("hidden");
-          // Reload unsorted table if we're on it
           if (currentSource === "unsorted") loadTracks("unsorted");
         } else if (d.state === "error") {
           scanStats.textContent = "Error: " + (d.message || "unknown");
@@ -4344,7 +4349,9 @@
         }
       })
       .catch(function () {
-        _scanPollTimer = setTimeout(_pollScan, 1500);
+        if (!scanOverlay.classList.contains("hidden")) {
+          _scanPollTimer = setTimeout(_pollScan, 1500);
+        }
       });
   }
 

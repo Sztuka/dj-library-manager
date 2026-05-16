@@ -2487,6 +2487,16 @@ def api_scan_start() -> Response:
             return jsonify({"error": "Scan already running"}), 409
         _scan_running = True
 
+    # Reset status file immediately so the first poll sees a clean "running" state
+    # (not stale data from a previous scan whose state="done" + processed=total).
+    status_path = LOGS_DIR / "scan_status.json"
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        with status_path.open("w", encoding="utf-8") as f:
+            json.dump({"state": "running", "total": 0, "processed": 0, "added": 0}, f)
+    except Exception:
+        pass
+
     def _run() -> None:
         global _scan_running
         try:
@@ -2496,7 +2506,6 @@ def api_scan_start() -> Response:
         except Exception as e:
             log.error("scan failed: %s", e)
             try:
-                status_path = LOGS_DIR / "scan_status.json"
                 with status_path.open("w", encoding="utf-8") as f:
                     json.dump({"state": "error", "message": str(e)}, f)
             except Exception:
@@ -2543,16 +2552,23 @@ def api_export_start() -> Response:
     Runs cmd_apply in a background thread. Poll /api/export-status for state.
     """
     global _export_status
-    with _export_lock:
-        if _export_status.get("state") == "running":
-            return jsonify({"error": "Export already running"}), 409
 
+    # Single atomic check-and-claim to prevent TOCTOU: two concurrent POSTs
+    # both passing the first check then both launching cmd_apply in parallel.
+    with _export_lock:
+        if _export_status.get("state") in ("running", "starting"):
+            return jsonify({"error": "Export already running"}), 409
+        _export_status = {"state": "starting", "total": 0, "moved": 0, "message": ""}
+
+    # I/O outside the lock — another request hitting here will see state="starting" and bail.
     rows = load_unsorted_rows(UNSORTED_CSV)
     ready_count = sum(
         1 for r in rows
         if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS
     )
     if ready_count == 0:
+        with _export_lock:
+            _export_status = {"state": "idle"}
         return jsonify({"error": "No tracks ready to export (set disposition first)"}), 400
 
     with _export_lock:
@@ -2568,7 +2584,7 @@ def api_export_start() -> Response:
         try:
             import argparse as _ap
             from djlib.cli import cmd_apply
-            cmd_apply(_ap.Namespace())
+            cmd_apply(_ap.Namespace(dry_run=False))  # dry_run required — Namespace() raises AttributeError
             after_rows = load_unsorted_rows(UNSORTED_CSV)
             after_ready = sum(
                 1 for r in after_rows
