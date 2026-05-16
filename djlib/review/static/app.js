@@ -229,6 +229,7 @@
       { key: "title", label: "Title", width: "16%", type: "editable" },
       { key: "version_info", label: "Version", width: "10%", type: "editable" },
       { key: "_in_library", label: "Lib", width: "36px", type: "in-library" },
+      { key: "near_duplicate_of", label: "~Dup", width: "40px", type: "near-dup" },
       {
         key: "file_path",
         label: "Folder",
@@ -1543,6 +1544,19 @@
           if (isInLibrary(track)) {
             td.innerHTML = '<span class="badge-in-lib">LIB</span>';
             td.title = "Already in library (artist + title match)";
+          }
+        } else if (col.type === "near-dup") {
+          var nearDupId = track[col.key];
+          if (nearDupId) {
+            var dupMatch = allTracks.find(function (t) { return trackId(t) === nearDupId; });
+            var dupLabel = dupMatch
+              ? (dupMatch.artist || "") + " — " + (dupMatch.title || "")
+              : "in library";
+            var dupBadge = document.createElement("span");
+            dupBadge.className = "badge-near-dup";
+            dupBadge.textContent = "~DUP";
+            dupBadge.title = "Near-duplicate of: " + dupLabel;
+            td.appendChild(dupBadge);
           }
         } else if (col.type === "playlist-multi") {
           renderPlaylistCell(td, track);

@@ -580,7 +580,21 @@ def cmd_scan(args: argparse.Namespace) -> None:
         print(f"   ⊘ Removed {removed_dups} duplicate row(s) from unsorted.csv")
         staging_rows = cleaned
 
-    if new_rows or removed_dups or _path_updates_count:
+    # Near-duplicate detection: check staging rows against each other and library
+    near_dup_count = 0
+    try:
+        from djlib.near_dup import flag_near_dups
+        from djlib.library_schema import load_library_csv
+        lib_rows: List[Dict[str, str]] = []
+        if CSV_PATH.exists():
+            lib_rows = load_library_csv(CSV_PATH)
+        near_dup_count = flag_near_dups(staging_rows, lib_rows)
+        if near_dup_count:
+            print(f"   ~ {near_dup_count} near-duplicate(s) flagged")
+    except Exception as _e:
+        log.warning("Near-duplicate detection failed: %s", _e)
+
+    if new_rows or removed_dups or _path_updates_count or near_dup_count:
         _save_unsorted(staging_rows)
         msg = f"Scanned {len(new_rows)} files."
         if _path_updates_count:

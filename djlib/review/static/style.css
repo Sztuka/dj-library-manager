@@ -1417,6 +1417,20 @@ kbd {
   margin-left: 4px;
 }
 
+.badge-near-dup {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  background: rgba(212, 167, 62, 0.18);
+  color: var(--pnd);
+  white-space: nowrap;
+  cursor: help;
+}
+
 /* ── Library stats (in stats bar) ─────────────────────────── */
 
 .stat-lib-sources,
