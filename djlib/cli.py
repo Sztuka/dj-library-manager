@@ -517,6 +517,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "meta_source": _safe_str(sugg.get("meta_source")),
             "duplicate_paths": "",
             "disposition": "",
+            "duration_seconds": _safe_str(tags.get("duration_seconds")),
         }
         for key in [
             "artist_suggest",
@@ -1684,6 +1685,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "must_play": r.get("must_play") or "",
             "occasion_tags": r.get("occasion_tags") or "",
             "notes": r.get("notes") or "",
+            "playlists": r.get("playlists") or "",
             "is_duplicate": r.get("is_duplicate") or "",
             "pop_playcount": r.get("pop_playcount") or "",
             "pop_listeners": r.get("pop_listeners") or "",
@@ -1704,6 +1706,15 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 break
 
         if existing_idx is not None:
+            # Merge playlists: union of library value and unsorted value so
+            # re-applying a track never silently clears playlists set in library.
+            prev_playlists = (library_rows[existing_idx].get("playlists") or "").strip()
+            new_playlists = (record.get("playlists") or "").strip()
+            merged_playlists = list(dict.fromkeys(
+                [p for p in prev_playlists.split("|") if p] +
+                [p for p in new_playlists.split("|") if p]
+            ))
+            record["playlists"] = "|".join(merged_playlists)
             library_rows[existing_idx] = record
         else:
             library_rows.append(record)
@@ -2340,13 +2351,13 @@ def cmd_import_traktor(args: argparse.Namespace) -> None:
 
 def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     """
-    WORKFLOW 0: Sync library.csv with DJ software databases.
-    Ensures all approved tracks are in Rekordbox + Traktor with custom tags.
+    MAINTENANCE TOOL: Sync library.csv with DJ software databases.
+    Run after gig-merge or when Rekordbox/Traktor data needs to be pulled in.
     """
     dry_run = not args.write
     
     print("\n" + "=" * 60)
-    print("WORKFLOW 0: SYNC DJ LIBRARIES & TAGS")
+    print("MAINTENANCE: SYNC DJ LIBRARIES & TAGS")
     if dry_run:
         print("         (DRY-RUN MODE)")
     else:
@@ -2365,6 +2376,17 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     print("💡 Run this ONCE to prepare your library for tracking")
     print()
     
+    # Auto-backup library.csv before any write operation
+    if not dry_run:
+        import shutil, datetime
+        from djlib.config import CSV_PATH
+        if CSV_PATH.exists():
+            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            bak = CSV_PATH.with_name(f"{CSV_PATH.stem}.bak-presync-{ts}.csv")
+            shutil.copy2(CSV_PATH, bak)
+            print(f"📦 Backup: {bak.name}")
+            print()
+
     # Step 1: Import snapshots from DJ software
     print("=" * 60)
     print("STEP 1: IMPORT DJ SOFTWARE SNAPSHOTS")
@@ -3260,7 +3282,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     # Done!
     print()
     print("=" * 60)
-    print("✅ WORKFLOW 0 COMPLETE")
+    print("✅ SYNC COMPLETE")
     print("=" * 60)
     print()
     print("Summary:")
@@ -3828,6 +3850,15 @@ def cmd_library_dedup(args: argparse.Namespace) -> None:
 
 # ============ REVIEW UI ============
 
+def cmd_push_playlists(args: argparse.Namespace) -> None:
+    from djlib.rekordbox_playlists import push_playlists
+    push_playlists(
+        library_csv_path=CSV_PATH,
+        dry_run=args.dry_run,
+        only=args.only or None,
+    )
+
+
 def cmd_review(args: argparse.Namespace) -> None:
     """Launch interactive review UI in browser.
 
@@ -4175,7 +4206,7 @@ def build_parser() -> argparse.ArgumentParser:
     itr.set_defaults(func=cmd_import_traktor)
     
     # WORKFLOW 0: Sync DJ libraries with library.csv
-    sdl = sp.add_parser("sync-dj-libraries", help="Sync library.csv with Rekordbox/Traktor databases (WORKFLOW 0)")
+    sdl = sp.add_parser("sync-dj-libraries", help="Sync library.csv with Rekordbox/Traktor databases (run after gig-merge or when RB data needs pull)")
     sdl.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
     sdl.set_defaults(func=cmd_sync_dj_libraries)
     
@@ -4380,6 +4411,12 @@ def build_parser() -> argparse.ArgumentParser:
     retag.add_argument("--set", dest="set_fields", action="append", metavar="KEY=VALUE",
                        help="Override a field for all matched files (repeatable, e.g. --set year=2024)")
     retag.set_defaults(func=cmd_retag)
+
+    # ========== PLAYLISTS ==========
+    pp = sp.add_parser("push-playlists", help="Push djlib playlist tags from library.csv to Rekordbox as playlists")
+    pp.add_argument("--dry-run", action="store_true", help="Show what would be pushed without writing")
+    pp.add_argument("--only", nargs="+", metavar="NAME", help="Push only these playlist names")
+    pp.set_defaults(func=cmd_push_playlists)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")

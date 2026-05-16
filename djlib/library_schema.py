@@ -116,6 +116,8 @@ LIBRARY_FIELDNAMES: List[str] = [
     # ── Artist normalization (djlib-owned, blocks sync artist overwrite) ─
     "mb_artist_id",         # MusicBrainz artist MBID for the primary artist credit
     "artist_normalized",    # "yes" | "" — set after artist_normalizer merge; blocks DJ-software artist overwrite on sync
+    # ── Playlists (djlib-owned, pipe-separated collection tags) ─────────────
+    "playlists",            # e.g. "PornoStar|Ultimate BiA" — pushed to Rekordbox as playlists via push-playlists
 ]
 
 # Default retention for the backup folder. Syncs can happen several times a
@@ -209,6 +211,8 @@ DJLIB_OWNED_FIELDS: List[str] = [
     # Artist normalization: both fields survive syncs unconditionally.
     "mb_artist_id",
     "artist_normalized",
+    # Playlists: djlib-owned collection tags, never overwritten by sync.
+    "playlists",
 ]
 
 

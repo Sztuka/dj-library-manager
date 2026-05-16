@@ -68,6 +68,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("disposition", width=14),  # library / reject / mixes / later
     ColumnSpec("must_play", width=14),
     ColumnSpec("occasion_tags", width=24),
+    ColumnSpec("playlists", width=30),
     ColumnSpec("notes", width=40),
     ColumnSpec("bpm", width=10),
     ColumnSpec("key_camelot", width=12),

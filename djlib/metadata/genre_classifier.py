@@ -71,14 +71,114 @@ def _get_searcher():
         return _searcher or None
 
 
+def _sc_track_url_from_result(r: Any) -> str:
+    """Return r.url if it looks like a SC track page (2 path segments), else ''."""
+    if "soundcloud.com" not in r.url.lower():
+        return ""
+    path = r.url.split("soundcloud.com", 1)[-1].rstrip("/")
+    parts = [p for p in path.split("/") if p]
+    return r.url if len(parts) >= 2 else ""
+
+
+def _fetch_sc_metadata(
+    results: "List",
+    artist: str = "",
+    title: str = "",
+    version: str = "",
+) -> Dict[str, str]:
+    """Return SoundCloud metadata (year, genre, tags) for this track.
+
+    Strategy:
+    1. Scan ``results`` for a SC track URL and scrape ``window.__sc_hydration``.
+    2. If not found or empty, do a dedicated ``site:soundcloud.com`` SearXNG fallback.
+
+    Returns dict with ``year``, ``genre``, ``tags`` (strings, may be empty).
+    """
+    from djlib.metadata.url_scraper import _sc_html_metadata
+
+    def _try_url(url: str) -> Dict[str, str]:
+        try:
+            meta = _sc_html_metadata(url)
+            if any(meta.values()):
+                log.debug("SC metadata via HTML: %s → %s", url, meta)
+            return meta
+        except Exception as exc:
+            log.debug("SC HTML metadata failed for %s: %s", url, exc)
+            return {"year": "", "genre": "", "tags": ""}
+
+    empty = {"year": "", "genre": "", "tags": ""}
+
+    # Pass 1: SC URL already in main search results
+    for r in results:
+        url = _sc_track_url_from_result(r)
+        if url:
+            meta = _try_url(url)
+            if any(meta.values()):
+                return meta
+            break
+
+    # Pass 2: dedicated SC fallback — try query variations to escape cache / profile bias.
+    # SearXNG site:soundcloud.com often returns artist profile pages instead of track pages.
+    # Different query shapes surface different indexed pages from Google.
+    s = _get_searcher()
+    if s and (title or version):
+        # Build query candidates — progressively drop artist to avoid artist profile pages
+        candidates: List[str] = []
+        base = f"{title} {version}".strip()
+        # site: queries — fast when indexed, but unofficial edits often not in Google's SC index
+        if artist:
+            candidates.append(f"{artist} {base} site:soundcloud.com")
+        candidates.append(f"{base} site:soundcloud.com")
+        # Broad queries with "soundcloud" keyword — finds track pages that site: misses
+        # because Google doesn't index SC track pages for unofficial edits
+        if artist:
+            candidates.append(f"{artist} {base} soundcloud")
+        candidates.append(f"{base} soundcloud")
+
+        for q in candidates:
+            try:
+                sc_results = s.search(q, max_results=3)
+                for r in sc_results:
+                    url = _sc_track_url_from_result(r)
+                    if url:
+                        meta = _try_url(url)
+                        if any(meta.values()):
+                            return meta
+                        break
+            except Exception as exc:
+                log.debug("SC fallback query '%s' failed: %s", q, exc)
+
+    return empty
+
+
 def _fetch_web_search(artist: str, title: str, version: str, filename: str = "") -> str:
-    """Return web-search prompt context, or empty string on failure."""
+    """Return web-search prompt context, or empty string on failure.
+
+    When a SoundCloud URL is found among results, also scrapes the SC page for
+    the actual upload year and prepends it as a ``[SOUNDCLOUD UPLOAD YEAR: YYYY]``
+    header — giving the classifier an authoritative year signal without relying
+    on model training knowledge.
+    """
     s = _get_searcher()
     if not s:
         return ""
     try:
         sr = search_track_genre(s, artist=artist, title=title, version=version, filename=filename)
-        return sr.to_prompt_context()
+        ctx = sr.to_prompt_context()
+
+        sc = _fetch_sc_metadata(sr.results, artist=artist, title=title, version=version)
+        sc_lines = []
+        if sc.get("year"):
+            sc_lines.append(f"Upload year: {sc['year']}")
+        if sc.get("genre"):
+            sc_lines.append(f"Genre tag: {sc['genre']}")
+        if sc.get("tags"):
+            sc_lines.append(f"Tags: {sc['tags']}")
+        if sc_lines:
+            sc_block = "[SOUNDCLOUD PAGE METADATA — extracted directly, highest priority]\n" + "\n".join(sc_lines)
+            ctx = sc_block + "\n\n" + ctx
+
+        return ctx
     except Exception as e:
         log.warning("Web search failed for %s - %s: %s", artist, title, e)
         return ""
@@ -235,14 +335,13 @@ def _build_prompt(
     web_search_signal = ""
     if web_search_context and not web_search_context.startswith("(No web search"):
         web_search_signal = (
-            "\n3. WEB SEARCH RESULTS — real-time search snippets from music databases and DJ sites.\n"
-            "   EXACT MATCH RULE (highest priority): If a result from Beatport, Traxsource, Discogs, "
-            "or SoundCloud has a URL and title that closely matches THIS specific track (same artist "
-            "and title), its genre tag and year are THE MOST AUTHORITATIVE signals — they override "
-            "your general knowledge of the artist's genre. A Beatport genre tag for the exact track "
-            "is ground truth for electronic music. Apply this genre directly.\n"
-            "   If results are ambiguous or match a different version/artist, treat them as supporting "
-            "evidence only and fall back to artist knowledge."
+            "\n3. WEB SEARCH RESULTS — includes a [SOUNDCLOUD PAGE METADATA] block (if present) "
+            "scraped directly from the SC track page, followed by search snippets from DJ sites.\n"
+            "   [SOUNDCLOUD PAGE METADATA] Genre tag / Tags — set by the uploader for THIS exact "
+            "track. When present, treat as ground truth for genre (overrides artist knowledge).\n"
+            "   EXACT MATCH RULE: If a result from Beatport, Traxsource, or Discogs closely matches "
+            "THIS track, its genre tag is also authoritative.\n"
+            "   If results are ambiguous or match a different version/artist, fall back to artist knowledge."
             f"{remix_leak_warning}\n"
         )
 
@@ -272,15 +371,18 @@ def _build_prompt(
         f"primary signal. Do NOT let BPM override artist knowledge — a hip-hop track at 170 BPM "
         f"is still Hip-Hop (BPM detector may have measured double-time).\n\n"
         f"Also extract the release year for THIS exact track/version, in this priority order:\n"
-        f"  (a) EXACT MATCH on DJ platform (Beatport, Traxsource, Discogs, SoundCloud): if a web "
+        f"  (a) [SOUNDCLOUD PAGE METADATA] block in web search context — scraped directly from "
+        f"the SoundCloud track page. 'Upload year' is the EXACT year for THIS version — use it "
+        f"unconditionally, overrides training knowledge. 'Genre tag' and 'Tags' are set by the "
+        f"uploader and are AUTHORITATIVE for genre classification of this specific edit/remix.\n"
+        f"  (b) EXACT MATCH on DJ platform (Beatport, Traxsource, Discogs, SoundCloud): if a web "
         f"search result closely matches THIS track (same artist + title) and shows a year or upload "
-        f"date — use that year. This is the most reliable source for remixes and edits, and it "
-        f"OVERRIDES your training knowledge of when the original song was released.\n"
-        f"  (b) Other web search snippets that mention a year in context of THIS track → use it.\n"
-        f"  (c) Fall back to training knowledge ONLY when web search found nothing useful. "
+        f"date — use that year. This is very reliable for remixes and edits.\n"
+        f"  (c) Other web search snippets that mention a year in context of THIS track → use it.\n"
+        f"  (d) Fall back to training knowledge ONLY when web search found nothing useful. "
         f"For remixes/edits, training knowledge of the original song's year is almost always WRONG "
         f"— prefer null over guessing the original release year.\n"
-        f"  (d) Return null if you have no reliable estimate.\n"
+        f"  (e) Return null if you have no reliable estimate.\n"
         f"CRITICAL: For remixes, edits, and mashups — the year is the REMIX release year, "
         f"NOT the original song's year. If the original was from 1983 but the remix was uploaded "
         f"to SoundCloud in 2022, return 2022.\n\n"
