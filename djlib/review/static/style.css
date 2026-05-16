@@ -1046,6 +1046,173 @@ kbd {
   line-height: 16px;
 }
 
+/* ── Export progress banner ─────────────────────────────────── */
+
+.progress-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--acc);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  font-size: 12px;
+}
+
+.progress-banner.hidden {
+  display: none;
+}
+
+.progress-banner-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.progress-banner-label {
+  color: var(--ink-2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.progress-banner-bar-wrap {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-banner-bar {
+  height: 100%;
+  background: var(--acc);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+  width: 0;
+}
+
+.progress-banner-bar.indeterminate {
+  width: 40%;
+  animation: banner-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes banner-slide {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(350%); }
+}
+
+.progress-banner-close {
+  background: transparent;
+  border: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.progress-banner-close:hover {
+  color: var(--ink);
+  background: var(--bg-3);
+}
+
+.progress-banner-close.hidden {
+  display: none;
+}
+
+/* ── Scan modal ──────────────────────────────────────────────── */
+
+.scan-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.scan-overlay.hidden {
+  display: none;
+}
+
+.scan-card {
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  padding: 24px 28px;
+  min-width: 360px;
+  max-width: 480px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+}
+
+.scan-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+
+.scan-file-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 8px;
+  min-height: 14px;
+}
+
+.scan-bar-wrap {
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.scan-bar {
+  height: 100%;
+  background: var(--acc);
+  border-radius: 3px;
+  width: 0;
+  transition: width 0.3s ease;
+}
+
+.scan-stats {
+  font-size: 12px;
+  color: var(--ink-2);
+  font-family: var(--mono);
+  min-height: 16px;
+}
+
+.scan-close-btn {
+  margin-top: 16px;
+  width: 100%;
+  height: 32px;
+  background: var(--acc);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.scan-close-btn:hover {
+  background: var(--acc-2);
+}
+
+.scan-close-btn.hidden {
+  display: none;
+}
+
 /* ── Toast ─────────────────────────────────────────────────── */
 
 .toast {

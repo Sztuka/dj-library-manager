@@ -4078,9 +4078,7 @@
       scanBtn.className = "cta secondary";
       scanBtn.textContent = "SCAN";
       scanBtn.title = "Scan unsorted folder for new audio files";
-      scanBtn.addEventListener("click", function () {
-        showToast("SCAN: wiring to backend coming in PR B", "");
-      });
+      scanBtn.addEventListener("click", startScan);
       ctaGroup.appendChild(scanBtn);
 
       var enrichCount = selCount > 0 ? selCount : allTracks.length;
@@ -4101,9 +4099,9 @@
       exportBtn.innerHTML = "EXPORT" + (exportCount ? ' <span class="cta-n">' + exportCount + "</span>" : "");
       exportBtn.title = "Move tracks to library and sync Rekordbox";
       exportBtn.disabled = exportCount === 0;
-      exportBtn.addEventListener("click", function () {
-        showToast("EXPORT: wiring to backend coming in PR B", "");
-      });
+      exportBtn.addEventListener("click", (function (n) {
+        return function () { startExport(n); };
+      })(exportCount));
       ctaGroup.appendChild(exportBtn);
 
     } else if (currentSource === "library" || currentSource === "library-review" || currentSource === "library-fix") {
@@ -4290,6 +4288,129 @@
       applyGhostFilter();
     });
   });
+
+  // ── Scan ─────────────────────────────────────────────────────────────────────
+  var scanOverlay = document.getElementById("scan-overlay");
+  var scanBar = document.getElementById("scan-bar");
+  var scanStats = document.getElementById("scan-stats");
+  var scanFileLabel = document.getElementById("scan-file-label");
+  var scanCloseBtn = document.getElementById("scan-close-btn");
+  var _scanPollTimer = null;
+
+  function startScan() {
+    fetch("/api/scan-start", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { showToast(d.error, ""); return; }
+        scanOverlay.classList.remove("hidden");
+        scanBar.style.width = "0";
+        scanStats.textContent = "Starting…";
+        scanFileLabel.textContent = "";
+        scanCloseBtn.classList.add("hidden");
+        _pollScan();
+      })
+      .catch(function () { showToast("Could not start scan", ""); });
+  }
+
+  function _pollScan() {
+    fetch("/api/scan-status")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var pct = d.total > 0 ? Math.round((d.processed / d.total) * 100) : 0;
+        scanBar.style.width = pct + "%";
+        if (d.last_file) {
+          var parts = d.last_file.replace(/\\/g, "/").split("/");
+          scanFileLabel.textContent = parts[parts.length - 1] || d.last_file;
+        }
+        if (d.state === "running") {
+          scanStats.textContent = d.processed + " / " + d.total + " files · " + (d.added || 0) + " new";
+          _scanPollTimer = setTimeout(_pollScan, 800);
+        } else if (d.state === "done") {
+          scanBar.style.width = "100%";
+          scanStats.textContent = "Done — " + (d.added || 0) + " new tracks · " + (d.errors || 0) + " errors";
+          document.querySelector(".scan-card-title").textContent = "Scan complete";
+          scanCloseBtn.classList.remove("hidden");
+          // Reload unsorted table if we're on it
+          if (currentSource === "unsorted") loadTracks("unsorted");
+        } else if (d.state === "error") {
+          scanStats.textContent = "Error: " + (d.message || "unknown");
+          document.querySelector(".scan-card-title").textContent = "Scan failed";
+          scanCloseBtn.classList.remove("hidden");
+        } else {
+          // idle — scan finished before first poll
+          scanBar.style.width = "100%";
+          scanStats.textContent = "Scan complete";
+          scanCloseBtn.classList.remove("hidden");
+        }
+      })
+      .catch(function () {
+        _scanPollTimer = setTimeout(_pollScan, 1500);
+      });
+  }
+
+  if (scanCloseBtn) {
+    scanCloseBtn.addEventListener("click", function () {
+      if (_scanPollTimer) { clearTimeout(_scanPollTimer); _scanPollTimer = null; }
+      scanOverlay.classList.add("hidden");
+      document.querySelector(".scan-card-title").textContent = "Scanning inbox…";
+    });
+  }
+
+  // ── Export ────────────────────────────────────────────────────────────────────
+  var exportBanner = document.getElementById("export-banner");
+  var exportBannerLabel = document.getElementById("export-banner-label");
+  var exportBannerBar = document.getElementById("export-banner-bar");
+  var exportBannerClose = document.getElementById("export-banner-close");
+  var _exportPollTimer = null;
+
+  function startExport(readyCount) {
+    if (!confirm("Export " + readyCount + " track" + (readyCount !== 1 ? "s" : "") + " to library?\n\nFiles will be moved to their destination folders and Rekordbox will be updated.")) return;
+
+    fetch("/api/export-start", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { showToast(d.error, ""); return; }
+        exportBanner.classList.remove("hidden");
+        exportBannerBar.classList.add("indeterminate");
+        exportBannerLabel.textContent = "Exporting " + (d.total || readyCount) + " tracks…";
+        exportBannerClose.classList.add("hidden");
+        _pollExport();
+      })
+      .catch(function () { showToast("Could not start export", ""); });
+  }
+
+  function _pollExport() {
+    fetch("/api/export-status")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.state === "running") {
+          _exportPollTimer = setTimeout(_pollExport, 1000);
+        } else if (d.state === "done") {
+          exportBannerBar.classList.remove("indeterminate");
+          exportBannerBar.style.width = "100%";
+          exportBannerLabel.textContent = d.message || ("Exported " + (d.moved || 0) + " tracks");
+          exportBannerClose.classList.remove("hidden");
+          if (currentSource === "unsorted") loadTracks("unsorted");
+        } else if (d.state === "error") {
+          exportBannerBar.classList.remove("indeterminate");
+          exportBannerBar.style.width = "0";
+          exportBannerLabel.textContent = "Export failed: " + (d.message || "unknown error");
+          exportBannerClose.classList.remove("hidden");
+        }
+      })
+      .catch(function () {
+        _exportPollTimer = setTimeout(_pollExport, 1500);
+      });
+  }
+
+  if (exportBannerClose) {
+    exportBannerClose.addEventListener("click", function () {
+      if (_exportPollTimer) { clearTimeout(_exportPollTimer); _exportPollTimer = null; }
+      exportBanner.classList.add("hidden");
+      exportBannerBar.style.width = "0";
+      exportBannerBar.classList.remove("indeterminate");
+    });
+  }
 
   // ── On load: hydrate ghost rows from sidecar (surviving page refresh) ──────
   loadPlaylistNames();

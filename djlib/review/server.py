@@ -39,7 +39,7 @@ from djlib.config import (
     get_openai_api_key,
 )
 from djlib.filename import parse_from_filename
-from djlib.unsorted import load_unsorted_rows, write_unsorted_rows
+from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, EXPORT_DISPOSITIONS
 from djlib.locks import csv_lock
 
 # ── Flask app ────────────────────────────────────────────────────────────────
@@ -2409,6 +2409,198 @@ def api_artist_clusters_dismiss() -> Response:
 
     dismiss_cluster(_ALIASES_PATH, members)
     return jsonify({"ok": True})
+
+
+# ── Playlists ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/playlists")
+def api_playlists() -> Response:
+    """Return sorted list of all playlist names currently in use across library.csv."""
+    rows = _load_library_csv()
+    names: set = set()
+    for row in rows:
+        raw = (row.get("playlists") or "").strip()
+        if raw:
+            for part in raw.split("|"):
+                part = part.strip()
+                if part:
+                    names.add(part)
+    return jsonify(sorted(names, key=str.lower))
+
+
+@app.route("/api/track/<track_id>/playlists", methods=["POST"])
+def api_track_playlists(track_id: str) -> Response:
+    """Set the playlists for a track. Body: {"playlists": ["PornoStar", "BiA"], "source": "unsorted"|"library"}"""
+    body = request.get_json(silent=True) or {}
+    new_playlists: List[str] = [c.strip() for c in (body.get("playlists") or []) if str(c).strip()]
+    for name in new_playlists:
+        if "|" in name:
+            return jsonify({"ok": False, "error": f"Playlist name may not contain '|': {name}"}), 400
+
+    source = (body.get("source") or "library").strip()
+    if source == "unsorted":
+        with _CSV_LOCK, csv_lock(UNSORTED_CSV):
+            rows = load_unsorted_rows(UNSORTED_CSV)
+            found = False
+            for row in rows:
+                if row.get("track_id") == track_id or row.get("file_hash") == track_id:
+                    row["playlists"] = "|".join(new_playlists)
+                    found = True
+                    break
+            if not found:
+                return jsonify({"ok": False, "error": "track not found"}), 404
+            write_unsorted_rows(UNSORTED_CSV, rows, [])
+    else:
+        csv_path = _REPO / "data" / "library.csv"
+        with csv_lock(csv_path):
+            rows = _load_library_csv()
+            found = False
+            for row in rows:
+                if row.get("track_id") == track_id:
+                    row["playlists"] = "|".join(new_playlists)
+                    found = True
+                    break
+            if not found:
+                return jsonify({"ok": False, "error": "track not found"}), 404
+            from djlib.library_schema import save_library_csv
+            save_library_csv(csv_path, rows)
+
+    return jsonify({"ok": True, "playlists": new_playlists})
+
+
+# ── Scan ─────────────────────────────────────────────────────────────────────
+
+_scan_lock = threading.Lock()
+_scan_running = False
+
+
+@app.route("/api/scan-start", methods=["POST"])
+def api_scan_start() -> Response:
+    """Start a background scan of the inbox folder.
+
+    cmd_scan writes progress to LOGS/scan_status.json automatically.
+    Poll /api/scan-status for progress.
+    """
+    global _scan_running
+    with _scan_lock:
+        if _scan_running:
+            return jsonify({"error": "Scan already running"}), 409
+        _scan_running = True
+
+    def _run() -> None:
+        global _scan_running
+        try:
+            import argparse as _ap
+            from djlib.cli import cmd_scan
+            cmd_scan(_ap.Namespace(strict=False))
+        except Exception as e:
+            log.error("scan failed: %s", e)
+            try:
+                status_path = LOGS_DIR / "scan_status.json"
+                with status_path.open("w", encoding="utf-8") as f:
+                    json.dump({"state": "error", "message": str(e)}, f)
+            except Exception:
+                pass
+        finally:
+            _scan_running = False
+
+    threading.Thread(target=_run, daemon=True, name="scan").start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/scan-status")
+def api_scan_status() -> Response:
+    """Return current scan progress by reading scan_status.json."""
+    status_path = LOGS_DIR / "scan_status.json"
+    running = _scan_running
+    if status_path.exists():
+        try:
+            with status_path.open(encoding="utf-8") as f:
+                data = json.load(f)
+            if running:
+                data["state"] = "running"
+            return jsonify(data)
+        except Exception:
+            pass
+    return jsonify({
+        "state": "running" if running else "idle",
+        "total": 0,
+        "processed": 0,
+        "added": 0,
+    })
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+_export_lock = threading.Lock()
+_export_status: Dict[str, Any] = {"state": "idle"}
+
+
+@app.route("/api/export-start", methods=["POST"])
+def api_export_start() -> Response:
+    """Move disposed tracks to library/mixes/reject and sync Rekordbox.
+
+    Runs cmd_apply in a background thread. Poll /api/export-status for state.
+    """
+    global _export_status
+    with _export_lock:
+        if _export_status.get("state") == "running":
+            return jsonify({"error": "Export already running"}), 409
+
+    rows = load_unsorted_rows(UNSORTED_CSV)
+    ready_count = sum(
+        1 for r in rows
+        if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS
+    )
+    if ready_count == 0:
+        return jsonify({"error": "No tracks ready to export (set disposition first)"}), 400
+
+    with _export_lock:
+        _export_status = {
+            "state": "running",
+            "total": ready_count,
+            "moved": 0,
+            "message": "",
+        }
+
+    def _run() -> None:
+        global _export_status
+        try:
+            import argparse as _ap
+            from djlib.cli import cmd_apply
+            cmd_apply(_ap.Namespace())
+            after_rows = load_unsorted_rows(UNSORTED_CSV)
+            after_ready = sum(
+                1 for r in after_rows
+                if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS
+            )
+            moved = ready_count - after_ready
+            with _export_lock:
+                _export_status = {
+                    "state": "done",
+                    "total": ready_count,
+                    "moved": moved,
+                    "message": f"Exported {moved} of {ready_count} tracks",
+                }
+        except Exception as e:
+            log.error("export failed: %s", e)
+            with _export_lock:
+                _export_status = {
+                    "state": "error",
+                    "total": ready_count,
+                    "moved": 0,
+                    "message": str(e),
+                }
+
+    threading.Thread(target=_run, daemon=True, name="export").start()
+    return jsonify({"ok": True, "total": ready_count})
+
+
+@app.route("/api/export-status")
+def api_export_status() -> Response:
+    """Poll export job status."""
+    with _export_lock:
+        return jsonify(dict(_export_status))
 
 
 # ── Server entry point ───────────────────────────────────────────────────────

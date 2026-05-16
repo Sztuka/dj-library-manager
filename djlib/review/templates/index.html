@@ -467,6 +467,29 @@
       </div>
     </div>
 
+    <!-- ── Export progress banner ────────────────────────────────── -->
+    <div id="export-banner" class="progress-banner hidden">
+      <span class="progress-banner-icon">📦</span>
+      <span id="export-banner-label" class="progress-banner-label">Exporting…</span>
+      <div class="progress-banner-bar-wrap">
+        <div id="export-banner-bar" class="progress-banner-bar indeterminate"></div>
+      </div>
+      <button id="export-banner-close" class="progress-banner-close hidden">✕</button>
+    </div>
+
+    <!-- ── Scan modal ─────────────────────────────────────────────── -->
+    <div id="scan-overlay" class="scan-overlay hidden">
+      <div class="scan-card">
+        <div class="scan-card-title">Scanning inbox…</div>
+        <div id="scan-file-label" class="scan-file-label"></div>
+        <div class="scan-bar-wrap">
+          <div id="scan-bar" class="scan-bar"></div>
+        </div>
+        <div id="scan-stats" class="scan-stats"></div>
+        <button id="scan-close-btn" class="scan-close-btn hidden">Done</button>
+      </div>
+    </div>
+
     <!-- ── Toast notification ─────────────────────────────────── -->
     <div id="toast" class="toast hidden"></div>
 
