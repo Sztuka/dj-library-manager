@@ -352,6 +352,67 @@ select:focus {
   background: var(--line-2);
 }
 
+/* ── Overflow menu (⋯) ───────────────────────────────────────── */
+
+.overflow-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.overflow-btn {
+  height: 30px;
+  width: 30px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--line-2);
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+
+.overflow-btn:hover {
+  background: var(--bg-3);
+  color: var(--ink);
+}
+
+.overflow-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  min-width: 180px;
+  padding: 4px;
+  z-index: 1000;
+}
+
+.overflow-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.overflow-item:hover {
+  background: var(--bg-3);
+  color: var(--ink);
+}
+
 /* ── Row edge bar (disposition colour) ───────────────────────── */
 
 tbody tr.disp-library > td:first-child { border-left: 2px solid var(--lib); }

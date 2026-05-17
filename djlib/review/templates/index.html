@@ -75,6 +75,12 @@
           <input type="checkbox" id="auto-play-checkbox" /> Auto-play
         </label>
         <div id="cta-group" class="cta-group"></div>
+        <div class="overflow-wrap" id="overflow-wrap">
+          <button id="overflow-btn" class="overflow-btn" title="More actions">⋯</button>
+          <div id="overflow-menu" class="overflow-menu hidden">
+            <button class="overflow-item" id="overflow-unapply">↩ Unapply last run</button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -475,6 +481,16 @@
         <div id="export-banner-bar" class="progress-banner-bar indeterminate"></div>
       </div>
       <button id="export-banner-close" class="progress-banner-close hidden">✕</button>
+    </div>
+
+    <!-- ── Unapply progress banner ──────────────────────────────── -->
+    <div id="unapply-banner" class="progress-banner hidden">
+      <span class="progress-banner-icon">↩</span>
+      <span id="unapply-banner-label" class="progress-banner-label">Unapplying…</span>
+      <div class="progress-banner-bar-wrap">
+        <div id="unapply-banner-bar" class="progress-banner-bar indeterminate"></div>
+      </div>
+      <button id="unapply-banner-close" class="progress-banner-close hidden">✕</button>
     </div>
 
     <!-- ── Push playlists progress banner ───────────────────────── -->

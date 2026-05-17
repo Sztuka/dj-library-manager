@@ -4488,6 +4488,81 @@
     });
   }
 
+  // ── Overflow menu (⋯ button) ─────────────────────────────────────────────
+  var overflowWrap = document.getElementById("overflow-wrap");
+  var overflowBtn  = document.getElementById("overflow-btn");
+  var overflowMenu = document.getElementById("overflow-menu");
+
+  if (overflowBtn && overflowMenu) {
+    overflowBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      overflowMenu.classList.toggle("hidden");
+    });
+    document.addEventListener("click", function () {
+      overflowMenu.classList.add("hidden");
+    });
+  }
+
+  // ── Unapply last run ─────────────────────────────────────────────────────
+  var unapplyBanner      = document.getElementById("unapply-banner");
+  var unapplyBannerLabel = document.getElementById("unapply-banner-label");
+  var unapplyBannerBar   = document.getElementById("unapply-banner-bar");
+  var unapplyBannerClose = document.getElementById("unapply-banner-close");
+  var _unapplyPollTimer  = null;
+
+  var overflowUnapply = document.getElementById("overflow-unapply");
+  if (overflowUnapply) {
+    overflowUnapply.addEventListener("click", function () {
+      overflowMenu.classList.add("hidden");
+      if (!confirm("Move all tracks from the last apply run back to unsorted?\n\nFiles will be physically moved and removed from library.csv.")) return;
+      fetch("/api/unapply-last-run", { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.error) { showToast(d.error, ""); return; }
+          unapplyBanner.classList.remove("hidden");
+          unapplyBannerBar.classList.add("indeterminate");
+          unapplyBannerLabel.textContent = "Unapplying last run…";
+          unapplyBannerClose.classList.add("hidden");
+          _pollUnapply();
+        })
+        .catch(function () { showToast("Could not start unapply", ""); });
+    });
+  }
+
+  function _pollUnapply() {
+    fetch("/api/unapply-status")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.state === "running") {
+          unapplyBannerLabel.textContent = d.message || "Unapplying…";
+          _unapplyPollTimer = setTimeout(_pollUnapply, 800);
+        } else if (d.state === "done") {
+          unapplyBannerBar.classList.remove("indeterminate");
+          unapplyBannerBar.style.width = "100%";
+          unapplyBannerLabel.textContent = d.message || "Unapply complete";
+          unapplyBannerClose.classList.remove("hidden");
+          loadTracks(currentSource);
+        } else {
+          unapplyBannerBar.classList.remove("indeterminate");
+          unapplyBannerBar.style.width = "0";
+          unapplyBannerLabel.textContent = "Unapply failed: " + (d.message || "unknown error");
+          unapplyBannerClose.classList.remove("hidden");
+        }
+      })
+      .catch(function () {
+        _unapplyPollTimer = setTimeout(_pollUnapply, 1500);
+      });
+  }
+
+  if (unapplyBannerClose) {
+    unapplyBannerClose.addEventListener("click", function () {
+      if (_unapplyPollTimer) { clearTimeout(_unapplyPollTimer); _unapplyPollTimer = null; }
+      unapplyBanner.classList.add("hidden");
+      unapplyBannerBar.style.width = "0";
+      unapplyBannerBar.classList.remove("indeterminate");
+    });
+  }
+
   // ── On load: hydrate ghost rows from sidecar (surviving page refresh) ──────
   loadPlaylistNames();
 
