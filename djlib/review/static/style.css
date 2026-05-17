@@ -380,6 +380,10 @@ select:focus {
   color: var(--ink);
 }
 
+.overflow-menu.hidden {
+  display: none;
+}
+
 .overflow-menu {
   position: absolute;
   top: calc(100% + 6px);
