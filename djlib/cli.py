@@ -1241,6 +1241,22 @@ def _resolve_historic_play_count(row: Dict, ledger: Dict[str, int]) -> str:
     return str(total) if total else ""
 
 
+def _merge_playlists(prev: str, new: str) -> str:
+    """Merge playlist strings during re-apply.
+
+    - ``CLEAR``: explicit sentinel — erase all playlists on the library row.
+    - Non-empty value: union with existing playlists (additions only).
+    - Empty value: no change (keep existing playlists unchanged).
+    """
+    if new.strip().upper() == "CLEAR":
+        return ""
+    prev_items = [p for p in prev.split("|") if p]
+    new_items = [p for p in new.split("|") if p]
+    if not new_items:
+        return prev  # no change
+    return "|".join(dict.fromkeys(prev_items + new_items))
+
+
 def cmd_apply(args: argparse.Namespace) -> None:
     """Apply approved changes from unsorted.csv.
 
@@ -1729,13 +1745,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
             # (rating, color, cue_points_rb, live_location, etc.) survive re-apply.
             merged = dict(library_rows[existing_idx])
             merged.update(record)
-            # Playlist union: never silently clear playlists set after apply.
+            # Playlist merge: union by default; "CLEAR" sentinel removes all.
             prev_pl = (library_rows[existing_idx].get("playlists") or "").strip()
-            new_pl = (record.get("playlists") or "").strip()
-            merged["playlists"] = "|".join(dict.fromkeys(
-                [p for p in prev_pl.split("|") if p] +
-                [p for p in new_pl.split("|") if p]
-            ))
+            new_pl  = (merged.get("playlists") or "").strip()
+            merged["playlists"] = _merge_playlists(prev_pl, new_pl)
             library_rows[existing_idx] = merged
         else:
             library_rows.append(record)
