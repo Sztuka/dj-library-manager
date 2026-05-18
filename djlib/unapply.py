@@ -45,6 +45,9 @@ _DIRECT_MAP = (
     "pop_playcount", "pop_listeners",
 )
 
+# Additional lib_row fields needed by _build_unsorted_row beyond _DIRECT_MAP.
+_WAL_SNAPSHOT_FIELDS = _DIRECT_MAP + ("added_date", "year", "key", "key_camelot")
+
 
 # ── WAL ───────────────────────────────────────────────────────────────────────
 
@@ -85,6 +88,25 @@ class UnapplyState:
                 except json.JSONDecodeError:
                     pass
         return states
+
+    def get_track_events(self) -> Dict[str, Dict]:
+        """Return last full WAL event dict per track_id (for resume snapshot recovery)."""
+        events: Dict[str, Dict] = {}
+        if not self._path.exists():
+            return events
+        with self._path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    tid = entry.get("track_id", "")
+                    if tid:
+                        events[tid] = entry
+                except json.JSONDecodeError:
+                    pass
+        return events
 
     def is_committed(self) -> bool:
         """True if the session-level UNAPPLY_COMMITTED event exists."""
@@ -277,7 +299,8 @@ def run_unapply(
         result.committed = True
         return result
 
-    prior_states: Dict[str, str] = wal.get_track_states() if resume else {}
+    prior_events: Dict[str, Dict] = wal.get_track_events() if resume else {}
+    prior_states: Dict[str, str] = {tid: ev["event"] for tid, ev in prior_events.items()}
 
     # Load library index for fast lookup by track_id.
     lib_rows = load_library_csv(library_csv_path) if library_csv_path.exists() else []
@@ -294,7 +317,11 @@ def run_unapply(
         # Resume: file already moved in a prior run — skip to CSV phase.
         if prior_states.get(tid) in (UNAPPLY_MOVED,):
             restored = _resolve_restored_path(src_original, inbox_dir, Path(dest_in_log).name)
-            lib_row = lib_by_id.get(tid, {})
+            lib_row = lib_by_id.get(tid) or {}
+            if not lib_row:
+                # Library was already updated before the crash — reconstruct from WAL snapshot.
+                ev = prior_events.get(tid, {})
+                lib_row = {f: ev.get(f, "") for f in _WAL_SNAPSHOT_FIELDS}
             moved_entries.append({"entry": entry, "lib_row": lib_row, "restored_path": restored})
             result.skipped_wal_resumed += 1
             continue
@@ -357,8 +384,10 @@ def run_unapply(
             result.failed_other += 1
             continue
 
+        snapshot = {f: lib_row.get(f, "") for f in _WAL_SNAPSHOT_FIELDS if f != "track_id"}
         wal.append_event(UNAPPLY_MOVED, track_id=tid,
-                         src=str(current_path), dest=str(restored_path))
+                         src=str(current_path), dest=str(restored_path),
+                         **snapshot)
         print(f"  [MOVED] {current_path.name} → {restored_path}")
         moved_entries.append({"entry": entry, "lib_row": lib_row, "restored_path": restored_path})
         result.moved += 1
