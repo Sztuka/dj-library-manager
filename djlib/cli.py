@@ -1353,6 +1353,20 @@ def cmd_apply(args: argparse.Namespace) -> None:
             print(_d)
         print("   These will be handled during export (only first occurrence exported).\n")
 
+    # ── Pre-fetch Rekordbox playlist memberships ──────────────────────
+    # For tracks already in Rekordbox, seed their `playlists` field from RB
+    # so the first apply already has the correct playlist data.
+    _rb_playlists: Dict[str, List[str]] = {}
+    _library_bound = [r for r in ready if (r.get("disposition") or "") in {"library", "mixes"}]
+    if _library_bound:
+        try:
+            from djlib.rekordbox_reader import fetch_playlists_for_tracks
+            _rb_playlists = fetch_playlists_for_tracks(_library_bound)
+            if _rb_playlists:
+                print(f"  [RB] Found playlist membership for {len(_rb_playlists)} track(s) in Rekordbox.")
+        except Exception as _exc:
+            log.debug("RB playlist pre-fetch failed: %s", _exc)
+
     # Track match_keys seen in THIS batch to catch intra-batch duplicates
     _batch_match_keys: Dict[str, str] = {}  # match_key -> file_path (first in batch)
     skipped_reasons: Dict[str, int] = {}  # reason -> count
@@ -1733,6 +1747,15 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "historic_play_count": _resolve_historic_play_count(r, _play_count_ledger),
         }
         
+        # Seed playlists from Rekordbox (if track was already in RB collection).
+        # RB playlists act as the "prev" base; user's unsorted value is the "action".
+        _rb_names = _rb_playlists.get(record["track_id"], [])
+        if _rb_names:
+            record["playlists"] = _merge_playlists(
+                "|".join(_rb_names),
+                record.get("playlists", ""),
+            )
+
         # Update library.csv record (library/mixes destinations)
         existing_idx = None
         for idx, lib_row in enumerate(library_rows):
