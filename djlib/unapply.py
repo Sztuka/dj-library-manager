@@ -372,6 +372,7 @@ def run_unapply(
             print(f"  [DRY-RUN] Would move: {current_path.name}")
             print(f"            {artist} — {title}")
             print(f"            {current_path} → {restored_path}")
+            result.moved += 1  # count would-be moves so caller can report them
             continue
 
         # Move the file.
@@ -393,7 +394,7 @@ def run_unapply(
         result.moved += 1
 
     if dry_run:
-        _print_dry_run_warning(moved_entries)
+        _print_dry_run_warning(result.moved)
         return result
 
     if not moved_entries:
@@ -464,8 +465,8 @@ def _resolve_restored_path(src_original: str, inbox_dir: Path, filename: str) ->
     return inbox_dir / filename
 
 
-def _print_dry_run_warning(moved_entries: List) -> None:
-    if not moved_entries:
+def _print_dry_run_warning(would_move: int) -> None:
+    if not would_move:
         return
     print()
     print("  ⚠️  After unapply, the following fields will be EMPTY and require re-enrichment:")

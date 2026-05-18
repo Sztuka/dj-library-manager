@@ -150,6 +150,31 @@ def test_lookup_by_filename_fallback():
     assert result == {"tid-2": ["Incoming"]}
 
 
+# ── Filename collision ────────────────────────────────────────────────────────
+
+def test_filename_collision_skipped_with_warning(caplog):
+    """Two RB tracks with the same filename → skip both, log warning."""
+    import logging
+    # Both content rows have the same FileNameL
+    c1 = _make_content(10, "/Folder1/", "track.aiff")
+    c2 = _make_content(11, "/Folder2/", "track.aiff")
+    sp1 = _make_song_playlist(10, 99)
+    pl = _make_playlist(99, "WrongPlaylist")
+
+    db = _mock_db([c1, c2], [sp1], [pl])
+
+    with patch("pyrekordbox.Rekordbox6Database", return_value=db):
+        with patch("djlib.rekordbox_reader._default_db_path", return_value=Path("/fake.db")):
+            with caplog.at_level(logging.WARNING, logger="djlib.rekordbox_reader"):
+                result = fetch_playlists_for_tracks(
+                    [{"track_id": "tid-x", "rekordbox_id": "", "file_path": "/Unsorted/track.aiff"}]
+                )
+
+    assert result == {}  # no playlist assigned to avoid wrong mapping
+    assert "track.aiff" in caplog.text
+    assert "2" in caplog.text  # logged the count of ambiguous matches
+
+
 # ── pyrekordbox not installed ─────────────────────────────────────────────────
 
 def test_graceful_when_pyrekordbox_missing():

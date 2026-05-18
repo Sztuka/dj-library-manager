@@ -226,12 +226,26 @@ def fetch_playlists_for_tracks(
                         .filter(DjmdContent.FileNameL.in_(list(remaining.keys())))
                         .all()
                     )
+                    # Two-pass: detect ambiguous filenames before mapping.
+                    fname_to_cids: Dict[str, List[int]] = {}
                     for content in rows:
                         fname = str(getattr(content, "FileNameL", "") or "")
+                        cid = int(getattr(content, "ID", 0) or 0)
+                        if fname:
+                            fname_to_cids.setdefault(fname, []).append(cid)
+
+                    for fname, cids in fname_to_cids.items():
                         tid = remaining.get(fname)
-                        if tid:
-                            cid = int(getattr(content, "ID", 0) or 0)
-                            content_id_to_tid[cid] = tid
+                        if not tid:
+                            continue
+                        if len(cids) > 1:
+                            log.warning(
+                                "Filename %r matches %d Rekordbox tracks — "
+                                "skipping playlist lookup for track_id=%s to avoid wrong assignment",
+                                fname, len(cids), tid,
+                            )
+                            continue
+                        content_id_to_tid[cids[0]] = tid
 
             if not content_id_to_tid:
                 return {}

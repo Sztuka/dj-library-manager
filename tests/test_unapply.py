@@ -313,6 +313,7 @@ def test_run_unapply_dry_run_does_not_move(tmp_dirs):
     )
 
     assert result.committed is False
+    assert result.moved == 1   # dry-run counts would-be moves
     assert lib_file.exists()  # not moved
 
 

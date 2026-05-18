@@ -45,6 +45,16 @@ def test_artist_slug_normalizes_unicode():
 def test_artist_slug_empty():
     assert _artist_slug("") == ""
 
+def test_artist_slug_x_collab():
+    assert _artist_slug("Martin Garrix x Tiësto") == "martingarrix"
+
+def test_artist_slug_x_in_name_not_stripped():
+    # "x-Press" — the x is part of the name, not a collab separator
+    assert _artist_slug("DJ x-Press") == "djxpress"
+
+def test_artist_slug_multiple_ampersands():
+    assert _artist_slug("A & B & C") == "a"
+
 
 # ── _rows_match ───────────────────────────────────────────────────────────────
 
