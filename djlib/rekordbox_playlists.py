@@ -12,11 +12,9 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 log = logging.getLogger(__name__)
-
-_DJLIB_MARKER = "[djlib]"
 
 
 def _djlib_playlist_name(name: str) -> str:

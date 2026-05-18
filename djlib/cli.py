@@ -582,6 +582,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
     # Near-duplicate detection: check staging rows against each other and library
     near_dup_count = 0
+    _near_dup_ran = False
     try:
         from djlib.near_dup import flag_near_dups
         from djlib.library_schema import load_library_csv
@@ -589,12 +590,13 @@ def cmd_scan(args: argparse.Namespace) -> None:
         if CSV_PATH.exists():
             lib_rows = load_library_csv(CSV_PATH)
         near_dup_count = flag_near_dups(staging_rows, lib_rows)
+        _near_dup_ran = True  # flag_near_dups always resets all near_duplicate_of fields
         if near_dup_count:
             print(f"   ~ {near_dup_count} near-duplicate(s) flagged")
     except Exception as _e:
         log.warning("Near-duplicate detection failed: %s", _e)
 
-    if new_rows or removed_dups or _path_updates_count or near_dup_count:
+    if new_rows or removed_dups or _path_updates_count or _near_dup_ran:
         _save_unsorted(staging_rows)
         msg = f"Scanned {len(new_rows)} files."
         if _path_updates_count:
@@ -1264,8 +1266,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
     if not ready:
         print("Brak wierszy z ustawionym disposition (library/reject/mixes).")
         return
+    from djlib.locks import csv_lock as _csv_lock
     from djlib.library_schema import load_library_csv as _load_lib, save_library_csv as _save_lib
-    library_rows = _load_lib(CSV_PATH)
+    with _csv_lock(CSV_PATH):
+        library_rows = _load_lib(CSV_PATH)
     _play_count_ledger = _load_play_count_ledger(LOGS_DIR)
     rejected_registry = load_rejected(REJECTED_CSV_PATH)  # Load rejected registry for appending
     processed_ids: set[str] = set()
@@ -1858,8 +1862,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
         print(f"💡 Tip: Use 'create-path-map --move-log {log_path}' to prepare for DJ software sync")
 
     remaining = [r for r in rows if r.get("track_id") not in processed_ids]
-    _save_unsorted(remaining)
-    _save_lib(CSV_PATH, library_rows)
+    with _csv_lock(UNSORTED_CSV), _csv_lock(CSV_PATH):
+        _save_unsorted(remaining)
+        _save_lib(CSV_PATH, library_rows)
 
     # Save rejected registry (always — append-only, even if no new rejects this run)
     _new_rejects = len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])

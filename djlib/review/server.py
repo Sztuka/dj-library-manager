@@ -2676,12 +2676,16 @@ def api_unapply_last_run() -> Response:
     """Move all tracks from the most recent apply run back to unsorted."""
     global _unapply_status
     with _unapply_lock:
-        if _unapply_status.get("state") in ("running",):
+        if _unapply_status.get("state") in ("running", "starting"):
             return jsonify({"error": "Unapply already running"}), 409
-        _unapply_status = {"state": "running", "message": "Finding last apply run…"}
+        _unapply_status = {"state": "starting", "message": "Finding last apply run…"}
+    # "starting" → "running" happens inside the thread; concurrent POSTs between
+    # here and thread start are blocked by the "starting" guard above.
 
     def _run() -> None:
         global _unapply_status
+        with _unapply_lock:
+            _unapply_status = {"state": "running", "message": "Finding last apply run…"}
         try:
             from djlib.unapply import find_move_entries, run_unapply
             entries = find_move_entries(logs_dir=LOGS_DIR, last_run=True)

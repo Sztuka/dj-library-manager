@@ -73,6 +73,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("notes", width=40),
     ColumnSpec("bpm", width=10),
     ColumnSpec("key_camelot", width=12),
+    ColumnSpec("duration_seconds", hidden=True, width=12, locked=True),
     ColumnSpec("rating", width=10),  # Star rating 0-5 (syncs with Rekordbox/Traktor)
     # Computed final filename (locked)
     ColumnSpec("final_filename", width=100, locked=True),
