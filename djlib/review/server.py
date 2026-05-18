@@ -2695,13 +2695,14 @@ def api_unapply_last_run() -> Response:
                 return
             with _unapply_lock:
                 _unapply_status["message"] = f"Moving {len(entries)} track(s) back…"
-            result = run_unapply(
-                entries=entries,
-                unsorted_csv=UNSORTED_CSV,
-                library_csv_path=CSV_PATH,
-                logs_dir=LOGS_DIR,
-                inbox_dir=INBOX_DIR,
-            )
+            with _CSV_LOCK:
+                result = run_unapply(
+                    entries=entries,
+                    unsorted_csv=UNSORTED_CSV,
+                    library_csv_path=CSV_PATH,
+                    logs_dir=LOGS_DIR,
+                    inbox_dir=INBOX_DIR,
+                )
             moved = result.moved + result.skipped_wal_resumed
             msg = f"Unapplied {moved} track{'s' if moved != 1 else ''}"
             if result.failed_hash_mismatch or result.failed_other:
