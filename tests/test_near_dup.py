@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from djlib.near_dup import _base_title_slug, _rows_match, flag_near_dups
+from djlib.near_dup import _artist_slug, _base_title_slug, _rows_match, flag_near_dups
 
 
 # ── _base_title_slug ──────────────────────────────────────────────────────────
@@ -26,6 +26,24 @@ def test_slug_same_base():
     a = _base_title_slug("Unwritten (Talon Remix)")
     b = _base_title_slug("Unwritten (Talon Afrohouse Remix)")
     assert a == b == "unwritten"
+
+
+# ── _artist_slug ─────────────────────────────────────────────────────────────
+
+def test_artist_slug_strips_feat():
+    assert _artist_slug("Artist feat. Someone") == "artist"
+
+def test_artist_slug_strips_ampersand():
+    assert _artist_slug("Artist & Other") == "artist"
+
+def test_artist_slug_strips_vs():
+    assert _artist_slug("Artist vs. Other") == "artist"
+
+def test_artist_slug_normalizes_unicode():
+    assert _artist_slug("Sigur Rós") == "sigurros"
+
+def test_artist_slug_empty():
+    assert _artist_slug("") == ""
 
 
 # ── _rows_match ───────────────────────────────────────────────────────────────
@@ -73,6 +91,26 @@ def test_rows_match_missing_bpm_is_inconclusive():
 def test_rows_match_missing_duration_is_inconclusive():
     a = _row(track_id="a", duration_seconds="")
     b = _row(track_id="b", duration_seconds="360")
+    assert _rows_match(a, b) is True
+
+def test_rows_no_match_different_artist():
+    a = _row(track_id="a", artist="Original Artist")
+    b = _row(track_id="b", artist="Cover Artist")
+    assert _rows_match(a, b) is False
+
+def test_rows_match_same_artist():
+    a = _row(track_id="a", artist="Bicep")
+    b = _row(track_id="b", artist="Bicep")
+    assert _rows_match(a, b) is True
+
+def test_rows_match_missing_artist_is_inconclusive():
+    a = _row(track_id="a", artist="")
+    b = _row(track_id="b", artist="Bicep")
+    assert _rows_match(a, b) is True
+
+def test_rows_match_artist_ignores_feat_suffix():
+    a = _row(track_id="a", artist="Bicep feat. Clara Hill")
+    b = _row(track_id="b", artist="Bicep")
     assert _rows_match(a, b) is True
 
 

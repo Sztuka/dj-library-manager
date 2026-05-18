@@ -376,6 +376,71 @@ def test_run_unapply_skips_missing_from_library(tmp_dirs):
     assert result.moved == 0
 
 
+def test_run_unapply_resume_empty_lib_row(tmp_dirs):
+    """Resume after library.csv was already updated but COMMITTED not written.
+
+    Scenario: Phase 1 done (file moved, WAL has UNAPPLY_MOVED with snapshot),
+    Phase 2 completed (unsorted + library both written), crash before COMMITTED.
+    On resume the track is not in library.csv — lib_row is empty.
+    The snapshot stored in the WAL should reconstruct the unsorted row.
+    """
+    root = tmp_dirs["root"]
+    logs = tmp_dirs["logs"]
+    inbox = tmp_dirs["inbox"]
+    logs.mkdir(parents=True, exist_ok=True)
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    # Simulate the state after Phase 2 completed but before COMMITTED:
+    # - File is already in inbox (moved during Phase 1)
+    restored_file = inbox / "Artist - Title.aiff"
+    restored_file.write_bytes(b"audio")
+
+    # - Library.csv is empty (track already removed)
+    lib_csv = root / "library.csv"
+    _write_library_csv(lib_csv, [])
+
+    # - Unsorted.csv already has the track (written during Phase 2)
+    unsorted_csv = root / "unsorted.csv"
+    _write_unsorted_csv(unsorted_csv, [
+        {"track_id": "tid-1", "artist": "Artist", "title": "Title"},
+    ])
+
+    # - WAL has UNAPPLY_MOVED with snapshot but no COMMITTED
+    wal_path = logs / "unapply-test.wal.jsonl"
+    wal = UnapplyState(wal_path)
+    wal.append_event(
+        UNAPPLY_MOVED,
+        track_id="tid-1",
+        src="/old/Artist - Title.aiff",
+        dest=str(restored_file),
+        artist="Artist",
+        title="Title",
+        bpm="124",
+        key="7B",
+        added_date="2024-01-01",
+        year="2024",
+    )
+
+    entries = [{"src": "/old/Artist - Title.aiff", "dest": str(restored_file), "track_id": "tid-1", "log_file": ""}]
+
+    result = run_unapply(
+        entries=entries,
+        unsorted_csv=unsorted_csv,
+        library_csv_path=lib_csv,
+        logs_dir=logs,
+        inbox_dir=inbox,
+        resume=True,
+        wal_path=wal_path,
+    )
+
+    assert result.committed is True
+    assert result.skipped_wal_resumed == 1
+    # Track should remain in unsorted (it was already there)
+    from djlib.unsorted import load_unsorted_rows
+    us_rows = load_unsorted_rows(unsorted_csv)
+    assert any(r["track_id"] == "tid-1" for r in us_rows)
+
+
 def test_run_unapply_resume_already_committed(tmp_dirs):
     root = tmp_dirs["root"]
     logs = tmp_dirs["logs"]
