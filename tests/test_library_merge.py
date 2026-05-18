@@ -134,6 +134,8 @@ def test_djlib_owned_fields_list_is_stable():
         # Artist normalization: survive syncs so normalized names aren't overwritten.
         "mb_artist_id",
         "artist_normalized",
+        # Playlists: djlib-owned collection tags, never overwritten by sync.
+        "playlists",
     }
 
 

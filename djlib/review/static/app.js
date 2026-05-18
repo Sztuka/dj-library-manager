@@ -229,6 +229,7 @@
       { key: "title", label: "Title", width: "16%", type: "editable" },
       { key: "version_info", label: "Version", width: "10%", type: "editable" },
       { key: "_in_library", label: "Lib", width: "36px", type: "in-library" },
+      { key: "near_duplicate_of", label: "~Dup", width: "40px", type: "near-dup" },
       {
         key: "file_path",
         label: "Folder",
@@ -988,20 +989,7 @@
 
       var field = col.key;
       if (!GHOST_FIELDS.includes(field)) {
-        // Not enrichable: empty cell
         td.innerHTML = "";
-        if (field === "_select") {
-          // Repurpose the select checkbox column as a per-row apply button in ghost rows
-          var applyBtn = document.createElement("button");
-          applyBtn.className = "ghost-apply-row-btn";
-          applyBtn.title = "Apply this row";
-          applyBtn.textContent = "✓";
-          applyBtn.dataset.tid = tid;
-          applyBtn.addEventListener("click", function () {
-            applyGhostRow(tid);
-          });
-          td.appendChild(applyBtn);
-        }
         tr.appendChild(td);
         return;
       }
@@ -1038,6 +1026,23 @@
 
       tr.appendChild(td);
     });
+
+    // Add col-kebab cell with "Accept N" button (mirrors data rows, fixes column alignment)
+    if (isEditableSource()) {
+      var tickedMap = ghostReview.ticked[tid] || {};
+      var nTicked = Object.keys(tickedMap).filter(function (f) { return tickedMap[f]; }).length;
+      var kebabTd = document.createElement("td");
+      kebabTd.className = "col-kebab ghost-cell";
+      var acceptBtn = document.createElement("button");
+      acceptBtn.className = "ghost-apply-row-btn";
+      acceptBtn.dataset.tid = tid;
+      acceptBtn.textContent = "Accept " + nTicked;
+      acceptBtn.disabled = nTicked === 0;
+      acceptBtn.title = nTicked === 0 ? "No fields selected" : "Apply " + nTicked + " field" + (nTicked === 1 ? "" : "s") + " for this track";
+      acceptBtn.addEventListener("click", function () { applyGhostRow(tid); });
+      kebabTd.appendChild(acceptBtn);
+      tr.appendChild(kebabTd);
+    }
 
     // Find the data row for this track and insert ghost row after it
     var dataRow = tableBody.querySelector('tr[data-tid="' + tid + '"]');
@@ -1539,6 +1544,19 @@
           if (isInLibrary(track)) {
             td.innerHTML = '<span class="badge-in-lib">LIB</span>';
             td.title = "Already in library (artist + title match)";
+          }
+        } else if (col.type === "near-dup") {
+          var nearDupId = track[col.key];
+          if (nearDupId) {
+            var dupMatch = allTracks.find(function (t) { return trackId(t) === nearDupId; });
+            var dupLabel = dupMatch
+              ? (dupMatch.artist || "") + " — " + (dupMatch.title || "")
+              : "in library";
+            var dupBadge = document.createElement("span");
+            dupBadge.className = "badge-near-dup";
+            dupBadge.textContent = "~DUP";
+            dupBadge.title = "Near-duplicate of: " + dupLabel;
+            td.appendChild(dupBadge);
           }
         } else if (col.type === "playlist-multi") {
           renderPlaylistCell(td, track);
@@ -4126,10 +4144,8 @@
       var pushBtn = document.createElement("button");
       pushBtn.className = "cta primary";
       pushBtn.textContent = "PUSH";
-      pushBtn.title = "Push playlists to Rekordbox";
-      pushBtn.addEventListener("click", function () {
-        showToast("PUSH: use CLI djlib push-playlists", "");
-      });
+      pushBtn.title = "Push djlib playlists to Rekordbox (Rekordbox must be closed)";
+      pushBtn.addEventListener("click", startPushPlaylists);
       ctaGroup.appendChild(pushBtn);
     }
   }
@@ -4370,6 +4386,12 @@
   var exportBannerClose = document.getElementById("export-banner-close");
   var _exportPollTimer = null;
 
+  var pushBanner = document.getElementById("push-banner");
+  var pushBannerLabel = document.getElementById("push-banner-label");
+  var pushBannerBar = document.getElementById("push-banner-bar");
+  var pushBannerClose = document.getElementById("push-banner-close");
+  var _pushPollTimer = null;
+
   function startExport(readyCount) {
     if (!confirm("Export " + readyCount + " track" + (readyCount !== 1 ? "s" : "") + " to library?\n\nFiles will be moved to their destination folders and Rekordbox will be updated.")) return;
 
@@ -4416,6 +4438,128 @@
       exportBanner.classList.add("hidden");
       exportBannerBar.style.width = "0";
       exportBannerBar.classList.remove("indeterminate");
+    });
+  }
+
+  function startPushPlaylists() {
+    if (!confirm("Push playlists to Rekordbox?\n\nRekordbox must be closed. Existing djlib-managed playlists will be rebuilt.")) return;
+    fetch("/api/push-playlists", { method: "POST" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.error) { showToast(d.error, ""); return; }
+        pushBanner.classList.remove("hidden");
+        pushBannerBar.classList.add("indeterminate");
+        pushBannerLabel.textContent = "Pushing playlists to Rekordbox…";
+        pushBannerClose.classList.add("hidden");
+        _pollPush();
+      })
+      .catch(function () { showToast("Could not start push", ""); });
+  }
+
+  function _pollPush() {
+    fetch("/api/push-playlists-status")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.state === "running") {
+          _pushPollTimer = setTimeout(_pollPush, 1000);
+        } else if (d.state === "done") {
+          pushBannerBar.classList.remove("indeterminate");
+          pushBannerBar.style.width = "100%";
+          pushBannerLabel.textContent = d.message || "Push complete";
+          pushBannerClose.classList.remove("hidden");
+        } else if (d.state === "error") {
+          pushBannerBar.classList.remove("indeterminate");
+          pushBannerBar.style.width = "0";
+          pushBannerLabel.textContent = "Push failed: " + (d.message || "unknown error");
+          pushBannerClose.classList.remove("hidden");
+        }
+      })
+      .catch(function () {
+        _pushPollTimer = setTimeout(_pollPush, 1500);
+      });
+  }
+
+  if (pushBannerClose) {
+    pushBannerClose.addEventListener("click", function () {
+      if (_pushPollTimer) { clearTimeout(_pushPollTimer); _pushPollTimer = null; }
+      pushBanner.classList.add("hidden");
+      pushBannerBar.style.width = "0";
+      pushBannerBar.classList.remove("indeterminate");
+    });
+  }
+
+  // ── Overflow menu (⋯ button) ─────────────────────────────────────────────
+  var overflowWrap = document.getElementById("overflow-wrap");
+  var overflowBtn  = document.getElementById("overflow-btn");
+  var overflowMenu = document.getElementById("overflow-menu");
+
+  if (overflowBtn && overflowMenu) {
+    overflowBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      overflowMenu.classList.toggle("hidden");
+    });
+    document.addEventListener("click", function () {
+      overflowMenu.classList.add("hidden");
+    });
+  }
+
+  // ── Unapply last run ─────────────────────────────────────────────────────
+  var unapplyBanner      = document.getElementById("unapply-banner");
+  var unapplyBannerLabel = document.getElementById("unapply-banner-label");
+  var unapplyBannerBar   = document.getElementById("unapply-banner-bar");
+  var unapplyBannerClose = document.getElementById("unapply-banner-close");
+  var _unapplyPollTimer  = null;
+
+  var overflowUnapply = document.getElementById("overflow-unapply");
+  if (overflowUnapply) {
+    overflowUnapply.addEventListener("click", function () {
+      overflowMenu.classList.add("hidden");
+      if (!confirm("Move all tracks from the last apply run back to unsorted?\n\nFiles will be physically moved and removed from library.csv.")) return;
+      fetch("/api/unapply-last-run", { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.error) { showToast(d.error, ""); return; }
+          unapplyBanner.classList.remove("hidden");
+          unapplyBannerBar.classList.add("indeterminate");
+          unapplyBannerLabel.textContent = "Unapplying last run…";
+          unapplyBannerClose.classList.add("hidden");
+          _pollUnapply();
+        })
+        .catch(function () { showToast("Could not start unapply", ""); });
+    });
+  }
+
+  function _pollUnapply() {
+    fetch("/api/unapply-status")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.state === "running") {
+          unapplyBannerLabel.textContent = d.message || "Unapplying…";
+          _unapplyPollTimer = setTimeout(_pollUnapply, 800);
+        } else if (d.state === "done") {
+          unapplyBannerBar.classList.remove("indeterminate");
+          unapplyBannerBar.style.width = "100%";
+          unapplyBannerLabel.textContent = d.message || "Unapply complete";
+          unapplyBannerClose.classList.remove("hidden");
+          loadTracks(currentSource);
+        } else {
+          unapplyBannerBar.classList.remove("indeterminate");
+          unapplyBannerBar.style.width = "0";
+          unapplyBannerLabel.textContent = "Unapply failed: " + (d.message || "unknown error");
+          unapplyBannerClose.classList.remove("hidden");
+        }
+      })
+      .catch(function () {
+        _unapplyPollTimer = setTimeout(_pollUnapply, 1500);
+      });
+  }
+
+  if (unapplyBannerClose) {
+    unapplyBannerClose.addEventListener("click", function () {
+      if (_unapplyPollTimer) { clearTimeout(_unapplyPollTimer); _unapplyPollTimer = null; }
+      unapplyBanner.classList.add("hidden");
+      unapplyBannerBar.style.width = "0";
+      unapplyBannerBar.classList.remove("indeterminate");
     });
   }
 

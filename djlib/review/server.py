@@ -32,6 +32,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from djlib.config import (
     CSV_PATH,
+    INBOX_DIR,
     LOGS_DIR,
     UNSORTED_CSV,
     get_ai_chat_model,
@@ -2617,6 +2618,110 @@ def api_export_status() -> Response:
     """Poll export job status."""
     with _export_lock:
         return jsonify(dict(_export_status))
+
+
+# ── Push Playlists ───────────────────────────────────────────────────────────
+
+_push_lock = threading.Lock()
+_push_status: Dict[str, Any] = {"state": "idle"}
+
+
+@app.route("/api/push-playlists", methods=["POST"])
+def api_push_playlists() -> Response:
+    """Push djlib playlists field to Rekordbox. Rekordbox must be closed."""
+    global _push_status
+    with _push_lock:
+        if _push_status.get("state") in ("running", "starting"):
+            return jsonify({"error": "Push already running"}), 409
+        _push_status = {"state": "running", "message": "Pushing playlists to Rekordbox…"}
+
+    def _run() -> None:
+        global _push_status
+        try:
+            from djlib.rekordbox_playlists import push_playlists
+            result = push_playlists(library_csv_path=CSV_PATH, dry_run=False, only=None)
+            total_tracks = sum(result.values())
+            pl_count = len(result)
+            msg = f"Pushed {pl_count} playlist{'s' if pl_count != 1 else ''}, {total_tracks} tracks"
+            with _push_lock:
+                _push_status = {
+                    "state": "done",
+                    "pushed": total_tracks,
+                    "playlists": pl_count,
+                    "message": msg,
+                }
+        except Exception as e:
+            log.error("push-playlists failed: %s", e)
+            with _push_lock:
+                _push_status = {"state": "error", "message": str(e)}
+
+    threading.Thread(target=_run, daemon=True, name="push-playlists").start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/push-playlists-status")
+def api_push_playlists_status() -> Response:
+    with _push_lock:
+        return jsonify(dict(_push_status))
+
+
+# ── Unapply ──────────────────────────────────────────────────────────────────
+
+_unapply_lock = threading.Lock()
+_unapply_status: Dict[str, Any] = {"state": "idle"}
+
+
+@app.route("/api/unapply-last-run", methods=["POST"])
+def api_unapply_last_run() -> Response:
+    """Move all tracks from the most recent apply run back to unsorted."""
+    global _unapply_status
+    with _unapply_lock:
+        if _unapply_status.get("state") in ("running", "starting"):
+            return jsonify({"error": "Unapply already running"}), 409
+        _unapply_status = {"state": "starting", "message": "Finding last apply run…"}
+    # "starting" → "running" happens inside the thread; concurrent POSTs between
+    # here and thread start are blocked by the "starting" guard above.
+
+    def _run() -> None:
+        global _unapply_status
+        with _unapply_lock:
+            _unapply_status = {"state": "running", "message": "Finding last apply run…"}
+        try:
+            from djlib.unapply import find_move_entries, run_unapply
+            entries = find_move_entries(logs_dir=LOGS_DIR, last_run=True)
+            if not entries:
+                with _unapply_lock:
+                    _unapply_status = {"state": "error", "message": "No apply log found"}
+                return
+            with _unapply_lock:
+                _unapply_status["message"] = f"Moving {len(entries)} track(s) back…"
+            with _CSV_LOCK:
+                result = run_unapply(
+                    entries=entries,
+                    unsorted_csv=UNSORTED_CSV,
+                    library_csv_path=CSV_PATH,
+                    logs_dir=LOGS_DIR,
+                    inbox_dir=INBOX_DIR,
+                )
+            moved = result.moved + result.skipped_wal_resumed
+            msg = f"Unapplied {moved} track{'s' if moved != 1 else ''}"
+            if result.failed_hash_mismatch or result.failed_other:
+                msg += f" ({result.failed_hash_mismatch + result.failed_other} failed)"
+            with _unapply_lock:
+                _unapply_status = {"state": "done", "moved": moved, "message": msg}
+        except Exception as e:
+            log.error("unapply-last-run failed: %s", e)
+            with _unapply_lock:
+                _unapply_status = {"state": "error", "message": str(e)}
+
+    threading.Thread(target=_run, daemon=True, name="unapply-last-run").start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/unapply-status")
+def api_unapply_status() -> Response:
+    with _unapply_lock:
+        return jsonify(dict(_unapply_status))
 
 
 # ── Server entry point ───────────────────────────────────────────────────────

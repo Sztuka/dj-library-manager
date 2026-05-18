@@ -517,6 +517,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "meta_source": _safe_str(sugg.get("meta_source")),
             "duplicate_paths": "",
             "disposition": "",
+            "duration_seconds": _safe_str(tags.get("duration_seconds")),
         }
         for key in [
             "artist_suggest",
@@ -579,7 +580,23 @@ def cmd_scan(args: argparse.Namespace) -> None:
         print(f"   ⊘ Removed {removed_dups} duplicate row(s) from unsorted.csv")
         staging_rows = cleaned
 
-    if new_rows or removed_dups or _path_updates_count:
+    # Near-duplicate detection: check staging rows against each other and library
+    near_dup_count = 0
+    _near_dup_ran = False
+    try:
+        from djlib.near_dup import flag_near_dups
+        from djlib.library_schema import load_library_csv
+        lib_rows: List[Dict[str, str]] = []
+        if CSV_PATH.exists():
+            lib_rows = load_library_csv(CSV_PATH)
+        near_dup_count = flag_near_dups(staging_rows, lib_rows)
+        _near_dup_ran = True  # flag_near_dups always resets all near_duplicate_of fields
+        if near_dup_count:
+            print(f"   ~ {near_dup_count} near-duplicate(s) flagged")
+    except Exception as _e:
+        log.warning("Near-duplicate detection failed: %s", _e)
+
+    if new_rows or removed_dups or _path_updates_count or _near_dup_ran:
         _save_unsorted(staging_rows)
         msg = f"Scanned {len(new_rows)} files."
         if _path_updates_count:
@@ -1249,7 +1266,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
     if not ready:
         print("Brak wierszy z ustawionym disposition (library/reject/mixes).")
         return
-    library_rows = load_records(CSV_PATH)
+    from djlib.locks import csv_lock as _csv_lock
+    from djlib.library_schema import load_library_csv as _load_lib, save_library_csv as _save_lib
+    with _csv_lock(CSV_PATH):
+        library_rows = _load_lib(CSV_PATH)
     _play_count_ledger = _load_play_count_ledger(LOGS_DIR)
     rejected_registry = load_rejected(REJECTED_CSV_PATH)  # Load rejected registry for appending
     processed_ids: set[str] = set()
@@ -1684,6 +1704,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "must_play": r.get("must_play") or "",
             "occasion_tags": r.get("occasion_tags") or "",
             "notes": r.get("notes") or "",
+            "playlists": r.get("playlists") or "",
             "is_duplicate": r.get("is_duplicate") or "",
             "pop_playcount": r.get("pop_playcount") or "",
             "pop_listeners": r.get("pop_listeners") or "",
@@ -1704,7 +1725,18 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 break
 
         if existing_idx is not None:
-            library_rows[existing_idx] = record
+            # Merge: start from existing row so DJ-software-owned fields
+            # (rating, color, cue_points_rb, live_location, etc.) survive re-apply.
+            merged = dict(library_rows[existing_idx])
+            merged.update(record)
+            # Playlist union: never silently clear playlists set after apply.
+            prev_pl = (library_rows[existing_idx].get("playlists") or "").strip()
+            new_pl = (record.get("playlists") or "").strip()
+            merged["playlists"] = "|".join(dict.fromkeys(
+                [p for p in prev_pl.split("|") if p] +
+                [p for p in new_pl.split("|") if p]
+            ))
+            library_rows[existing_idx] = merged
         else:
             library_rows.append(record)
         
@@ -1830,8 +1862,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
         print(f"💡 Tip: Use 'create-path-map --move-log {log_path}' to prepare for DJ software sync")
 
     remaining = [r for r in rows if r.get("track_id") not in processed_ids]
-    _save_unsorted(remaining)
-    save_records(CSV_PATH, library_rows)
+    with _csv_lock(UNSORTED_CSV), _csv_lock(CSV_PATH):
+        _save_unsorted(remaining)
+        _save_lib(CSV_PATH, library_rows)
 
     # Save rejected registry (always — append-only, even if no new rejects this run)
     _new_rejects = len([r for r in ready if (r.get("disposition") or "").lower().strip() == "reject" and r.get("track_id", "") in processed_ids])
@@ -2340,13 +2373,13 @@ def cmd_import_traktor(args: argparse.Namespace) -> None:
 
 def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     """
-    WORKFLOW 0: Sync library.csv with DJ software databases.
-    Ensures all approved tracks are in Rekordbox + Traktor with custom tags.
+    MAINTENANCE TOOL: Sync library.csv with DJ software databases.
+    Run after gig-merge or when Rekordbox/Traktor data needs to be pulled in.
     """
     dry_run = not args.write
     
     print("\n" + "=" * 60)
-    print("WORKFLOW 0: SYNC DJ LIBRARIES & TAGS")
+    print("MAINTENANCE: SYNC DJ LIBRARIES & TAGS")
     if dry_run:
         print("         (DRY-RUN MODE)")
     else:
@@ -2365,6 +2398,17 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     print("💡 Run this ONCE to prepare your library for tracking")
     print()
     
+    # Auto-backup library.csv before any write operation
+    if not dry_run:
+        import shutil, datetime
+        from djlib.config import CSV_PATH
+        if CSV_PATH.exists():
+            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            bak = CSV_PATH.with_name(f"{CSV_PATH.stem}.bak-presync-{ts}.csv")
+            shutil.copy2(CSV_PATH, bak)
+            print(f"📦 Backup: {bak.name}")
+            print()
+
     # Step 1: Import snapshots from DJ software
     print("=" * 60)
     print("STEP 1: IMPORT DJ SOFTWARE SNAPSHOTS")
@@ -3260,7 +3304,7 @@ def cmd_sync_dj_libraries(args: argparse.Namespace) -> None:
     # Done!
     print()
     print("=" * 60)
-    print("✅ WORKFLOW 0 COMPLETE")
+    print("✅ SYNC COMPLETE")
     print("=" * 60)
     print()
     print("Summary:")
@@ -3828,6 +3872,15 @@ def cmd_library_dedup(args: argparse.Namespace) -> None:
 
 # ============ REVIEW UI ============
 
+def cmd_push_playlists(args: argparse.Namespace) -> None:
+    from djlib.rekordbox_playlists import push_playlists
+    push_playlists(
+        library_csv_path=CSV_PATH,
+        dry_run=args.dry_run,
+        only=args.only or None,
+    )
+
+
 def cmd_review(args: argparse.Namespace) -> None:
     """Launch interactive review UI in browser.
 
@@ -4021,6 +4074,87 @@ def cmd_gig_cleanup(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_unapply(args: argparse.Namespace) -> None:
+    """Reverse dj apply: move tracks from library back to unsorted staging."""
+    from djlib.unapply import find_move_entries, run_unapply, UnapplyResult
+
+    dry_run   = getattr(args, "dry_run", False)
+    resume    = getattr(args, "resume", False)
+    track_ids = getattr(args, "track_id", None)   # list[str] or None
+    last_run  = getattr(args, "last_run", False)
+    last_n    = getattr(args, "last_n", None)
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}unapply: library → unsorted staging")
+    print(f"  Library  : {CSV_PATH}")
+    print(f"  Unsorted : {UNSORTED_CSV}")
+    print(f"  Logs dir : {LOGS_DIR}")
+    print()
+
+    entries = find_move_entries(
+        logs_dir=LOGS_DIR,
+        track_ids=track_ids,
+        last_run=last_run,
+        last_n=last_n,
+    )
+
+    if not entries:
+        print("No move log entries found for the given selection.")
+        return
+
+    print(f"  Found {len(entries)} track(s) to unapply:")
+    for e in entries:
+        print(f"    {e['track_id'][:8]}…  {Path(e['src']).name}")
+    print()
+
+    try:
+        result: UnapplyResult = run_unapply(
+            entries=entries,
+            unsorted_csv=UNSORTED_CSV,
+            library_csv_path=CSV_PATH,
+            logs_dir=LOGS_DIR,
+            inbox_dir=INBOX_DIR,
+            dry_run=dry_run,
+            resume=resume,
+        )
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"\nERROR: {type(exc).__name__}: {exc}")
+        raise SystemExit(1)
+
+    if dry_run:
+        return
+
+    print("\n  Done.")
+    if result.moved:
+        print(f"    Moved to unsorted     : {result.moved}")
+    if result.skipped_wal_resumed:
+        print(f"    Skipped (WAL resumed) : {result.skipped_wal_resumed}")
+    if result.skipped_not_in_library:
+        print(f"    Skipped (not in lib)  : {result.skipped_not_in_library}")
+    if result.skipped_wrong_location:
+        print(f"    Skipped (active gig)  : {result.skipped_wrong_location}")
+    if result.skipped_already_done:
+        print(f"    Skipped (committed)   : {result.skipped_already_done}")
+    if result.failed_hash_mismatch:
+        print(f"    Failed (hash mismatch): {result.failed_hash_mismatch}  ← files may be corrupt")
+    if result.failed_other:
+        print(f"    Failed (other)        : {result.failed_other}")
+
+    if result.committed:
+        print(f"\n  CSVs updated. Next steps:")
+        print(f"    1. Run: dj scan")
+        print(f"    2. Re-enrich in Review UI (genre + suggest fields need refilling)")
+    if result.wal_path:
+        print(f"\n  WAL: {result.wal_path}")
+    if result.unapply_log:
+        print(f"  Log: {result.unapply_log}")
+
+    if result.failed_hash_mismatch or result.failed_other:
+        raise SystemExit(1)
+
+
 def cmd_rewind(args: argparse.Namespace) -> None:
     """Move WAV/FLAC from library back to unsorted as verified AIFF."""
     from djlib.rewind import run_rewind, RewindResult
@@ -4175,7 +4309,7 @@ def build_parser() -> argparse.ArgumentParser:
     itr.set_defaults(func=cmd_import_traktor)
     
     # WORKFLOW 0: Sync DJ libraries with library.csv
-    sdl = sp.add_parser("sync-dj-libraries", help="Sync library.csv with Rekordbox/Traktor databases (WORKFLOW 0)")
+    sdl = sp.add_parser("sync-dj-libraries", help="Sync library.csv with Rekordbox/Traktor databases (run after gig-merge or when RB data needs pull)")
     sdl.add_argument("--write", action="store_true", help="Actually write changes (default is dry-run)")
     sdl.set_defaults(func=cmd_sync_dj_libraries)
     
@@ -4259,6 +4393,33 @@ def build_parser() -> argparse.ArgumentParser:
     ap2.set_defaults(func=cmd_apply)
 
     sp.add_parser("undo").set_defaults(func=cmd_undo)
+
+    unapply_p = sp.add_parser(
+        "unapply",
+        help="Reverse dj apply: move tracks from library back to unsorted staging",
+    )
+    unapply_sel = unapply_p.add_mutually_exclusive_group(required=True)
+    unapply_sel.add_argument(
+        "--track-id",
+        nargs="+",
+        metavar="ID",
+        help="One or more track_ids to unapply",
+    )
+    unapply_sel.add_argument(
+        "--last-run",
+        action="store_true",
+        help="Unapply all tracks from the most recent apply run",
+    )
+    unapply_sel.add_argument(
+        "--last-n",
+        type=int,
+        metavar="N",
+        help="Unapply the N most recently applied tracks",
+    )
+    unapply_p.add_argument("--dry-run", action="store_true", help="Show plan without moving files")
+    unapply_p.add_argument("--resume", action="store_true", help="Resume an interrupted unapply using its WAL")
+    unapply_p.set_defaults(func=cmd_unapply)
+
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
     sp.add_parser("refresh-staging", help="Recalculate final_filename after manual edits").set_defaults(func=cmd_refresh_staging)
     fud = sp.add_parser("fix-unsorted-dupes", help="Remove duplicate entries from unsorted.csv")
@@ -4380,6 +4541,12 @@ def build_parser() -> argparse.ArgumentParser:
     retag.add_argument("--set", dest="set_fields", action="append", metavar="KEY=VALUE",
                        help="Override a field for all matched files (repeatable, e.g. --set year=2024)")
     retag.set_defaults(func=cmd_retag)
+
+    # ========== PLAYLISTS ==========
+    pp = sp.add_parser("push-playlists", help="Push djlib playlist tags from library.csv to Rekordbox as playlists")
+    pp.add_argument("--dry-run", action="store_true", help="Show what would be pushed without writing")
+    pp.add_argument("--only", nargs="+", metavar="NAME", help="Push only these playlist names")
+    pp.set_defaults(func=cmd_push_playlists)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")

@@ -200,6 +200,8 @@ def read_tags(path: Path) -> Dict[str, str]:
 
     energy_hint = (_first_str(tags.get("energy")) or _first_str(tags.get("grouping"))).strip()
 
+    duration_seconds = round(getattr(f.info, "length", 0.0))
+
     return {
         "artist": artist,
         "title": title,
@@ -211,6 +213,7 @@ def read_tags(path: Path) -> Dict[str, str]:
         "comment": comment,
         "year": year,
         "album": album,
+        "duration_seconds": str(duration_seconds) if duration_seconds else "",
     }
 
 _AIFF_EXTS = {".aiff", ".aif"}

@@ -352,6 +352,71 @@ select:focus {
   background: var(--line-2);
 }
 
+/* ── Overflow menu (⋯) ───────────────────────────────────────── */
+
+.overflow-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.overflow-btn {
+  height: 30px;
+  width: 30px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--line-2);
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+
+.overflow-btn:hover {
+  background: var(--bg-3);
+  color: var(--ink);
+}
+
+.overflow-menu.hidden {
+  display: none;
+}
+
+.overflow-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  min-width: 180px;
+  padding: 4px;
+  z-index: 1000;
+}
+
+.overflow-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.overflow-item:hover {
+  background: var(--bg-3);
+  color: var(--ink);
+}
+
 /* ── Row edge bar (disposition colour) ───────────────────────── */
 
 tbody tr.disp-library > td:first-child { border-left: 2px solid var(--lib); }
@@ -1415,6 +1480,20 @@ kbd {
   color: #2ecc71;
   white-space: nowrap;
   margin-left: 4px;
+}
+
+.badge-near-dup {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  background: rgba(212, 167, 62, 0.18);
+  color: var(--pnd);
+  white-space: nowrap;
+  cursor: help;
 }
 
 /* ── Library stats (in stats bar) ─────────────────────────── */
@@ -2946,7 +3025,7 @@ kbd {
 .ghost-conf-mid  { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
 .ghost-conf-low  { background: rgba(239, 68, 68, 0.18);  color: #f87171; }
 
-/* Per-row apply button */
+/* Per-row accept button (in col-kebab cell of ghost rows) */
 .ghost-apply-row-btn {
   font-size: 10.5px;
   padding: 2px 8px;
@@ -2957,10 +3036,14 @@ kbd {
   cursor: pointer;
   font-family: var(--font-ui);
   white-space: nowrap;
+  transition: background 0.12s, opacity 0.12s;
 }
-
-.ghost-apply-row-btn:hover {
-  background: rgba(52, 211, 153, 0.18);
+.ghost-apply-row-btn:hover:not(:disabled) {
+  background: rgba(52, 211, 153, 0.22);
+}
+.ghost-apply-row-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 /* Applied row fade-out animation */

@@ -68,36 +68,87 @@ def scrape_url(url: str) -> Dict[str, str]:
 # SoundCloud
 # ---------------------------------------------------------------------------
 
+def _sc_html_metadata(url: str) -> Dict[str, str]:
+    """Extract track metadata from raw SoundCloud page HTML.
+
+    SC embeds server-side JSON in ``window.__sc_hydration`` — no auth needed.
+    Returns dict with keys: ``year``, ``genre``, ``tags`` (all strings, may be empty).
+    """
+    result: Dict[str, str] = {"year": "", "genre": "", "tags": ""}
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT, headers={"User-Agent": _USER_AGENT})
+        if resp.status_code != 200:
+            return result
+        html = resp.text
+        # Upload year from "created_at":"2023-06-07T09:24:54Z"
+        m = re.search(r'"created_at"\s*:\s*"(\d{4})-\d{2}-\d{2}', html)
+        if m:
+            result["year"] = m.group(1)
+        else:
+            m = re.search(r'datetime="(\d{4})-\d{2}-\d{2}', html)
+            if m:
+                result["year"] = m.group(1)
+        # Genre field (set by uploader)
+        m = re.search(r'"genre"\s*:\s*"([^"]{2,60})"', html)
+        if m:
+            result["genre"] = m.group(1).strip()
+        # Tag list (space-separated, often contains genre keywords)
+        m = re.search(r'"tag_list"\s*:\s*"([^"]{2,200})"', html)
+        if m:
+            result["tags"] = m.group(1).strip()
+    except Exception as exc:
+        logger.debug("SC HTML metadata scrape failed for %s: %s", url, exc)
+    return result
+
+
+def _sc_html_year(url: str) -> str:
+    """Extract upload year from raw SoundCloud page HTML. Returns ``"YYYY"`` or ``""``."""
+    return _sc_html_metadata(url)["year"]
+
+
 def _scrape_soundcloud(url: str) -> Dict[str, str]:
     """Scrape SoundCloud track.
 
-    Strategy chain (stops at first success):
+    Strategy chain:
     1. oEmbed API — public, no auth needed, returns title + author + thumbnail
-    2. Resolve API with auto-refreshed client_id — full structured JSON
-    3. URL slug parsing — offline fallback, lossy but instant
+    2. Resolve API with auto-refreshed client_id — full structured JSON with year/genre
+    3. HTML hydration scrape — extracts upload year from window.__sc_hydration
+    4. URL slug parsing — offline fallback, lossy but instant
     """
-    # Strategy 1: oEmbed (fast, reliable for most public tracks)
+    result: Optional[Dict[str, str]] = None
+
+    # Strategy 1: oEmbed (fast, reliable for most public tracks — but no year)
     try:
         data = _sc_oembed(url)
         if data:
-            return data
+            result = data
     except Exception as exc:
         logger.debug("SC oEmbed failed: %s", exc)
 
-    # Strategy 2: Resolve API with auto-refreshed client_id
-    try:
-        from djlib.metadata.soundcloud import get_valid_client_id
+    # Strategy 2: Resolve API — adds year + genre on top of oEmbed result
+    if not result or not result.get("year"):
+        try:
+            from djlib.metadata.soundcloud import get_valid_client_id
 
-        cid = get_valid_client_id()
-        if cid:
-            data = _sc_resolve_api(url, cid)
-            if data:
-                return data
-    except Exception as exc:
-        logger.debug("SC Resolve API failed: %s", exc)
+            cid = get_valid_client_id()
+            if cid:
+                resolve_data = _sc_resolve_api(url, cid)
+                if resolve_data:
+                    result = resolve_data  # full data including year
+        except Exception as exc:
+            logger.debug("SC Resolve API failed: %s", exc)
 
-    # Strategy 3: parse URL slug (lossy but guaranteed)
-    return _sc_parse_url_slug(url)
+    # Strategy 3: HTML scrape for upload year (no auth needed)
+    if result and not result.get("year"):
+        result["year"] = _sc_html_year(url)
+
+    # Strategy 4: parse URL slug (lossy but guaranteed)
+    if not result:
+        result = _sc_parse_url_slug(url)
+        if not result.get("year"):
+            result["year"] = _sc_html_year(url)
+
+    return result  # type: ignore[return-value]
 
 
 def _sc_oembed(url: str) -> Optional[Dict[str, str]]:
@@ -355,11 +406,14 @@ def _scrape_hypeddit(url: str) -> Dict[str, str]:
     if genre:
         result["genre"] = genre
 
-    # If SC URL is available and track is live, try to get year via oEmbed
+    # If SC URL is available and track is live, enrich from SC using same
+    # strategy chain as _scrape_soundcloud: oEmbed → Resolve API → HTML scrape
     if sc_url and "soundcloud.com" in sc_url:
-        result["url"] = sc_url
+        import html as _html
+        sc_url_clean = _html.unescape(sc_url)
+        result["url"] = sc_url_clean
         try:
-            sc_data = _sc_oembed(sc_url)
+            sc_data = _sc_oembed(sc_url_clean)
             if sc_data:
                 if not result["artist"]:
                     result["artist"] = sc_data.get("artist", "")
@@ -370,7 +424,101 @@ def _scrape_hypeddit(url: str) -> Dict[str, str]:
         except Exception:
             pass
 
+        # oEmbed never returns year — try Resolve API (structured JSON with created_at)
+        if not result["year"]:
+            try:
+                from djlib.metadata.soundcloud import get_valid_client_id
+                cid = get_valid_client_id()
+                if cid:
+                    resolve_data = _sc_resolve_api(sc_url_clean, cid)
+                    if resolve_data and resolve_data.get("year"):
+                        result["year"] = resolve_data["year"]
+            except Exception:
+                pass
+
+        # Last resort: scrape SC page HTML for created_at in __sc_hydration
+        if not result["year"]:
+            result["year"] = _sc_html_year(sc_url_clean)
+
+        # Track is private/deleted on SC — Wayback Machine knows when it existed
+        if not result["year"]:
+            result["year"] = _wayback_year(sc_url_clean)
+
     return result
+
+
+# ---------------------------------------------------------------------------
+# Wayback Machine year estimation
+# ---------------------------------------------------------------------------
+
+def _wayback_year(url: str) -> str:
+    """Estimate upload year from the Wayback Machine CDX API.
+
+    When a SoundCloud track is private or deleted the SC API returns 404, but
+    the Wayback Machine may have crawled the page while it was still public.
+    The earliest archived timestamp gives us a reliable upper-bound for the
+    year the track existed.
+
+    Retries up to 3 times with increasing timeouts because CDX can be slow
+    or return transient 503s.  Returns ``"YYYY"`` or ``""`` on definitive failure.
+    """
+    import json as _json
+    import subprocess
+    import time as _time
+    import urllib.parse
+    from urllib.parse import urlparse, urlunparse
+
+    # Strip query string — Wayback archives canonical URLs without UTM/si params
+    parsed = urlparse(url)
+    canonical = urlunparse(parsed._replace(query="", fragment=""))
+
+    params = urllib.parse.urlencode({
+        "url": canonical,
+        "output": "json",
+        "limit": 1,
+        "fl": "timestamp,statuscode",
+        "from": "2015",
+    })
+    cdx_url = f"https://web.archive.org/cdx/search/cdx?{params}"
+
+    # curl instead of urllib — handles IPv4/IPv6 fallback on macOS where
+    # Python's urllib may stall trying IPv6 when only IPv4 reaches the host.
+    timeouts = [15, 20, 25]
+    last_exc: Optional[str] = None
+    for attempt, max_t in enumerate(timeouts, start=1):
+        try:
+            proc = subprocess.run(
+                ["curl", "-s", "--max-time", str(max_t), "-A", _USER_AGENT, cdx_url],
+                capture_output=True, text=True, timeout=max_t + 5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                rows = _json.loads(proc.stdout)
+                if len(rows) < 2:
+                    return ""  # no snapshots found — definitive empty
+                earliest_ts = rows[1][0]
+                status_code = rows[1][1] if len(rows[1]) > 1 else "200"
+                if status_code.startswith("4") and status_code != "404":
+                    return ""
+                year = earliest_ts[:4]
+                if year.isdigit():
+                    logger.debug(
+                        "Wayback year for %s: %s (snapshot %s, status %s, attempt %d)",
+                        canonical, year, earliest_ts, status_code, attempt,
+                    )
+                    return year
+            last_exc = f"curl rc={proc.returncode} stdout={proc.stdout[:60]!r}"
+        except Exception as exc:
+            last_exc = str(exc)
+
+        if attempt < len(timeouts):
+            _time.sleep(attempt)  # 1s, 2s between retries
+
+    logger.warning(
+        "Wayback CDX niedziałający po %d próbach dla %s (%s) — "
+        "wpisz rok ręcznie w kolumnie Year",
+        len(timeouts), canonical, last_exc,
+    )
+    return ""
 
 
 # ---------------------------------------------------------------------------

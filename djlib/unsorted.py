@@ -28,6 +28,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("added_date", hidden=True, width=18, locked=True),
     ColumnSpec("is_duplicate", hidden=True, width=12, locked=True),
     ColumnSpec("duplicate_paths", hidden=True, width=60, locked=True),
+    ColumnSpec("near_duplicate_of", hidden=True, width=36, locked=True),
     ColumnSpec("tag_artist_original", width=26, locked=True),  # Visible
     ColumnSpec("tag_title_original", width=26, locked=True),   # Visible
     ColumnSpec("tag_genre_original", width=22, locked=True),   # Visible
@@ -68,9 +69,11 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("disposition", width=14),  # library / reject / mixes / later
     ColumnSpec("must_play", width=14),
     ColumnSpec("occasion_tags", width=24),
+    ColumnSpec("playlists", width=30),
     ColumnSpec("notes", width=40),
     ColumnSpec("bpm", width=10),
     ColumnSpec("key_camelot", width=12),
+    ColumnSpec("duration_seconds", hidden=True, width=12, locked=True),
     ColumnSpec("rating", width=10),  # Star rating 0-5 (syncs with Rekordbox/Traktor)
     # Computed final filename (locked)
     ColumnSpec("final_filename", width=100, locked=True),
