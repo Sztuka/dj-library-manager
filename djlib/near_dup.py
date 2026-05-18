@@ -45,8 +45,23 @@ def _dur_int(val: str) -> Optional[int]:
         return None
 
 
+def _artist_slug(artist: str) -> str:
+    """Normalize artist for comparison: lowercase alnum, strip feat./& suffixes."""
+    s = re.sub(r"\s+(feat\.?|ft\.?|&|x\b|vs\.?|and\b).*", "", artist, flags=re.IGNORECASE)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
 def _rows_match(a: Dict, b: Dict) -> bool:
     """True when two rows are near-duplicates (same slug already established by caller)."""
+    # Artist: if both present and clearly different, not a dup (cover guard).
+    # Missing artist = inconclusive, same as missing BPM/duration.
+    art_a = _artist_slug(a.get("artist") or a.get("tag_artist_original") or "")
+    art_b = _artist_slug(b.get("artist") or b.get("tag_artist_original") or "")
+    if art_a and art_b and art_a != art_b:
+        return False
+
     # Key: exact Camelot match if both present
     key_a = (a.get("key_camelot") or a.get("key") or "").strip().upper()
     key_b = (b.get("key_camelot") or b.get("key") or "").strip().upper()
