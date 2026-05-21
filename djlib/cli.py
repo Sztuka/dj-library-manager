@@ -4317,6 +4317,162 @@ def cmd_retag(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_normalize_artists(args: argparse.Namespace) -> None:
+    """Report and interactively merge artist name variants across library.
+
+    Default (interactive): prompts for each cluster — confirm canonical, skip,
+    dismiss, or quit.  Use --auto to merge all clusters without prompting.
+    Use --dry-run to list clusters without making any changes.
+    """
+    from djlib.artist_normalizer import (
+        collect_artists, cluster_artists, load_aliases,
+        _split_compound, _normalize_key, _cluster_fingerprint,
+        write_pending_entry, promote_pending_to_canonical,
+        write_artist_tags, write_audit_log, dismiss_cluster,
+    )
+    from djlib.library_schema import load_library_csv, save_library_csv
+
+    dry_run = getattr(args, "dry_run", False)
+    auto    = getattr(args, "auto", False)
+    threshold     = getattr(args, "threshold", 70)
+    min_confidence = getattr(args, "min_confidence", 100)
+    show_dismissed = getattr(args, "show_dismissed", False)
+
+    aliases_path = CSV_PATH.parent / "artist_aliases.yml"
+
+    library_rows = load_library_csv(CSV_PATH) if CSV_PATH.exists() else []
+    unsorted_rows = _load_unsorted()
+    aliases  = load_aliases(aliases_path)
+    artists  = collect_artists(library_rows, unsorted_rows)
+
+    # Track counts for display
+    track_counts: Dict[str, int] = {}
+    for row in list(library_rows) + list(unsorted_rows):
+        raw = (row.get("artist") or "").strip()
+        for atom in _split_compound(raw):
+            key = _normalize_key(atom)
+            track_counts[key] = track_counts.get(key, 0) + 1
+
+    clusters = cluster_artists(artists, aliases, threshold=threshold, show_dismissed=show_dismissed)
+    if not clusters:
+        print("No artist variants found — library looks clean.")
+        return
+
+    for c in clusters:
+        c["track_count"] = sum(track_counts.get(_normalize_key(m), 0) for m in c["members"])
+
+    # CLI sort: highest confidence first (easiest to confirm), ties broken by member count desc.
+    clusters.sort(key=lambda c: (-c["confidence"], -len(c["members"])))
+
+    total = len(clusters)
+    print(f"Found {total} cluster(s).\n")
+
+    if dry_run:
+        for i, c in enumerate(clusters, 1):
+            tier = "MBZ" if c["method"] == "mbz" else f"fuzzy {round(c['confidence'])}%"
+            print(f"[{i}/{total}] {tier}  ({c['track_count']} tracks)")
+            for m in c["members"]:
+                marker = "→" if m == (c.get("canonical") or c["members"][0]) else " "
+                print(f"  {marker} {m}")
+        print(f"\n[DRY-RUN] {total} cluster(s). No changes made.")
+        return
+
+    def _do_merge(cluster: Dict, canonical: str) -> None:
+        variant_keys = {_normalize_key(v) for v in cluster["members"]}
+        affected: List[str] = []
+        for row in list(load_unsorted_rows(UNSORTED_CSV)) + list(load_library_csv(CSV_PATH)):
+            raw = (row.get("artist") or "").strip()
+            if any(_normalize_key(a) in variant_keys for a in _split_compound(raw)):
+                p = row.get("file_path") or row.get("old_full_path") or ""
+                if p:
+                    affected.append(p)
+        affected = list(dict.fromkeys(affected))
+
+        fp = _cluster_fingerprint(cluster["members"])
+        write_pending_entry(aliases_path, fp, canonical, cluster["members"])
+
+        failed = write_artist_tags(affected, canonical)
+        if failed:
+            print(f"  ⚠️  {len(failed)} tag write(s) failed — merge NOT committed.")
+            for f in failed[:5]:
+                print(f"     {f}")
+            return
+
+        promote_pending_to_canonical(aliases_path, fp, canonical, cluster["members"])
+
+        # Update CSVs
+        from djlib.locks import csv_lock as _csv_lock
+        updated_u = 0
+        with _csv_lock(UNSORTED_CSV):
+            u_rows = load_unsorted_rows(UNSORTED_CSV)
+            for row in u_rows:
+                raw = (row.get("artist") or "").strip()
+                if any(_normalize_key(a) in variant_keys for a in _split_compound(raw)):
+                    row["artist"] = canonical
+                    updated_u += 1
+            if updated_u:
+                write_unsorted_rows(UNSORTED_CSV, u_rows)
+
+        updated_l = 0
+        with _csv_lock(CSV_PATH):
+            lib = load_library_csv(CSV_PATH)
+            for row in lib:
+                raw = (row.get("artist") or "").strip()
+                if any(_normalize_key(a) in variant_keys for a in _split_compound(raw)):
+                    row["artist"] = canonical
+                    updated_l += 1
+            if updated_l:
+                save_library_csv(CSV_PATH, lib)
+
+        write_audit_log(LOGS_DIR, canonical, cluster["members"],
+                        updated_u + updated_l, cluster["method"], int(cluster["confidence"]))
+        print(f"  ✓ Merged → '{canonical}' ({updated_u + updated_l} track(s) updated)")
+
+    merged_count = skipped_count = dismissed_count = 0
+
+    for i, cluster in enumerate(clusters, 1):
+        members   = cluster["members"]
+        suggested = cluster.get("canonical") or members[0]
+        tier      = "MBZ" if cluster["method"] == "mbz" else f"fuzzy {round(cluster['confidence'])}%"
+
+        print(f"[{i}/{total}] {tier}  ({cluster['track_count']} tracks)")
+        for m in members:
+            marker = "→" if m == suggested else " "
+            print(f"  {marker} {m}")
+
+        if auto and cluster["confidence"] >= min_confidence:
+            print(f"  Auto-merging → '{suggested}'")
+            _do_merge(cluster, suggested)
+            merged_count += 1
+            continue
+
+        # Interactive prompt
+        print(f"  Canonical [{suggested}] (Enter=merge, s=skip, d=dismiss, q=quit): ", end="", flush=True)
+        try:
+            line = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            break
+
+        if line.lower() == "q":
+            print("Quit.")
+            break
+        if line.lower() == "s":
+            skipped_count += 1
+            continue
+        if line.lower() == "d":
+            dismiss_cluster(aliases_path, members)
+            dismissed_count += 1
+            print(f"  Dismissed.")
+            continue
+
+        canonical = line if line else suggested
+        _do_merge(cluster, canonical)
+        merged_count += 1
+
+    print(f"\nDone: {merged_count} merged, {skipped_count} skipped, {dismissed_count} dismissed.")
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4583,6 +4739,33 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--dry-run", action="store_true", help="Show what would be pushed without writing")
     pp.add_argument("--only", nargs="+", metavar="NAME", help="Push only these playlist names")
     pp.set_defaults(func=cmd_push_playlists)
+
+    # ========== ARTIST NORMALIZATION ==========
+    na = sp.add_parser(
+        "normalize-artists",
+        help="Cluster artist name variants and interactively merge them",
+    )
+    na.add_argument(
+        "--dry-run", action="store_true",
+        help="List clusters without making any changes",
+    )
+    na.add_argument(
+        "--auto", action="store_true",
+        help="Merge clusters automatically without prompting (uses suggested canonical)",
+    )
+    na.add_argument(
+        "--threshold", type=int, default=70, metavar="N",
+        help="Fuzzy similarity threshold 0-100 (default: 70)",
+    )
+    na.add_argument(
+        "--min-confidence", type=int, default=100, metavar="N", dest="min_confidence",
+        help="Minimum confidence for --auto merges (default: 100 = MBZ only)",
+    )
+    na.add_argument(
+        "--show-dismissed", action="store_true", dest="show_dismissed",
+        help="Include previously dismissed clusters",
+    )
+    na.set_defaults(func=cmd_normalize_artists)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")
