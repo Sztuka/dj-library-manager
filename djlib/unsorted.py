@@ -85,6 +85,7 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("ai_confidence", hidden=True, width=10, locked=True),
     ColumnSpec("ai_reasoning", hidden=True, width=60, locked=True),
     ColumnSpec("ai_classify_date", hidden=True, width=18, locked=True),
+    ColumnSpec("artist_normalized", hidden=True, width=12, locked=True),
 ]
 
 # Canonical fieldnames list for CSV I/O

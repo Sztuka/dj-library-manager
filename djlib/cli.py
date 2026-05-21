@@ -4520,6 +4520,90 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
     print(f"\nDone: {merged_count} merged, {skipped_count} skipped, {dismissed_count} dismissed.")
 
 
+def cmd_normalize_collabs(args: argparse.Namespace) -> None:
+    """Normalize collaboration separators (feat./ft./x/&) across artist fields."""
+    from djlib.collab_normalizer import normalize_collab_artist, collect_normalization_candidates
+    from djlib.artist_normalizer import load_aliases, save_aliases
+    from djlib.library_schema import load_library_csv, save_library_csv
+    from djlib.locks import csv_lock as _csv_lock
+
+    dry_run    = getattr(args, "dry_run", False)
+    source     = getattr(args, "source", "both")
+    use_mb     = getattr(args, "no_mb", False) is False
+    canonical  = getattr(args, "canonical", "feat.")
+
+    aliases_path = CSV_PATH.parent / "artist_aliases.yml"
+    aliases = load_aliases(aliases_path)
+    aliases.setdefault("collab_overrides", {})
+    overrides = aliases["collab_overrides"]
+
+    # Gather rows to scan
+    lib_rows = list(load_library_csv(CSV_PATH)) if CSV_PATH.exists() and source in ("library", "both") else []
+    unsorted_rows = list(_load_unsorted()) if source in ("unsorted", "both") else []
+    all_rows = lib_rows + unsorted_rows
+
+    if not all_rows:
+        print("No rows to process.")
+        return
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}normalize-collabs")
+    print(f"  Source   : {source}")
+    print(f"  Canonical: {canonical}")
+    print(f"  MB lookup: {'yes' if use_mb else 'no'}")
+    print()
+
+    candidates = collect_normalization_candidates(
+        all_rows, overrides=overrides, canonical_sep=canonical, use_mb=use_mb
+    )
+
+    if not candidates:
+        print("No collaboration format issues found.")
+        return
+
+    print(f"Found {len(candidates)} artist field(s) to normalize:\n")
+    for c in candidates:
+        print(f"  {c['original']!r}  →  {c['normalized']!r}")
+
+    if dry_run:
+        print(f"\n[DRY-RUN] {len(candidates)} change(s). No files modified.")
+        return
+
+    # Apply: update artist + set artist_normalized flag
+    changed_u = changed_l = 0
+
+    # Unsorted CSV
+    if source in ("unsorted", "both") and unsorted_rows:
+        norm_map = {c["original"]: c["normalized"] for c in candidates}
+        with _csv_lock(UNSORTED_CSV):
+            u_rows = load_unsorted_rows(UNSORTED_CSV)
+            for row in u_rows:
+                raw = (row.get("artist") or "").strip()
+                if raw in norm_map:
+                    row["artist"] = norm_map[raw]
+                    row["artist_normalized"] = "yes"
+                    changed_u += 1
+            if changed_u:
+                write_unsorted_rows(UNSORTED_CSV, u_rows)
+
+    # Library CSV
+    if source in ("library", "both") and lib_rows:
+        norm_map = {c["original"]: c["normalized"] for c in candidates}
+        with _csv_lock(CSV_PATH):
+            rows = load_library_csv(CSV_PATH)
+            for row in rows:
+                raw = (row.get("artist") or "").strip()
+                if raw in norm_map:
+                    row["artist"] = norm_map[raw]
+                    row["artist_normalized"] = "yes"
+                    changed_l += 1
+            if changed_l:
+                save_library_csv(CSV_PATH, rows)
+
+    print(f"\nDone: {changed_u + changed_l} row(s) updated "
+          f"(unsorted: {changed_u}, library: {changed_l}).")
+    print("  artist_normalized=yes set — sync-dj-libraries will not overwrite.")
+
+
 def cmd_reconvert(args: argparse.Namespace) -> None:
     """Batch-convert all WAV/FLAC in library.csv to AIFF in-place."""
     from djlib.reconvert import run_reconvert, ReconvertResult
@@ -4860,6 +4944,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include previously dismissed clusters",
     )
     na.set_defaults(func=cmd_normalize_artists)
+
+    nc = sp.add_parser(
+        "normalize-collabs",
+        help="Normalize collaboration separators (feat./ft./x/&) across artist fields",
+    )
+    nc.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would change without modifying any files",
+    )
+    nc.add_argument(
+        "--source", choices=["unsorted", "library", "both"], default="both",
+        help="Which CSV(s) to process (default: both)",
+    )
+    nc.add_argument(
+        "--canonical", default="feat.",
+        help="Target separator format (default: 'feat.')",
+    )
+    nc.add_argument(
+        "--no-mb", action="store_true", dest="no_mb",
+        help="Skip MusicBrainz lookup for '&' disambiguation (faster, less accurate)",
+    )
+    nc.set_defaults(func=cmd_normalize_collabs)
 
     reconvert = sp.add_parser(
         "reconvert",
