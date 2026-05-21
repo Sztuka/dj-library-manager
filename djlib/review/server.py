@@ -252,6 +252,118 @@ def api_library_index():
     return jsonify(sorted(keys))
 
 
+@app.route("/api/version-groups")
+def api_version_groups():
+    """Return tracks grouped by version (same song, different mix/edit).
+
+    ?source=library|unsorted|all  (default: all — cross-source comparison)
+
+    Response: { groups: [ { group_id, members: [track, ...] } ], ... }
+    Each track has an extra ``version_info`` field (extracted from title parens)
+    and ``_source`` (which CSV it came from).
+    """
+    from djlib.versions import group_versions, extract_version_info, version_group_id
+
+    source = request.args.get("source", "all")
+    rows: List[Dict] = []
+
+    if source in ("unsorted", "all"):
+        for row in load_unsorted_rows(UNSORTED_CSV):
+            row["_source"] = "unsorted"
+            rows.append(row)
+
+    if source in ("library", "all"):
+        for row in _load_library_csv():
+            row["_source"] = "library"
+            rows.append(row)
+
+    groups = group_versions(rows)
+
+    result = []
+    for gid, members in groups.items():
+        for m in members:
+            title = m.get("title") or m.get("tag_title_original") or ""
+            m["_version_info"] = extract_version_info(title)
+        # Sort: duration descending (Extended first); ties: title alphabetically
+        members.sort(key=lambda r: (
+            -(float(r.get("duration_seconds") or 0) or 0),
+            (r.get("title") or ""),
+        ))
+        result.append({"group_id": gid, "members": members})
+
+    # Sort groups: most members first, then alphabetically by first member artist+title
+    result.sort(key=lambda g: (
+        -len(g["members"]),
+        (g["members"][0].get("artist") or "") + (g["members"][0].get("title") or ""),
+    ))
+
+    return jsonify({"groups": result, "total_groups": len(result)})
+
+
+@app.route("/api/version-group-id")
+def api_version_group_id():
+    """Return version_group_id for a given artist + title (for JS badge building)."""
+    from djlib.versions import version_group_id
+    artist = request.args.get("artist", "")
+    title = request.args.get("title", "")
+    return jsonify({"group_id": version_group_id(artist, title)})
+
+
+@app.route("/api/tracks/version-group-rating", methods=["PATCH"])
+def api_version_group_rating():
+    """Set preferred track to 5★, all peers to 3★ — atomic single CSV write per source.
+
+    Request body:
+      {
+        "preferred_id": "track_id",
+        "peer_ids": ["track_id", ...],
+        "source": "unsorted"   // or "library"
+      }
+    """
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    preferred_id = data.get("preferred_id")
+    peer_ids: List[str] = data.get("peer_ids") or []
+    source = data.get("source", "unsorted")
+
+    if not preferred_id:
+        return jsonify({"error": "Missing preferred_id"}), 400
+
+    all_ids = {preferred_id: "5"} | {pid: "3" for pid in peer_ids}
+
+    if source == "library":
+        from djlib.library_schema import load_library_csv, save_library_csv
+        lib_path = _REPO / "data" / "library.csv"
+        with _CSV_LOCK:
+            with csv_lock(lib_path):
+                rows = load_library_csv(lib_path)
+                updated = 0
+                for row in rows:
+                    tid = row.get("track_id") or ""
+                    if tid in all_ids:
+                        row["rating"] = all_ids[tid]
+                        updated += 1
+                if updated:
+                    save_library_csv(lib_path, rows)
+        return jsonify({"ok": True, "updated": updated})
+    else:
+        csv_file = LIBRARY_REVIEW_CSV if source in ("library-review", "library-fix") else UNSORTED_CSV
+        with _CSV_LOCK:
+            with csv_lock(csv_file):
+                rows = load_unsorted_rows(csv_file)
+                updated = 0
+                for row in rows:
+                    tid = row.get("track_id") or row.get("file_hash") or ""
+                    if tid in all_ids:
+                        row["rating"] = all_ids[tid]
+                        updated += 1
+                if updated:
+                    write_unsorted_rows(csv_file, rows, [])
+        return jsonify({"ok": True, "updated": updated})
+
+
 _TRANSCODE_EXTS = {".aiff", ".aif", ".flac", ".wav"}
 
 
