@@ -19,6 +19,7 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -319,11 +320,11 @@ def _run(
             result.failed += 1
             continue
 
-        # Atomic rename: temp → dest
+        # Move temp → dest (shutil.move works cross-device, e.g. /tmp → NAS)
         try:
-            tmp_path.rename(dest)
+            shutil.move(str(tmp_path), str(dest))
         except OSError as exc:
-            log.warning("Rename failed %s → %s: %s", tmp_path, dest, exc)
+            log.warning("Move failed %s → %s: %s", tmp_path, dest, exc)
             tmp_path.unlink(missing_ok=True)
             wal.append_event(tid, RECONVERT_FAILED, src=str(src), reason=str(exc))
             result.failed += 1
@@ -347,8 +348,9 @@ def _run(
                 new_path = converted_paths.get(tid)
                 if new_path is None:
                     continue
-                old_path = row.get("old_full_path", "")
+                old_path = row.get("old_full_path", "") or row.get("file_path", "")
                 row["old_full_path"] = str(new_path)
+                row["file_path"] = str(new_path)
                 move_rows.append([old_path, str(new_path), tid])
             save_library_csv(csv_path, rows)
 

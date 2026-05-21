@@ -1555,8 +1555,6 @@ def cmd_apply(args: argparse.Namespace) -> None:
         _converted_tmp: Optional[Path] = None
         from djlib.convert import needs_conversion
         if needs_conversion(src):
-            dest_path = dest_path.with_suffix(".aiff")
-            final_name = dest_path.name
             if not args.dry_run:
                 from djlib.convert import convert_to_aiff
                 print(f"   🔄 Converting {src.suffix.upper()} → AIFF…")
@@ -1564,7 +1562,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 if _converted_tmp is None:
                     print(f"   ⚠️  AIFF conversion failed — moving original {src.suffix}")
                 else:
+                    # Only update dest_path extension after a confirmed successful conversion
+                    dest_path = dest_path.with_suffix(".aiff")
+                    final_name = dest_path.name
                     print(f"   ✅ Converted to AIFF")
+            else:
+                # Dry-run: show what would happen
+                dest_path = dest_path.with_suffix(".aiff")
+                final_name = dest_path.name
 
         print(f"{'DRY-RUN ' if args.dry_run else ''}MOVE: {src} -> {dest_path}")
 
@@ -1573,7 +1578,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
         # Ensure parent directory exists
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # ── Handle file-already-exists at destination ──
         if dest_path.exists():
             if destination in ("library", "mixes"):
@@ -1583,7 +1588,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 from djlib.fingerprint import file_sha256 as _fsha
                 existing_hash = _fsha(dest_path)
                 new_hash = r.get("file_hash") or _fsha(src)
-                
+
                 if existing_hash == new_hash:
                     _skip("IDENTICAL_FILE_EXISTS",
                           f"{dest_path.name}  (exact same file already at destination)")
@@ -1593,9 +1598,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
                         src.unlink()
                     except OSError:
                         pass
+                    if _converted_tmp:
+                        _converted_tmp.unlink(missing_ok=True)
                     processed_ids.add(r.get("track_id", ""))
                     continue
-                
+
                 # Different file, same name — ask user
                 print(f"\n⚠️  FILE CONFLICT at destination:")
                 print(f"   Target: {dest_path}")
@@ -1603,7 +1610,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 print(f"   Source hash:   {new_hash[:16]}...")
                 print(f"   Existing hash: {existing_hash[:16]}...")
                 conflict_choice = input("   [S]kip / [R]ename with (2) / [O]verwrite? [S/r/o]: ").strip().lower()
-                
+
                 if conflict_choice == 'o':
                     dest_path.unlink()
                     print(f"   → Overwriting existing file")
@@ -1619,6 +1626,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
                         i += 1
                     print(f"   → Renamed to: {dest_path.name}")
                 else:
+                    if _converted_tmp:
+                        _converted_tmp.unlink(missing_ok=True)
                     _skip("FILE_CONFLICT", f"{dest_path.name}  (user chose to skip)")
                     continue
             else:
@@ -1632,11 +1641,16 @@ def cmd_apply(args: argparse.Namespace) -> None:
                         dest_path = cand
                         break
                     i += 1
-        
-        _src_to_move = _converted_tmp if _converted_tmp else src
-        shutil.move(str(_src_to_move), str(dest_path))
-        if _converted_tmp and src.exists():
-            src.unlink()
+
+        try:
+            _src_to_move = _converted_tmp if _converted_tmp else src
+            shutil.move(str(_src_to_move), str(dest_path))
+            if _converted_tmp and src.exists():
+                src.unlink()
+        except Exception:
+            if _converted_tmp:
+                _converted_tmp.unlink(missing_ok=True)
+            raise
         r["old_full_path"] = str(dest_path)
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
