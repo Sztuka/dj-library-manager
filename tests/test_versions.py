@@ -47,8 +47,9 @@ def test_extracts_brackets():
 def test_no_parens_returns_empty():
     assert extract_version_info("Blue Monday") == ""
 
-def test_extracts_first_group():
-    assert extract_version_info("Song (feat. X) (Radio Edit)") == "feat. X"
+def test_extracts_last_group():
+    # Version info is the last parenthetical, not the first (feat. is not the version)
+    assert extract_version_info("Song (feat. X) (Radio Edit)") == "Radio Edit"
 
 
 # ── group_versions ────────────────────────────────────────────────────────────

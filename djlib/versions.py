@@ -31,13 +31,14 @@ def version_group_id(artist: str, title: str) -> str:
 
 
 def extract_version_info(title: str) -> str:
-    """Return the bracketed version/remix suffix from a title, or empty string.
+    """Return the last bracketed version/remix suffix from a title, or empty string.
 
-    "Blue Monday (Extended Mix)" → "Extended Mix"
-    "Blue Monday"                → ""
+    "Blue Monday (Extended Mix)"          → "Extended Mix"
+    "Blue Monday"                         → ""
+    "Song (feat. X) (Radio Edit)"         → "Radio Edit"  (last group, not first)
     """
-    m = re.search(r"[\(\[](.*?)[\)\]]", title)
-    return m.group(1).strip() if m else ""
+    matches = re.findall(r"[\(\[](.*?)[\)\]]", title)
+    return matches[-1].strip() if matches else ""
 
 
 def group_versions(
