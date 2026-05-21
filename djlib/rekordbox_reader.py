@@ -231,7 +231,7 @@ def fetch_playlists_for_tracks(
                     for content in rows:
                         fname = str(getattr(content, "FileNameL", "") or "")
                         cid = int(getattr(content, "ID", 0) or 0)
-                        if fname:
+                        if fname and cid:
                             fname_to_cids.setdefault(fname, []).append(cid)
 
                     for fname, cids in fname_to_cids.items():

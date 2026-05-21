@@ -47,8 +47,9 @@ def _dur_int(val: str) -> Optional[int]:
 
 def _artist_slug(artist: str) -> str:
     """Normalize artist for comparison: lowercase alnum, strip feat./& suffixes."""
-    # x(?=\s|$) instead of x\b: avoids cutting "x-Press", "x-wife" etc.
-    s = re.sub(r"\s+(feat\.?|ft\.?|&|x(?=\s|$)|vs\.?|and\b).*", "", artist, flags=re.IGNORECASE)
+    # x(?=\s) instead of x\b or x(?=\s|$): requires whitespace after x,
+    # so trailing "DJ X" is preserved but "Artist x Artist2" is stripped.
+    s = re.sub(r"\s+(feat\.?|ft\.?|&|x(?=\s)|vs\.?|and\b).*", "", artist, flags=re.IGNORECASE)
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]", "", s.lower())

@@ -52,6 +52,10 @@ def test_artist_slug_x_in_name_not_stripped():
     # "x-Press" — the x is part of the name, not a collab separator
     assert _artist_slug("DJ x-Press") == "djxpress"
 
+def test_artist_slug_x_as_last_letter_not_stripped():
+    # "DJ X" — X is the artist name, not a collab separator (no following artist)
+    assert _artist_slug("DJ X") == "djx"
+
 def test_artist_slug_multiple_ampersands():
     assert _artist_slug("A & B & C") == "a"
 

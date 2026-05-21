@@ -4325,7 +4325,7 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
     Use --dry-run to list clusters without making any changes.
     """
     from djlib.artist_normalizer import (
-        collect_artists, cluster_artists, load_aliases,
+        collect_artists, cluster_artists, load_aliases, save_aliases,
         _split_compound, _normalize_key, _cluster_fingerprint,
         write_pending_entry, promote_pending_to_canonical,
         write_artist_tags, write_audit_log, dismiss_cluster,
@@ -4377,8 +4377,16 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
         print(f"\n[DRY-RUN] {total} cluster(s). No changes made.")
         return
 
-    def _do_merge(cluster: Dict, canonical: str) -> None:
+    def _do_merge(cluster: Dict, canonical: str) -> bool:
         variant_keys = {_normalize_key(v) for v in cluster["members"]}
+
+        def _apply_variants(raw: str) -> str:
+            """Replace each cluster variant in raw with canonical; preserves other artists."""
+            result = raw
+            for member in cluster["members"]:
+                result = re.sub(re.escape(member), canonical, result, flags=re.IGNORECASE)
+            return result
+
         affected: List[str] = []
         for row in list(load_unsorted_rows(UNSORTED_CSV)) + list(load_library_csv(CSV_PATH)):
             raw = (row.get("artist") or "").strip()
@@ -4393,14 +4401,18 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
 
         failed = write_artist_tags(affected, canonical)
         if failed:
+            # Roll back the pending entry so re-runs don't see a dangling WAL record.
+            _aliases = load_aliases(aliases_path)
+            _aliases["pending"].pop(fp, None)
+            save_aliases(aliases_path, _aliases)
             print(f"  ⚠️  {len(failed)} tag write(s) failed — merge NOT committed.")
             for f in failed[:5]:
                 print(f"     {f}")
-            return
+            return False
 
         promote_pending_to_canonical(aliases_path, fp, canonical, cluster["members"])
 
-        # Update CSVs
+        # Update CSVs — replace only the matched variant, preserving co-artists.
         from djlib.locks import csv_lock as _csv_lock
         updated_u = 0
         with _csv_lock(UNSORTED_CSV):
@@ -4408,7 +4420,7 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
             for row in u_rows:
                 raw = (row.get("artist") or "").strip()
                 if any(_normalize_key(a) in variant_keys for a in _split_compound(raw)):
-                    row["artist"] = canonical
+                    row["artist"] = _apply_variants(raw)
                     updated_u += 1
             if updated_u:
                 write_unsorted_rows(UNSORTED_CSV, u_rows)
@@ -4419,7 +4431,7 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
             for row in lib:
                 raw = (row.get("artist") or "").strip()
                 if any(_normalize_key(a) in variant_keys for a in _split_compound(raw)):
-                    row["artist"] = canonical
+                    row["artist"] = _apply_variants(raw)
                     updated_l += 1
             if updated_l:
                 save_library_csv(CSV_PATH, lib)
@@ -4427,6 +4439,7 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
         write_audit_log(LOGS_DIR, canonical, cluster["members"],
                         updated_u + updated_l, cluster["method"], int(cluster["confidence"]))
         print(f"  ✓ Merged → '{canonical}' ({updated_u + updated_l} track(s) updated)")
+        return True
 
     merged_count = skipped_count = dismissed_count = 0
 
@@ -4442,8 +4455,8 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
 
         if auto and cluster["confidence"] >= min_confidence:
             print(f"  Auto-merging → '{suggested}'")
-            _do_merge(cluster, suggested)
-            merged_count += 1
+            if _do_merge(cluster, suggested):
+                merged_count += 1
             continue
 
         # Interactive prompt
@@ -4467,8 +4480,8 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
             continue
 
         canonical = line if line else suggested
-        _do_merge(cluster, canonical)
-        merged_count += 1
+        if _do_merge(cluster, canonical):
+            merged_count += 1
 
     print(f"\nDone: {merged_count} merged, {skipped_count} skipped, {dismissed_count} dismissed.")
 
