@@ -194,9 +194,17 @@
       "problemMatcher": []
     },
     {
-      "label": "AI PLAYLIST — Generate from brief (dry-run, edit brief here)",
+      "label": "AI PLAYLIST — Generate from brief (dry-run)",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli ai-playlist 'WKLEJ BRIEF TUTAJ' --name 'NazwaPlaylisty' --count 40 --dry-run",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli ai-playlist ${input:aiBrief} --name ${input:aiPlaylistName} --count ${input:aiCount} --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI PLAYLIST — Generate from brief (zapisz do library.csv)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli ai-playlist ${input:aiBrief} --name ${input:aiPlaylistName} --count ${input:aiCount}",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
@@ -280,6 +288,26 @@
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "aiBrief",
+      "type": "promptString",
+      "description": "Brief dla Gemini (gatunek, BPM, długość setu, klimat…)",
+      "default": "dark progressive house, 130-134 BPM, 3h closing set, Berlin style"
+    },
+    {
+      "id": "aiPlaylistName",
+      "type": "promptString",
+      "description": "Nazwa playlisty (pojawi się w library.csv i Review UI)",
+      "default": "SaturdaySet"
+    },
+    {
+      "id": "aiCount",
+      "type": "promptString",
+      "description": "Liczba tracków",
+      "default": "40"
     }
   ]
 }
