@@ -3951,6 +3951,52 @@ def cmd_push_playlists(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_ai_playlist(args: argparse.Namespace) -> None:
+    """Generate a playlist from a natural-language brief using Gemini."""
+    from djlib.ai_playlist import build_ai_playlist
+    from djlib.config import get_config
+
+    cfg = get_config()
+    library_path = cfg.LIBRARY_CSV
+
+    playlist_name = args.name
+    brief = args.brief
+    count = args.count
+    dry_run = args.dry_run
+
+    print(f"Generating playlist '{playlist_name}' ({count} tracks) from brief…")
+    if dry_run:
+        print("  DRY RUN — no changes will be written")
+
+    try:
+        tagged = build_ai_playlist(
+            library_path=library_path,
+            brief=brief,
+            playlist_name=playlist_name,
+            count=count,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1)
+
+    if dry_run:
+        print(f"\nWould tag {len(tagged)} tracks as '{playlist_name}':")
+    else:
+        print(f"\nTagged {len(tagged)} tracks as '{playlist_name}':")
+
+    from djlib.library_schema import load_library_csv
+    rows = load_library_csv(library_path)
+    tid_to_row = {r["track_id"]: r for r in rows}
+    for tid in tagged:
+        row = tid_to_row.get(tid)
+        if row:
+            print(f"  {row.get('artist', '')} — {row.get('title', '')} [{row.get('genre', '')} {row.get('bpm', '')} BPM]")
+
+    if not dry_run:
+        print(f"\nDone. Open the Review UI → Playlists tab to review '{playlist_name}'.")
+
+
 def cmd_review(args: argparse.Namespace) -> None:
     """Launch interactive review UI in browser.
 
@@ -4980,6 +5026,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Resume a previously interrupted reconvert using the existing WAL",
     )
     reconvert.set_defaults(func=cmd_reconvert)
+
+    # ========== AI PLAYLIST ==========
+    aip = sp.add_parser(
+        "ai-playlist",
+        help="Generate a playlist from a natural-language brief (uses Gemini)",
+    )
+    aip.add_argument("brief", help="Natural-language brief, e.g. 'dark progressive, 130-134 BPM, 3h closing set'")
+    aip.add_argument("--name", required=True, help="Playlist name to tag selected tracks with")
+    aip.add_argument("--count", type=int, default=40, help="Number of tracks to select (default: 40)")
+    aip.add_argument("--dry-run", action="store_true", help="Print selection without writing to library.csv")
+    aip.set_defaults(func=cmd_ai_playlist)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")

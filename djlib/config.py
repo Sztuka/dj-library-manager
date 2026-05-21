@@ -569,6 +569,29 @@ def get_openai_api_key() -> str:
     return ""
 
 
+def get_gemini_api_key() -> str:
+    """Return Gemini API key from env or config files."""
+    env = os.getenv("DJLIB_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if env:
+        return env.strip()
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("gemini_api_key", "") or "").strip()
+        if val:
+            return val
+    repo_cfg = _REPO / "config.yml"
+    if repo_cfg.exists():
+        try:
+            d = _read_yaml(repo_cfg)
+            val = str(d.get("gemini_api_key", "") or "").strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    return ""
+
+
 _DEFAULT_AI_CHAT_MODEL = "gpt-4.1-mini"
 _DEFAULT_AI_QUICK_MODEL = "gpt-5-nano"
 
