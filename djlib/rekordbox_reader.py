@@ -26,6 +26,7 @@ _MUTABLE_FIELDS = ("cue_points_rb", "rating", "play_count", "bpm")
 def _default_db_path() -> Optional[Path]:
     """Return the default Rekordbox 6/7 master6.db path on macOS, or None."""
     candidates = [
+        Path.home() / "Library/Pioneer/rekordbox/master.db",
         Path.home() / "Library/Application Support/Pioneer/rekordbox/master6.db",
         Path.home() / "Library/Application Support/Pioneer/rekordboxAgent/Storage/master6.db",
     ]

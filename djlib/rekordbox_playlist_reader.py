@@ -27,7 +27,8 @@ _ATTR_FOLDER = 2     # folder (contains other playlists, no tracks directly)
 
 def _default_db_path() -> Optional[Path]:
     candidates = [
-        Path.home() / "Library/Application Support/Pioneer/rekordbox/master6.db",
+        Path.home() / "Library/Pioneer/rekordbox/master.db",           # RB 7
+        Path.home() / "Library/Application Support/Pioneer/rekordbox/master6.db",  # RB 6
         Path.home() / "Library/Application Support/Pioneer/rekordboxAgent/Storage/master6.db",
     ]
     for p in candidates:
