@@ -438,6 +438,24 @@ tbody tr.disp-later > td:first-child {
   border-left: 2px solid var(--lat);
 }
 
+/* ── Audio quality badge ─────────────────────────────────────── */
+
+.quality-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.qbadge-lossless { background: rgba(78,192,119,0.15);  color: var(--lib); }
+.qbadge-high     { background: rgba(124,150,232,0.15); color: var(--keyc); }
+.qbadge-mid      { background: rgba(212,167,62,0.15);  color: var(--pnd); }
+.qbadge-low      { background: rgba(208,74,74,0.15);   color: var(--rej); }
+
 /* ── Missing metadata indicators ─────────────────────────────── */
 
 .t-miss {

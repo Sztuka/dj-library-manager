@@ -202,6 +202,26 @@ def read_tags(path: Path) -> Dict[str, str]:
 
     duration_seconds = round(getattr(f.info, "length", 0.0))
 
+    # Audio quality: "FLAC", "AIFF", "WAV", "MP3 320", "MP3 256", "MP3 128", …
+    ext = path.suffix.lower()
+    _lossless_exts = {".flac", ".wav", ".aiff", ".aif"}
+    if ext in _lossless_exts:
+        fmt = ext.lstrip(".").upper()
+        if fmt == "AIF":
+            fmt = "AIFF"
+        audio_quality = fmt
+    else:
+        bitrate = round(getattr(f.info, "bitrate", 0) / 1000)
+        if ext == ".mp3":
+            fmt = "MP3"
+        elif ext in {".m4a", ".aac"}:
+            fmt = "AAC"
+        elif ext in {".ogg", ".opus"}:
+            fmt = ext.lstrip(".").upper()
+        else:
+            fmt = ext.lstrip(".").upper()
+        audio_quality = f"{fmt} {bitrate}" if bitrate else fmt
+
     return {
         "artist": artist,
         "title": title,
@@ -214,6 +234,7 @@ def read_tags(path: Path) -> Dict[str, str]:
         "year": year,
         "album": album,
         "duration_seconds": str(duration_seconds) if duration_seconds else "",
+        "audio_quality": audio_quality,
     }
 
 _AIFF_EXTS = {".aiff", ".aif"}

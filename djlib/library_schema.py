@@ -92,6 +92,7 @@ LIBRARY_FIELDNAMES: List[str] = [
     "rating",
     "color",
     "duration_seconds",
+    "audio_quality",    # e.g. "FLAC", "AIFF", "MP3 320" — set during scan, never overwritten by sync
     "play_count",
     "last_played",
     "cue_count",

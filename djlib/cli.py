@@ -518,6 +518,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
             "duplicate_paths": "",
             "disposition": "",
             "duration_seconds": _safe_str(tags.get("duration_seconds")),
+            "audio_quality": _safe_str(tags.get("audio_quality")),
         }
         for key in [
             "artist_suggest",

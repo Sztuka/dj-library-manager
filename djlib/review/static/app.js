@@ -262,6 +262,7 @@
       { key: "bpm", label: "BPM", width: "46px", cls: "col-bpm" },
       { key: "duration_seconds", label: "Time", width: "55px", cls: "col-bpm", fmt: fmtDuration },
       { key: "key_camelot", label: "Key", width: "40px", cls: "col-key" },
+      { key: "audio_quality", label: "Quality", width: "70px", type: "quality-badge" },
       { key: "color", label: "Clr", width: "26px", type: "color-dot" },
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
     ],
@@ -278,6 +279,7 @@
         cls: "col-bpm",
         fmt: fmtDuration,
       },
+      { key: "audio_quality", label: "Quality", width: "70px", type: "quality-badge" },
       { key: "rating", label: "Rating", width: "72px", type: "rating" },
       { key: "color", label: "Clr", width: "32px", type: "color-dot" },
       { key: "cue_count", label: "Cues", width: "38px", cls: "col-bpm" },
@@ -454,6 +456,23 @@
   function inDjBadgeHtml(val) {
     if (val === "yes") return '<span class="badge-in-lib">YES</span>';
     return '<span class="badge-no-dj">\u2014</span>';
+  }
+
+  // -- Audio quality badge ------------------------------------
+  function qualityBadgeHtml(val) {
+    if (!val) return "";
+    var v = val.trim().toUpperCase();
+    var cls;
+    if (v === "FLAC" || v === "WAV" || v === "AIFF") {
+      cls = "qbadge-lossless";
+    } else if (/^MP3 3[2-9]\d|^AAC 3[2-9]\d/.test(v)) {
+      cls = "qbadge-high";
+    } else if (/^MP3 2[56]\d|^AAC 2[56]\d/.test(v)) {
+      cls = "qbadge-mid";
+    } else {
+      cls = "qbadge-low";
+    }
+    return '<span class="quality-badge ' + cls + '">' + escHtml(val) + "</span>";
   }
 
   // -- Color dot helper ---------------------------------------
@@ -1770,6 +1789,8 @@
               })(td, track, col.key),
             );
           }
+        } else if (col.type === "quality-badge") {
+          td.innerHTML = qualityBadgeHtml(track[col.key]);
         } else if (col.type === "color-dot") {
           td.innerHTML = colorDotHtml(track[col.key]);
           td.style.textAlign = "center";
