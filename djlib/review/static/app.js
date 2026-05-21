@@ -518,34 +518,53 @@
   }
 
   function renderVersionChildRows() {
+    // Remove previous child rows and clear expanded markers.
     tableBody.querySelectorAll("tr.version-child").forEach(function (r) { r.remove(); });
     tableBody.querySelectorAll("tr.version-expanded").forEach(function (r) {
       r.classList.remove("version-expanded");
     });
     if (!expandedGroups.size) return;
 
-    var insertedGroups = new Set();
-    Array.from(tableBody.querySelectorAll("tr[data-tid]")).forEach(function (parentTr) {
-      var parentTid = parentTr.dataset.tid;
-      if (!parentTid) return;
-      var gid = trackGroupId[parentTid];
-      if (!gid || !expandedGroups.has(gid) || insertedGroups.has(gid)) return;
-      insertedGroups.add(gid);
-      parentTr.classList.add("version-expanded");
+    // Build tid→filteredTracks-index map once (O(N), single pass, no DOM touch).
+    // We'll use data-idx to find TRs — avoids scanning all tr[data-tid] in the DOM.
+    var tidToIdx = {};
+    for (var fi = 0; fi < filteredTracks.length; fi++) {
+      var ftid = trackId(filteredTracks[fi]);
+      if (ftid) tidToIdx[ftid] = fi;
+    }
 
+    var mainCols = COLUMNS[currentSource] || COLUMNS.unsorted;
+    var totalCols = mainCols.length + (isEditableSource() ? 1 : 0);
+
+    // Iterate only over expanded groups (O(k), k ≪ N) instead of all DOM rows.
+    expandedGroups.forEach(function (gid) {
       var group = versionGroups[gid];
       if (!group) return;
 
-      // Detect mixed artists (covers alert) using simple lowercase+alnum slug
+      // Find the first group member that appears in the current filtered/sorted view.
+      var parentTid = null;
+      var parentIdx = Infinity;
+      group.members.forEach(function (m) {
+        var mTid = m.track_id || m.file_hash || "";
+        var idx = tidToIdx[mTid];
+        if (idx !== undefined && idx < parentIdx) {
+          parentIdx = idx;
+          parentTid = mTid;
+        }
+      });
+      if (parentTid === null) return; // group not visible in current view
+
+      var parentTr = tableBody.querySelector("tr[data-idx='" + parentIdx + "']");
+      if (!parentTr) return;
+      parentTr.classList.add("version-expanded");
+
+      // Detect mixed artists (covers alert) using simple lowercase+alnum slug.
       var artistKeys = new Set();
       group.members.forEach(function (m) {
         var a = (m.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         if (a) artistKeys.add(a);
       });
       var hasMixedArtists = artistKeys.size > 1;
-
-      var mainCols = COLUMNS[currentSource] || COLUMNS.unsorted;
-      var totalCols = mainCols.length + (isEditableSource() ? 1 : 0);
 
       var afterRow = parentTr;
       group.members.forEach(function (member) {

@@ -87,6 +87,34 @@ def _no_cache_static(response: Response) -> Response:
     return response
 
 
+# ── Version-groups cache ─────────────────────────────────────────────────────
+# Invalidated by any endpoint that writes unsorted.csv or library.csv so that
+# stale groups are never served after a rating change or track update.
+
+_VG_CACHE: Dict[str, Any] = {}   # source → {"result": ..., "etag": ...}
+
+
+def _vg_cache_key(source: str) -> str:
+    """Cache key = source + mtime of the CSV files involved."""
+    mtimes = []
+    if source in ("unsorted", "all"):
+        try:
+            mtimes.append(int(UNSORTED_CSV.stat().st_mtime * 1000))
+        except OSError:
+            mtimes.append(0)
+    if source in ("library", "all"):
+        lib_path = _REPO / "data" / "library.csv"
+        try:
+            mtimes.append(int(lib_path.stat().st_mtime * 1000))
+        except OSError:
+            mtimes.append(0)
+    return f"{source}:{':'.join(str(m) for m in mtimes)}"
+
+
+def _invalidate_vg_cache() -> None:
+    _VG_CACHE.clear()
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _load_library_csv() -> List[Dict[str, str]]:
@@ -259,12 +287,22 @@ def api_version_groups():
     ?source=library|unsorted|all  (default: all — cross-source comparison)
 
     Response: { groups: [ { group_id, members: [track, ...] } ], ... }
-    Each track has an extra ``version_info`` field (extracted from title parens)
+    Each track has an extra ``_version_info`` field (extracted from title parens)
     and ``_source`` (which CSV it came from).
+
+    Result is mtime-keyed: re-computed only when CSV files change on disk.
     """
-    from djlib.versions import group_versions, extract_version_info, version_group_id
+    from djlib.versions import group_versions, extract_version_info
 
     source = request.args.get("source", "all")
+    if source not in ("unsorted", "library", "all"):
+        return jsonify({"error": f"Unknown source: {source}"}), 400
+
+    cache_key = _vg_cache_key(source)
+    cached = _VG_CACHE.get(source)
+    if cached and cached.get("key") == cache_key:
+        return jsonify(cached["result"])
+
     rows: List[Dict] = []
 
     if source in ("unsorted", "all"):
@@ -279,7 +317,7 @@ def api_version_groups():
 
     groups = group_versions(rows)
 
-    result = []
+    result_groups = []
     for gid, members in groups.items():
         for m in members:
             title = m.get("title") or m.get("tag_title_original") or ""
@@ -289,15 +327,17 @@ def api_version_groups():
             -(float(r.get("duration_seconds") or 0) or 0),
             (r.get("title") or ""),
         ))
-        result.append({"group_id": gid, "members": members})
+        result_groups.append({"group_id": gid, "members": members})
 
     # Sort groups: most members first, then alphabetically by first member artist+title
-    result.sort(key=lambda g: (
+    result_groups.sort(key=lambda g: (
         -len(g["members"]),
         (g["members"][0].get("artist") or "") + (g["members"][0].get("title") or ""),
     ))
 
-    return jsonify({"groups": result, "total_groups": len(result)})
+    result = {"groups": result_groups, "total_groups": len(result_groups)}
+    _VG_CACHE[source] = {"key": cache_key, "result": result}
+    return jsonify(result)
 
 
 @app.route("/api/version-group-id")
