@@ -251,6 +251,9 @@
       <button data-action="ai-suggest-genre" id="ctx-ai-suggest">
         🤖 Suggest genre (AI)
       </button>
+      <button data-action="ai-suggest-year" id="ctx-ai-suggest-year">
+        📅 Suggest year (AI)
+      </button>
       <button data-action="identify-track" id="ctx-identify">
         🔎 Identify track (AI)
       </button>
@@ -271,6 +274,7 @@
       <button class="kebab-item" data-action="enrich-track">Re-enrich (APIs)</button>
       <button class="kebab-item" data-action="swap-artist-title">Swap artist ↔ title</button>
       <button class="kebab-item" data-action="ai-suggest-genre">Suggest genre (AI)</button>
+      <button class="kebab-item" data-action="ai-suggest-year">Suggest year (AI)</button>
       <button class="kebab-item" data-action="identify-track">Identify track (AI)</button>
       <button class="kebab-item" data-action="scrape-url">Paste URL…</button>
       <div class="kebab-sep"></div>
@@ -283,6 +287,17 @@
       <button class="kebab-item" data-action="show-finder">Show in Finder</button>
       <button class="kebab-item" data-action="copy-filename">Copy filename</button>
       <button class="kebab-item" data-action="copy-artist-title">Copy artist — title</button>
+    </div>
+
+    <!-- ── Year suggestion banner ────────────────────────────────── -->
+    <div id="year-banner" class="year-banner hidden">
+      <span class="year-banner-icon">📅</span>
+      <span class="year-banner-label">Year:</span>
+      <span class="year-banner-year" id="year-banner-year"></span>
+      <span class="year-banner-confidence" id="year-banner-confidence"></span>
+      <span class="year-banner-reasoning" id="year-banner-reasoning"></span>
+      <button class="year-banner-accept" id="year-banner-accept" title="Accept year suggestion">✓ Accept</button>
+      <button class="year-banner-dismiss" id="year-banner-dismiss" title="Dismiss">✕</button>
     </div>
 
     <!-- ── AI suggestion banner ────────────────────────────────── -->

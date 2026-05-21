@@ -765,6 +765,76 @@ def api_ai_status():
     return jsonify({"available": bool(key)})
 
 
+@app.route("/api/suggest-year", methods=["POST"])
+def api_suggest_year():
+    """Ask Gemini to suggest a release year based on track metadata.
+
+    Request body (JSON):
+        { "track_id": "...", "context": { artist, title, version, genre, bpm, ... } }
+
+    Returns:
+        { "year": "1998", "confidence": 0.85, "reasoning": "..." }
+    """
+    from djlib.config import get_gemini_api_key
+    from google import genai  # type: ignore[import]
+    import json as _json
+
+    api_key = get_gemini_api_key()
+    if not api_key:
+        return jsonify({"error": "Gemini API key not configured. Add gemini_api_key to config.local.yml"}), 501
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    ctx = data.get("context", {})
+    if not ctx.get("artist") and not ctx.get("title"):
+        return jsonify({"error": "Need at least artist or title"}), 400
+
+    parts = []
+    for k, label in [
+        ("artist", "Artist"), ("title", "Title"), ("version", "Version/Remix"),
+        ("genre", "Genre"), ("bpm", "BPM"), ("original_release_year", "MusicBrainz original release year"),
+        ("year_suggest", "Enrichment year hint"),
+    ]:
+        if ctx.get(k):
+            parts.append(f"{label}: {ctx[k]}")
+
+    track_info = "\n".join(parts)
+
+    prompt = f"""You are a music expert. Based on the track metadata below, determine the original release year.
+
+{track_info}
+
+Rules:
+- Return the ORIGINAL release year, not a remaster or re-release year.
+- For remixes/edits, return the year of the remix, not the original track.
+- If you are not sure, still give your best estimate — do not refuse.
+- Respond ONLY with a JSON object, no markdown, no extra text.
+
+Example: {{"year": "1998", "confidence": 0.9, "reasoning": "Released on Defected Records in 1998..."}}"""
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        raw = (response.text or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        result = _json.loads(raw.strip())
+        # Normalise year to 4-digit string
+        year_val = str(result.get("year", "")).strip()[:4]
+        return jsonify({
+            "year": year_val,
+            "confidence": float(result.get("confidence", 0.0)),
+            "reasoning": str(result.get("reasoning", "")),
+        })
+    except Exception as exc:
+        _log.warning("Gemini suggest-year error: %s", exc)
+        return jsonify({"error": f"AI request failed: {exc}"}), 502
+
+
 @app.route("/api/suggest-genre", methods=["POST"])
 def api_suggest_genre():
     """Ask OpenAI to classify a track's genre based on available metadata.

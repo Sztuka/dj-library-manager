@@ -2486,6 +2486,9 @@
       case "ai-suggest-genre":
         requestAiGenreSuggest(track);
         break;
+      case "ai-suggest-year":
+        requestAiYearSuggest(track);
+        break;
       case "identify-track":
         requestAiIdentify(track);
         break;
@@ -2655,6 +2658,92 @@
     aiBannerTrack = null;
   }
 
+  // ── Year suggestion banner ──────────────────────────────────────────────────
+  var yearBanner = document.getElementById("year-banner");
+  var yearBannerYear = document.getElementById("year-banner-year");
+  var yearBannerConf = document.getElementById("year-banner-confidence");
+  var yearBannerReasoning = document.getElementById("year-banner-reasoning");
+  var yearBannerAccept = document.getElementById("year-banner-accept");
+  var yearBannerDismiss = document.getElementById("year-banner-dismiss");
+  var yearBannerTrack = null;
+  var yearPending = false;
+
+  function hideYearBanner() {
+    if (yearBanner) yearBanner.classList.add("hidden");
+    yearBannerTrack = null;
+  }
+
+  if (yearBannerDismiss) yearBannerDismiss.addEventListener("click", hideYearBanner);
+
+  if (yearBannerAccept) {
+    yearBannerAccept.addEventListener("click", function () {
+      var yr = yearBannerAccept.dataset.year;
+      var track = yearBannerTrack;
+      if (!yr || !track) return;
+      track.year = yr;
+      saveTrackField(track, "year", yr);
+      showToast("Year set to " + yr);
+      hideYearBanner();
+      renderTable();
+    });
+  }
+
+  function requestAiYearSuggest(track) {
+    if (!track) return;
+    if (yearPending) { showToast("Year suggestion already in progress…"); return; }
+
+    yearPending = true;
+    yearBannerTrack = track;
+    yearBanner.classList.remove("hidden");
+    yearBanner.classList.add("ai-loading");
+    yearBannerYear.textContent = "Analyzing…";
+    yearBannerConf.textContent = "";
+    yearBannerReasoning.textContent = "";
+    yearBannerAccept.style.display = "none";
+    yearBannerDismiss.style.display = "inline-block";
+
+    var body = {
+      track_id: trackId(track),
+      context: {
+        artist:                track.artist || "",
+        title:                 track.title || "",
+        version:               track.version_info || "",
+        genre:                 track.genre || track.genre_suggest || "",
+        bpm:                   track.bpm || "",
+        original_release_year: track.original_release_year || "",
+        year_suggest:          track.year_suggest || "",
+      },
+    };
+
+    fetch("/api/suggest-year", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        yearPending = false;
+        yearBanner.classList.remove("ai-loading");
+        if (data.error) {
+          showToast("AI error: " + data.error);
+          hideYearBanner();
+          return;
+        }
+        yearBannerYear.textContent = data.year || "?";
+        var conf = data.confidence ? Math.round(data.confidence * 100) + "%" : "";
+        yearBannerConf.textContent = conf;
+        yearBannerReasoning.textContent = data.reasoning || "";
+        yearBannerReasoning.title = data.reasoning || "";
+        yearBannerAccept.dataset.year = data.year || "";
+        yearBannerAccept.style.display = data.year ? "inline-block" : "none";
+      })
+      .catch(function () {
+        yearPending = false;
+        yearBanner.classList.remove("ai-loading");
+        showToast("Year suggestion failed");
+        hideYearBanner();
+      });
+  }
 
   function requestSwapArtistTitle(track) {
     if (!track) return;

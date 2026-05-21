@@ -438,24 +438,6 @@ tbody tr.disp-later > td:first-child {
   border-left: 2px solid var(--lat);
 }
 
-/* ── Audio quality badge ─────────────────────────────────────── */
-
-.quality-badge {
-  display: inline-block;
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 5px;
-  border-radius: 3px;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-}
-
-.qbadge-lossless { background: rgba(78,192,119,0.15);  color: var(--lib); }
-.qbadge-high     { background: rgba(124,150,232,0.15); color: var(--keyc); }
-.qbadge-mid      { background: rgba(212,167,62,0.15);  color: var(--pnd); }
-.qbadge-low      { background: rgba(208,74,74,0.15);   color: var(--rej); }
-
 /* ── Missing metadata indicators ─────────────────────────────── */
 
 .t-miss {
@@ -2042,6 +2024,83 @@ tr.version-child.preferred-version > td:first-child {
   background: rgba(255, 255, 255, 0.15);
   color: var(--text);
 }
+
+/* ── Year suggestion banner ────────────────────────────────── */
+
+.year-banner {
+  position: fixed;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 91;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(135deg, rgba(124,150,232,0.15), rgba(78,156,208,0.12));
+  border: 1px solid rgba(124,150,232,0.4);
+  border-radius: 10px;
+  padding: 8px 16px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  font-size: 13px;
+  max-width: 700px;
+  animation: ai-slide-up 0.25s ease-out;
+}
+
+.year-banner.hidden { display: none; }
+
+.year-banner.ai-loading { animation: ai-pulse 1.5s ease-in-out infinite; }
+
+.year-banner-icon  { font-size: 18px; flex-shrink: 0; }
+.year-banner-label { color: var(--ink-3); font-size: 11px; flex-shrink: 0; }
+
+.year-banner-year {
+  font-weight: 700;
+  color: var(--keyc);
+  font-size: 20px;
+  font-family: var(--mono);
+  flex-shrink: 0;
+  letter-spacing: 1px;
+}
+
+.year-banner-confidence {
+  font-size: 11px;
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+
+.year-banner-reasoning {
+  font-size: 11px;
+  color: var(--ink-3);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.year-banner-accept,
+.year-banner-dismiss {
+  border: none;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.year-banner-accept {
+  background: var(--keyc);
+  color: #0a0b0d;
+  font-weight: 600;
+}
+.year-banner-accept:hover { opacity: 0.85; }
+
+.year-banner-dismiss {
+  background: rgba(255,255,255,0.08);
+  color: var(--ink-3);
+}
+.year-banner-dismiss:hover { background: rgba(255,255,255,0.15); color: var(--ink); }
 
 /* ── Unified Classify Banner ───────────────────────────────── */
 
