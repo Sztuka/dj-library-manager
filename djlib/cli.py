@@ -2095,8 +2095,6 @@ def cmd_backfill_quality(args: argparse.Namespace) -> None:
     dry_run = getattr(args, "dry_run", False)
     force = getattr(args, "force", False)  # re-fill even if already set
 
-    cfg = get_config()
-
     def _backfill_rows(rows: List[Dict[str, str]], label: str) -> int:
         updated = 0
         for row in rows:
@@ -2144,7 +2142,7 @@ def cmd_backfill_quality(args: argparse.Namespace) -> None:
         print("unsorted.csv: empty")
 
     # ── library.csv ───────────────────────────────────────────────
-    lib_path = cfg.LIBRARY_CSV
+    lib_path = CSV_PATH
     if lib_path.exists():
         lib_rows = load_library_csv(lib_path)
         n = _backfill_rows(lib_rows, "library.csv")
