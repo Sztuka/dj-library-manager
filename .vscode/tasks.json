@@ -41,7 +41,7 @@
       "problemMatcher": []
     },
     {
-      "label": "WORKFLOW 0 — Sync DJ Libraries & Tags",
+      "label": "TOOLS — Sync DJ Libraries & Tags",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli sync-dj-libraries --write",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
@@ -49,7 +49,7 @@
       "problemMatcher": []
     },
     {
-      "label": "WORKFLOW 0 (dry-run) — Sync DJ Libraries & Tags",
+      "label": "TOOLS (dry-run) — Sync DJ Libraries & Tags",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli sync-dj-libraries",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
@@ -133,7 +133,7 @@
     {
       "label": "TOOLS — Clean empty folders in UNSORTED",
       "type": "shell",
-      "command": "find ~/Music\\ Unsorted -name '.DS_Store' -delete && find ~/Music\\ Unsorted -depth -type d -empty -print -delete && echo '✅ Empty folders removed from Music Unsorted'",
+      "command": "${workspaceFolder}/.venv/bin/python -c \"\nimport os\nfrom pathlib import Path\n\nAUDIO = {'.mp3','.flac','.wav','.aiff','.aif','.m4a','.ogg','.opus'}\nNOISE = {'.jpg','.jpeg','.png','.webp','.gif','.bmp','.ds_store'}\nroot = Path.home() / 'Music Unsorted'\nremoved_files = removed_dirs = 0\nfor dirpath, dirs, files in os.walk(root, topdown=False):\n    d = Path(dirpath)\n    has_audio = any(f.lower().endswith(tuple(AUDIO)) for f in files)\n    if not has_audio:\n        for f in files:\n            if Path(f).suffix.lower() in NOISE or f == '.DS_Store':\n                (d / f).unlink(missing_ok=True)\n                removed_files += 1\n    try:\n        d.rmdir()\n        removed_dirs += 1\n    except OSError:\n        pass\nprint(f'✅ Removed {removed_files} non-audio files and {removed_dirs} empty folders from Music Unsorted')\n\"",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
@@ -173,6 +173,110 @@
       "label": "TOOLS — Dedup unsorted",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli dedup-staging",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "PLAYLISTS — Push djlib playlists to Rekordbox (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli push-playlists --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "PLAYLISTS — Push djlib playlists to Rekordbox",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli push-playlists",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "AI PLAYLIST — Generate from brief (dry-run, edit brief here)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli ai-playlist 'WKLEJ BRIEF TUTAJ' --name 'NazwaPlaylisty' --count 40 --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Normalize collaboration separators (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli normalize-collabs --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Normalize collaboration separators",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli normalize-collabs",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Reconvert WAV/FLAC → AIFF in library (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli reconvert --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Reconvert WAV/FLAC → AIFF in library",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli reconvert",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "GIG — Prep (dry-run, podaj nazwę giga i ścieżkę m3u)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli gig-prep NAZWA-GIGA --from-m3u ~/Playlists/NAZWA.m3u --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "GIG — Prep (copy tracks to MacBook)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli gig-prep NAZWA-GIGA --from-m3u ~/Playlists/NAZWA.m3u",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "GIG — Merge post-gig RB state (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli gig-merge NAZWA-GIGA --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "GIG — Merge post-gig RB state → library.csv",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli gig-merge NAZWA-GIGA",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "GIG — Cleanup MacBook copies after merge (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli gig-cleanup NAZWA-GIGA --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "GIG — Cleanup MacBook copies after merge",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli gig-cleanup NAZWA-GIGA",
       "dependsOn": "STEP 0 — Setup: create venv & install deps",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
