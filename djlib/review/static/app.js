@@ -4328,14 +4328,8 @@
       // handles showArtistsPanel / hideArtistsPanel including active state.
       if (src === "artists") return;
 
-      // Playlists tab — stub for now
-      if (src === "playlists") {
-        sourceTabs.querySelectorAll(".tab-btn").forEach(function (b) {
-          b.classList.toggle("active", b === btn);
-        });
-        showToast("Playlists view coming soon", "");
-        return;
-      }
+      // Playlists tab — handled by the playlists IIFE below
+      if (src === "playlists") return;
 
       // Regular source tabs — update visual, update hidden select, dispatch change
       sourceTabs.querySelectorAll(".tab-btn").forEach(function (b) {
@@ -4401,16 +4395,27 @@
       plRefreshBtn.className = "cta secondary";
       plRefreshBtn.textContent = "REFRESH";
       plRefreshBtn.addEventListener("click", function () {
-        showToast("Playlists view coming soon", "");
+        if (window._playlistsRefresh) window._playlistsRefresh();
       });
       ctaGroup.appendChild(plRefreshBtn);
 
+      var rbOpen = window._playlistsRbOpen && window._playlistsRbOpen();
       var pushBtn = document.createElement("button");
       pushBtn.className = "cta primary";
       pushBtn.textContent = "PUSH";
-      pushBtn.title = "Push djlib playlists to Rekordbox (Rekordbox must be closed)";
+      pushBtn.disabled = !!rbOpen;
+      pushBtn.title = rbOpen
+        ? "Close Rekordbox first, then push"
+        : "Push djlib playlists to Rekordbox (Rekordbox must be closed)";
       pushBtn.addEventListener("click", startPushPlaylists);
       ctaGroup.appendChild(pushBtn);
+
+      if (rbOpen) {
+        var rbWarn = document.createElement("span");
+        rbWarn.className = "pl-rb-open-cta-warn";
+        rbWarn.textContent = "⚠ RB open";
+        ctaGroup.appendChild(rbWarn);
+      }
     }
   }
 
@@ -5082,5 +5087,285 @@
 
     artistsRefreshBtn.addEventListener("click", loadArtistClusters);
     artistsShowDismissed.addEventListener("change", loadArtistClusters);
+  }());
+
+  // ── Playlists diff panel ─────────────────────────────────────────────────
+  (function () {
+    var playlistsPanel = document.getElementById("playlists-panel");
+    var plSidebarList = document.getElementById("pl-sidebar-list");
+    var plTracks = document.getElementById("pl-tracks");
+    var tableContainer = document.getElementById("table-container");
+
+    var playlistsActive = false;
+    var prevSource = null;
+    var diffData = null;       // { playlists, rb_only_playlists, rb_open }
+    var playlistNames = [];    // sorted list for sidebar nav
+    var focusedPl = -1;
+    var selectedPl = null;
+
+    // Expose rb_open state for CTA group
+    window._playlistsRbOpen = function () { return diffData && diffData.rb_open; };
+    window._playlistsRefresh = function () {
+      diffData = null;
+      if (playlistsActive) loadPlaylistDiff();
+    };
+
+    function showPlaylistsPanel() {
+      playlistsActive = true;
+      prevSource = currentSource;
+      currentSource = "playlists";
+      tableContainer.style.display = "none";
+      playlistsPanel.classList.remove("hidden");
+      document.querySelectorAll("#source-tabs .tab-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.source === "playlists");
+      });
+      updateCtaGroup();
+      if (!diffData) loadPlaylistDiff();
+    }
+
+    function hidePlaylistsPanel() {
+      playlistsActive = false;
+      currentSource = prevSource || "unsorted";
+      playlistsPanel.classList.add("hidden");
+      tableContainer.style.display = "";
+      document.querySelectorAll("#source-tabs .tab-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.source === currentSource);
+      });
+      updateCtaGroup();
+    }
+
+    async function loadPlaylistDiff() {
+      plSidebarList.innerHTML = '<div class="pl-loading">Loading…</div>';
+      plTracks.innerHTML = "";
+      try {
+        var resp = await fetch("/api/playlists/diff");
+        if (!resp.ok) {
+          var err = await resp.json();
+          plSidebarList.innerHTML = '<div class="pl-empty">' + escHtml(err.error || "Error loading playlists") + "</div>";
+          if (err.rb_open) showToast("Rekordbox is open — close it and REFRESH", "");
+          return;
+        }
+        diffData = await resp.json();
+        updateCtaGroup(); // re-render PUSH state after rb_open known
+        renderSidebar();
+        if (playlistNames.length > 0) selectPlaylist(playlistNames[0], 0);
+      } catch (e) {
+        plSidebarList.innerHTML = '<div class="pl-empty">Network error loading playlists</div>';
+      }
+    }
+
+    function renderSidebar() {
+      var rbOnlySet = new Set(diffData.rb_only_playlists || []);
+      playlistNames = Object.keys(diffData.playlists || {}).sort(function (a, b) {
+        return a.localeCompare(b);
+      });
+
+      plSidebarList.innerHTML = "";
+      if (!playlistNames.length) {
+        plSidebarList.innerHTML = '<div class="pl-empty">No playlists found</div>';
+        return;
+      }
+
+      playlistNames.forEach(function (name, idx) {
+        var tracks = diffData.playlists[name] || [];
+        var hasRbOnly = tracks.some(function (t) { return t.state === "rb_only" || t.state === "rb_only_unknown"; });
+        var hasDjlibOnly = tracks.some(function (t) { return t.state === "djlib_only"; });
+
+        var dotClass;
+        if (rbOnlySet.has(name) || hasRbOnly) dotClass = "pl-dot-rb-only";
+        else if (hasDjlibOnly) dotClass = "pl-dot-djlib-only";
+        else dotClass = "pl-dot-synced";
+
+        var item = document.createElement("div");
+        item.className = "pl-sidebar-item";
+        item.dataset.idx = idx;
+        item.innerHTML =
+          '<span class="pl-sidebar-dot ' + dotClass + '"></span>' +
+          '<span class="pl-sidebar-name">' + escHtml(name) + "</span>" +
+          '<span class="pl-sidebar-count">' + tracks.length + "</span>";
+
+        item.addEventListener("click", function () { selectPlaylist(name, idx); });
+        plSidebarList.appendChild(item);
+      });
+
+      focusedPl = 0;
+      highlightSidebarItem(0);
+    }
+
+    function highlightSidebarItem(idx) {
+      plSidebarList.querySelectorAll(".pl-sidebar-item").forEach(function (el, i) {
+        el.classList.toggle("active", i === idx);
+      });
+      var el = plSidebarList.querySelector('[data-idx="' + idx + '"]');
+      if (el) el.scrollIntoView({ block: "nearest" });
+    }
+
+    function selectPlaylist(name, idx) {
+      selectedPl = name;
+      if (idx === undefined || idx === null) idx = playlistNames.indexOf(name);
+      focusedPl = idx;
+      highlightSidebarItem(idx);
+      renderPlaylistTracks(name);
+    }
+
+    function syncBadgeHtml(state) {
+      var defs = {
+        both:            { text: "synced",  cls: "sync-badge-both" },
+        rb_only:         { text: "RB only", cls: "sync-badge-rb-only" },
+        rb_only_unknown: { text: "RB ?",    cls: "sync-badge-rb-unknown" },
+        djlib_only:      { text: "djlib",   cls: "sync-badge-djlib-only" },
+      };
+      var d = defs[state] || { text: state, cls: "" };
+      return '<span class="sync-badge ' + d.cls + '">' + d.text + "</span>";
+    }
+
+    function starsHtml(rating) {
+      var n = parseInt(rating, 10);
+      if (!n || n < 1) return "";
+      var filled = Math.min(n, 5);
+      return '<span class="pl-rating">' + "★".repeat(filled) + "☆".repeat(5 - filled) + "</span>";
+    }
+
+    function renderPlaylistTracks(name) {
+      var tracks = (diffData && diffData.playlists[name]) || [];
+
+      if (!tracks.length) {
+        plTracks.innerHTML = '<div class="pl-empty">No tracks in this playlist</div>';
+        return;
+      }
+
+      var html = '<div class="pl-content-header">' +
+        '<span class="pl-content-title">' + escHtml(name) + "</span>" +
+        '<span class="pl-content-count">' + tracks.length + " tracks</span>";
+      if (diffData && diffData.rb_open) {
+        html += '<span class="pl-rb-open-warn">⚠ Rekordbox is open — close it before pushing</span>';
+      }
+      html += "</div>";
+
+      html += '<table class="pl-track-table">' +
+        '<thead><tr>' +
+        '<th class="pl-th pl-th-state"></th>' +
+        '<th class="pl-th pl-th-artist">Artist</th>' +
+        '<th class="pl-th pl-th-title">Title</th>' +
+        '<th class="pl-th pl-th-version">Version</th>' +
+        '<th class="pl-th pl-th-genre">Genre</th>' +
+        '<th class="pl-th pl-th-year">Year</th>' +
+        '<th class="pl-th pl-th-bpm">BPM</th>' +
+        '<th class="pl-th pl-th-key">Key</th>' +
+        '<th class="pl-th pl-th-time">Time</th>' +
+        '<th class="pl-th pl-th-rating">Rating</th>' +
+        '<th class="pl-th pl-th-action"></th>' +
+        '</tr></thead>' +
+        '<tbody>';
+
+      tracks.forEach(function (t) {
+        var adoptBtn = (t.state === "rb_only" && t.track_id)
+          ? '<button class="pl-adopt-btn" data-track-id="' + escHtml(t.track_id) +
+            '" data-playlist="' + escHtml(name) + '">Adopt</button>'
+          : "";
+        html +=
+          '<tr class="pl-track-row">' +
+          '<td class="pl-td-state">' + syncBadgeHtml(t.state) + "</td>" +
+          '<td class="pl-td-artist">' + escHtml(t.artist || "") + "</td>" +
+          '<td class="pl-td-title">' + escHtml(t.title || "") + "</td>" +
+          '<td class="pl-td-version">' + escHtml(t.version_info || "") + "</td>" +
+          '<td class="pl-td-genre">' + escHtml(t.genre || "") + "</td>" +
+          '<td class="pl-td-year">' + escHtml(t.year || "") + "</td>" +
+          '<td class="pl-td-bpm">' + escHtml(t.bpm || "") + "</td>" +
+          '<td class="pl-td-key">' + escHtml(t.key_camelot || "") + "</td>" +
+          '<td class="pl-td-time">' + escHtml(t.duration || "") + "</td>" +
+          '<td class="pl-td-rating">' + starsHtml(t.rating) + "</td>" +
+          '<td class="pl-td-action">' + adoptBtn + "</td>" +
+          "</tr>";
+      });
+      html += "</tbody></table>";
+
+      plTracks.innerHTML = html;
+
+      // Wire adopt buttons
+      plTracks.querySelectorAll(".pl-adopt-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          adoptFromRb(btn.dataset.trackId, btn.dataset.playlist, btn);
+        });
+      });
+    }
+
+    async function adoptFromRb(trackId, playlist, btn) {
+      btn.disabled = true;
+      btn.textContent = "…";
+      try {
+        var resp = await fetch("/api/track/" + encodeURIComponent(trackId) + "/adopt-from-rb", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playlist: playlist }),
+        });
+        var data = await resp.json();
+        if (data.ok) {
+          btn.textContent = "✓";
+          btn.classList.add("pl-adopt-btn--done");
+          showToast("Adopted into \"" + playlist + "\"");
+          // Update local state so re-render shows "synced"
+          if (diffData && diffData.playlists[playlist]) {
+            var track = diffData.playlists[playlist].find(function (t) { return t.track_id === trackId; });
+            if (track) track.state = "both";
+          }
+          renderSidebar();
+          selectPlaylist(playlist);
+        } else {
+          showToast("Adopt failed: " + (data.error || "unknown"));
+          btn.disabled = false;
+          btn.textContent = "Adopt";
+        }
+      } catch (e) {
+        showToast("Network error");
+        btn.disabled = false;
+        btn.textContent = "Adopt";
+      }
+    }
+
+    // Keyboard shortcuts
+    document.addEventListener("keydown", function (e) {
+      // Global P — jump to Playlists tab (when not in an input and panel is closed)
+      if (!playlistsActive && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          (e.key === "p" || e.key === "P") &&
+          e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "SELECT") {
+        e.preventDefault();
+        if (!playlistsActive) showPlaylistsPanel();
+        return;
+      }
+
+      if (!playlistsActive) return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        var next = e.key === "ArrowDown"
+          ? Math.min(focusedPl + 1, playlistNames.length - 1)
+          : Math.max(focusedPl - 1, 0);
+        selectPlaylist(playlistNames[next], next);
+        return;
+      }
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        hidePlaylistsPanel();
+        return;
+      }
+    });
+
+    // Wire the tab button (click is delegated through sourceTabs, which returns early
+    // for "playlists" — so we wire directly here)
+    var plTabBtn = document.querySelector('#source-tabs .tab-btn[data-source="playlists"]');
+    if (plTabBtn) {
+      plTabBtn.addEventListener("click", function () {
+        if (playlistsActive) hidePlaylistsPanel();
+        else showPlaylistsPanel();
+      });
+    }
+
+    // Hide when another source is selected via the hidden select
+    sourceSelect.addEventListener("change", function () {
+      if (playlistsActive) hidePlaylistsPanel();
+    });
   }());
 })();

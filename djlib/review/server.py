@@ -2913,6 +2913,28 @@ def _build_playlist_diff(rb_playlists: Dict[str, Any], lib_rows: list) -> Dict[s
     # Track which (rb_id, playlist_name) pairs we saw in RB
     seen_in_rb: Dict[str, set] = {}  # rb_id → set(playlist_names)
 
+    def _lib_fields(row: Dict, fallback_artist: str = "", fallback_title: str = "") -> Dict:
+        """Extract all display fields from a library.csv row."""
+        dur_raw = (row.get("duration_seconds") or "").strip()
+        dur_fmt = ""
+        if dur_raw:
+            try:
+                secs = int(float(dur_raw))
+                dur_fmt = f"{secs // 60}:{secs % 60:02d}"
+            except (ValueError, TypeError):
+                pass
+        return {
+            "artist":       row.get("artist") or fallback_artist,
+            "title":        row.get("title") or fallback_title,
+            "version_info": row.get("version_info") or "",
+            "genre":        row.get("genre") or "",
+            "year":         row.get("year") or "",
+            "bpm":          row.get("bpm") or "",
+            "key_camelot":  row.get("key_camelot") or "",
+            "duration":     dur_fmt,
+            "rating":       row.get("rating") or "",
+        }
+
     for pl_name, tracks in rb_playlists.items():
         entries = []
         for track in tracks:
@@ -2929,18 +2951,19 @@ def _build_playlist_diff(rb_playlists: Dict[str, Any], lib_rows: list) -> Dict[s
                     "rekordbox_id": rb_id,
                     "artist": track.get("artist") or "?",
                     "title": track.get("title") or "?",
+                    "version_info": "",
+                    "genre": "", "year": "", "bpm": "",
+                    "key_camelot": "", "duration": "", "rating": "",
                     "state": "rb_only_unknown",
                 })
             else:
                 djlib_pls = rb_id_to_djlib_playlists.get(rb_id, set())
                 state = "both" if pl_name in djlib_pls else "rb_only"
-                entries.append({
-                    "track_id": row.get("track_id"),
-                    "rekordbox_id": rb_id,
-                    "artist": row.get("artist") or track.get("artist") or "",
-                    "title": row.get("title") or track.get("title") or "",
-                    "state": state,
-                })
+                entry = _lib_fields(row, track.get("artist") or "", track.get("title") or "")
+                entry["track_id"] = row.get("track_id")
+                entry["rekordbox_id"] = rb_id
+                entry["state"] = state
+                entries.append(entry)
         result_playlists[pl_name] = entries
 
     # djlib_only: tagged in library.csv but NOT seen in any RB playlist.
@@ -2961,13 +2984,11 @@ def _build_playlist_diff(rb_playlists: Dict[str, Any], lib_rows: list) -> Dict[s
                     continue
                 djlib_only_seen.add(dedup_key)
                 pl_entries = result_playlists.setdefault(pl_name, [])
-                pl_entries.append({
-                    "track_id": tid or None,
-                    "rekordbox_id": rb_id or None,
-                    "artist": row.get("artist") or "",
-                    "title": row.get("title") or "",
-                    "state": "djlib_only",
-                })
+                entry = _lib_fields(row)
+                entry["track_id"] = tid or None
+                entry["rekordbox_id"] = rb_id or None
+                entry["state"] = "djlib_only"
+                pl_entries.append(entry)
 
     # rb_only_playlists: playlists that exist in RB but have no djlib representation
     rb_playlist_names = set(rb_playlists.keys())
