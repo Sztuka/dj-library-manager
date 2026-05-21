@@ -1549,6 +1549,23 @@ def cmd_apply(args: argparse.Namespace) -> None:
             print(f"[WARN] Brak destination/target_subfolder dla {src.name}")
             continue
 
+        # ── WAV/FLAC → AIFF conversion ──────────────────────────────────────────
+        # AIFF uses ID3 tags (same as MP3) — Rekordbox displays cover art and
+        # all metadata correctly. WAV/FLAC tag support in Rekordbox is unreliable.
+        _converted_tmp: Optional[Path] = None
+        from djlib.convert import needs_conversion
+        if needs_conversion(src):
+            dest_path = dest_path.with_suffix(".aiff")
+            final_name = dest_path.name
+            if not args.dry_run:
+                from djlib.convert import convert_to_aiff
+                print(f"   🔄 Converting {src.suffix.upper()} → AIFF…")
+                _converted_tmp = convert_to_aiff(src)
+                if _converted_tmp is None:
+                    print(f"   ⚠️  AIFF conversion failed — moving original {src.suffix}")
+                else:
+                    print(f"   ✅ Converted to AIFF")
+
         print(f"{'DRY-RUN ' if args.dry_run else ''}MOVE: {src} -> {dest_path}")
 
         if args.dry_run:
@@ -1616,7 +1633,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
                         break
                     i += 1
         
-        shutil.move(str(src), str(dest_path))
+        _src_to_move = _converted_tmp if _converted_tmp else src
+        shutil.move(str(_src_to_move), str(dest_path))
+        if _converted_tmp and src.exists():
+            src.unlink()
         r["old_full_path"] = str(dest_path)
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
@@ -4486,6 +4506,53 @@ def cmd_normalize_artists(args: argparse.Namespace) -> None:
     print(f"\nDone: {merged_count} merged, {skipped_count} skipped, {dismissed_count} dismissed.")
 
 
+def cmd_reconvert(args: argparse.Namespace) -> None:
+    """Batch-convert all WAV/FLAC in library.csv to AIFF in-place."""
+    from djlib.reconvert import run_reconvert, ReconvertResult
+
+    dry_run = getattr(args, "dry_run", False)
+    resume  = getattr(args, "resume", False)
+
+    print(f"\n{'[DRY RUN] ' if dry_run else ''}reconvert: WAV/FLAC → AIFF")
+    print(f"  Library : {CSV_PATH}")
+    print(f"  Logs    : {LOGS_DIR}")
+
+    try:
+        result: ReconvertResult = run_reconvert(
+            csv_path=CSV_PATH,
+            logs_dir=LOGS_DIR,
+            dry_run=dry_run,
+            resume=resume,
+        )
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"\nERROR: {type(exc).__name__}: {exc}")
+        raise SystemExit(1)
+
+    if dry_run:
+        return
+
+    print(f"\n  Done.")
+    print(f"    Converted          : {result.converted}")
+    print(f"    Skipped (AIFF exists): {result.skipped_already_aiff}")
+    if result.skipped_wal:
+        print(f"    Skipped (WAL/resume): {result.skipped_wal}")
+    if result.failed:
+        print(f"    Failed             : {result.failed}")
+
+    if result.originals_to_delete:
+        print(f"\n  Original WAV/FLAC files to delete manually ({len(result.originals_to_delete)}):")
+        for p in result.originals_to_delete:
+            print(f"    {p}")
+        print("\n  Verify playback in Rekordbox/Traktor, then delete originals.")
+        print("  Run 'sync-dj-libraries' to update Rekordbox/Traktor paths.")
+
+    if result.failed:
+        raise SystemExit(1)
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4779,6 +4846,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include previously dismissed clusters",
     )
     na.set_defaults(func=cmd_normalize_artists)
+
+    reconvert = sp.add_parser(
+        "reconvert",
+        help="Batch-convert all WAV/FLAC files in library.csv to AIFF (Rekordbox-friendly)",
+    )
+    reconvert.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be converted without converting",
+    )
+    reconvert.add_argument(
+        "--resume", action="store_true",
+        help="Resume a previously interrupted reconvert using the existing WAL",
+    )
+    reconvert.set_defaults(func=cmd_reconvert)
 
     # ========== REVIEW UI ==========
     rev = sp.add_parser("review", help="Open track review UI in browser (Space=play, A/R/V=accept/reject/review)")
