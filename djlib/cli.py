@@ -2081,6 +2081,85 @@ def cmd_refresh_staging(args: argparse.Namespace) -> None:
     print(f"\u2705 Refreshed {len(rows)} rows — final_filename recalculated.")
 
 
+def cmd_backfill_quality(args: argparse.Namespace) -> None:
+    """Backfill audio_quality and duration_seconds for existing tracks.
+
+    Only touches those two fields — never overwrites artist, title, year,
+    genre, disposition, or any other user-edited data.
+    Processes both unsorted.csv and library.csv.
+    """
+    from djlib.tags import read_tags
+    from djlib.library_schema import load_library_csv, save_library_csv
+    from djlib.locks import csv_lock
+
+    dry_run = getattr(args, "dry_run", False)
+    force = getattr(args, "force", False)  # re-fill even if already set
+
+    cfg = get_config()
+
+    def _backfill_rows(rows: List[Dict[str, str]], label: str) -> int:
+        updated = 0
+        for row in rows:
+            fp = (row.get("file_path") or "").strip()
+            if not fp:
+                continue
+            path = Path(fp)
+            if not path.exists():
+                continue
+            needs_quality = force or not (row.get("audio_quality") or "").strip()
+            needs_duration = force or not (row.get("duration_seconds") or "").strip()
+            if not needs_quality and not needs_duration:
+                continue
+            try:
+                tags = read_tags(path)
+            except Exception as exc:
+                print(f"  ⚠ {path.name}: {exc}")
+                continue
+            changed = False
+            if needs_quality and tags.get("audio_quality"):
+                row["audio_quality"] = tags["audio_quality"]
+                changed = True
+            if needs_duration and tags.get("duration_seconds"):
+                row["duration_seconds"] = tags["duration_seconds"]
+                changed = True
+            if changed:
+                updated += 1
+                if dry_run:
+                    q = row.get("audio_quality", "")
+                    d = row.get("duration_seconds", "")
+                    print(f"  {path.name}: quality={q!r}  duration={d}s")
+        return updated
+
+    total = 0
+
+    # ── unsorted.csv ──────────────────────────────────────────────
+    unsorted_rows = _load_unsorted()
+    if unsorted_rows:
+        n = _backfill_rows(unsorted_rows, "unsorted.csv")
+        total += n
+        if not dry_run and n:
+            _save_unsorted(unsorted_rows)
+        print(f"{'[DRY-RUN] ' if dry_run else ''}unsorted.csv: {n}/{len(unsorted_rows)} rows updated")
+    else:
+        print("unsorted.csv: empty")
+
+    # ── library.csv ───────────────────────────────────────────────
+    lib_path = cfg.LIBRARY_CSV
+    if lib_path.exists():
+        lib_rows = load_library_csv(lib_path)
+        n = _backfill_rows(lib_rows, "library.csv")
+        total += n
+        if not dry_run and n:
+            with csv_lock(lib_path):
+                save_library_csv(lib_path, lib_rows)
+        print(f"{'[DRY-RUN] ' if dry_run else ''}library.csv: {n}/{len(lib_rows)} rows updated")
+    else:
+        print("library.csv: not found")
+
+    status = "[DRY-RUN] Would update" if dry_run else "Updated"
+    print(f"\n✅ {status} {total} tracks total")
+
+
 def cmd_fix_unsorted_dupes(args: argparse.Namespace) -> None:
     """Remove duplicate entries from unsorted.csv (keeps first occurrence)."""
     rows = _load_unsorted()
@@ -4839,6 +4918,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp.add_parser("dupes").set_defaults(func=cmd_dupes)
     sp.add_parser("refresh-staging", help="Recalculate final_filename after manual edits").set_defaults(func=cmd_refresh_staging)
+
+    bq = sp.add_parser("backfill-quality", help="Fill missing audio_quality and duration_seconds without touching any edited fields")
+    bq.add_argument("--dry-run", action="store_true", help="Show what would be updated without writing")
+    bq.add_argument("--force", action="store_true", help="Re-read even rows that already have values")
+    bq.set_defaults(func=cmd_backfill_quality)
     fud = sp.add_parser("fix-unsorted-dupes", help="Remove duplicate entries from unsorted.csv")
     fud.add_argument("--write", action="store_true", help="Actually remove duplicates (default is dry-run)")
     fud.set_defaults(func=cmd_fix_unsorted_dupes)

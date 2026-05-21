@@ -210,6 +210,22 @@
       "problemMatcher": []
     },
     {
+      "label": "TOOLS — Backfill quality + duration (dry-run)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli backfill-quality --dry-run",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "TOOLS — Backfill quality + duration",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli backfill-quality",
+      "dependsOn": "STEP 0 — Setup: create venv & install deps",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "TOOLS — Normalize collaboration separators (dry-run)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m djlib.cli normalize-collabs --dry-run",
