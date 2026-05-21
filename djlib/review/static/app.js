@@ -62,6 +62,11 @@
   const MAX_UNDO = 50;
   let undoStack = [];
 
+  // Version comparison state
+  let versionGroups = {};    // group_id → { group_id, members[] }
+  let trackGroupId = {};     // track_id → group_id
+  let expandedGroups = new Set();
+
   // Debounced saves: { trackId: { timer, fields } }
   let pendingSaves = {};
   const SAVE_DEBOUNCE_MS = 80;
@@ -482,6 +487,200 @@
 
   let _loadError = false;
 
+  // -- Version comparison ----------------------------------------
+
+  async function loadVersionGroups() {
+    versionGroups = {};
+    trackGroupId = {};
+    if (currentSource !== "unsorted" && currentSource !== "library") return;
+    try {
+      var r = await fetch("/api/version-groups?source=" + currentSource);
+      var data = await r.json();
+      (data.groups || []).forEach(function (g) {
+        versionGroups[g.group_id] = g;
+        g.members.forEach(function (m) {
+          var tid = m.track_id || m.file_hash || "";
+          if (tid) trackGroupId[tid] = g.group_id;
+        });
+      });
+    } catch (e) {
+      // non-fatal — version badges just won't show
+    }
+  }
+
+  function toggleVersionGroup(gid) {
+    if (expandedGroups.has(gid)) {
+      expandedGroups.delete(gid);
+    } else {
+      expandedGroups.add(gid);
+    }
+    renderVersionChildRows();
+  }
+
+  function renderVersionChildRows() {
+    tableBody.querySelectorAll("tr.version-child").forEach(function (r) { r.remove(); });
+    tableBody.querySelectorAll("tr.version-expanded").forEach(function (r) {
+      r.classList.remove("version-expanded");
+    });
+    if (!expandedGroups.size) return;
+
+    var insertedGroups = new Set();
+    Array.from(tableBody.querySelectorAll("tr[data-tid]")).forEach(function (parentTr) {
+      var parentTid = parentTr.dataset.tid;
+      if (!parentTid) return;
+      var gid = trackGroupId[parentTid];
+      if (!gid || !expandedGroups.has(gid) || insertedGroups.has(gid)) return;
+      insertedGroups.add(gid);
+      parentTr.classList.add("version-expanded");
+
+      var group = versionGroups[gid];
+      if (!group) return;
+
+      // Detect mixed artists (covers alert) using simple lowercase+alnum slug
+      var artistKeys = new Set();
+      group.members.forEach(function (m) {
+        var a = (m.artist || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (a) artistKeys.add(a);
+      });
+      var hasMixedArtists = artistKeys.size > 1;
+
+      var mainCols = COLUMNS[currentSource] || COLUMNS.unsorted;
+      var totalCols = mainCols.length + (isEditableSource() ? 1 : 0);
+
+      var afterRow = parentTr;
+      group.members.forEach(function (member) {
+        var mTid = member.track_id || member.file_hash || "";
+        if (mTid === parentTid) return;
+        var childTr = buildVersionChildRow(member, gid, totalCols, hasMixedArtists);
+        afterRow.insertAdjacentElement("afterend", childTr);
+        afterRow = childTr;
+      });
+    });
+  }
+
+  function buildVersionChildRow(track, gid, totalCols, hasMixedArtists) {
+    var tr = document.createElement("tr");
+    tr.className = "version-child";
+    var tid = track.track_id || track.file_hash || "";
+    if (tid) tr.dataset.tid = tid;
+    var disp = (track.disposition || "").toLowerCase();
+    if (disp) tr.classList.add("disp-" + disp);
+
+    var vInfo = track._version_info || track.version_info || "";
+    var dur = fmtDuration(track.duration_seconds);
+    var bpm = track.bpm || "";
+    var key = track.key_camelot || track.key || "";
+    var fp = track.file_path || "";
+    var ext = fp ? fp.split(".").pop().toUpperCase() : "";
+    var src = track._source || track.source || "";
+    var nearDup = track.near_duplicate_of || "";
+    var rating = track.rating || "";
+
+    // Cell 1 — version info + badges (spans ~25% of columns)
+    var span1 = Math.max(1, Math.round(totalCols * 0.22));
+    var td1 = document.createElement("td");
+    td1.colSpan = span1;
+    td1.className = "version-info-cell";
+
+    var viSpan = document.createElement("span");
+    viSpan.className = "version-info-label";
+    viSpan.textContent = vInfo || "Original";
+    td1.appendChild(viSpan);
+
+    if (hasMixedArtists) {
+      var alertBadge = document.createElement("span");
+      alertBadge.className = "badge-covers-alert";
+      alertBadge.textContent = "COVER?";
+      alertBadge.title = "Artists differ in this group — may be a cover, not a version";
+      td1.appendChild(alertBadge);
+    }
+
+    if (nearDup) {
+      var ndBadge = document.createElement("span");
+      ndBadge.className = "badge-near-dup";
+      ndBadge.textContent = "~DUP";
+      ndBadge.title = "Near-duplicate flagged";
+      ndBadge.style.marginLeft = "4px";
+      td1.appendChild(ndBadge);
+    }
+    tr.appendChild(td1);
+
+    // Cell 2 — dimmed artist — title (~35%)
+    var span2 = Math.max(1, Math.round(totalCols * 0.32));
+    var td2 = document.createElement("td");
+    td2.colSpan = span2;
+    td2.className = "col-artist col-title";
+    td2.style.fontSize = "11px";
+    td2.textContent = (track.artist || "") + " — " + (track.title || "");
+    tr.appendChild(td2);
+
+    // Cell 3 — metadata summary (remaining)
+    var span3 = Math.max(1, totalCols - span1 - span2);
+    var td3 = document.createElement("td");
+    td3.colSpan = span3;
+    td3.className = "col-bpm";
+    var parts = [];
+    if (dur) parts.push(dur);
+    if (bpm) parts.push(bpm + " BPM");
+    if (key) parts.push(key);
+    if (ext && ["AIFF", "WAV", "FLAC", "MP3", "M4A"].indexOf(ext) >= 0) parts.push(ext);
+    if (src) parts.push("[" + src + "]");
+    if (rating) parts.push(ratingToStars(rating));
+    td3.innerHTML = parts.join("  <span style='opacity:0.3'>·</span>  ");
+    tr.appendChild(td3);
+
+    // P button — set as preferred
+    var tdBtn = document.createElement("td");
+    var pBtn = document.createElement("button");
+    pBtn.textContent = "P";
+    pBtn.title = "Set as preferred (5★), set others in group to 3★";
+    pBtn.className = "btn-version-prefer";
+    pBtn.style.cssText = "font-size:10px;padding:1px 5px;cursor:pointer;background:rgba(99,179,237,0.15);border:1px solid rgba(99,179,237,0.3);border-radius:3px;color:#63b3ed;";
+    pBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      setVersionPreferred(tid, gid);
+    });
+    tdBtn.appendChild(pBtn);
+    tr.appendChild(tdBtn);
+
+    return tr;
+  }
+
+  function setVersionPreferred(preferredTid, gid) {
+    var group = versionGroups[gid];
+    if (!group) return;
+    var peerIds = group.members
+      .map(function (m) { return m.track_id || m.file_hash || ""; })
+      .filter(function (tid) { return tid && tid !== preferredTid; });
+
+    fetch("/api/tracks/version-group-rating", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        preferred_id: preferredTid,
+        peer_ids: peerIds,
+        source: currentSource,
+      }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.ok) {
+          showToast("Preferred set — " + data.updated + " track(s) rated", "");
+          // Update in-memory rating for tracks in the group
+          group.members.forEach(function (m) {
+            var mid = m.track_id || m.file_hash || "";
+            m.rating = mid === preferredTid ? "5" : "3";
+            var live = allTracks.find(function (t) { return (t.track_id || t.file_hash) === mid; });
+            if (live) live.rating = m.rating;
+          });
+          renderVersionChildRows();
+        } else {
+          showToast("Rating update failed: " + (data.error || "unknown"), "");
+        }
+      })
+      .catch(function () { showToast("Rating update failed", ""); });
+  }
+
   async function loadTracks(source) {
     currentSource = source;
     _loadError = false;
@@ -498,6 +697,7 @@
     selectedSet.clear();
     selectionAnchor = -1;
     undoStack = [];
+    expandedGroups.clear();
     // Exit review mode when switching sources (ghost rows belong to unsorted only)
     if (ghostReview.active) exitReviewMode(true);
     // Reset batch bar inputs to avoid ghost values across source switches
@@ -509,6 +709,7 @@
     if (batchRating) batchRating.value = "";
     updateBatchBar();
     applyFilters();
+    loadVersionGroups().then(function () { renderVersionChildRows(); });
     // Auto-select first row
     if (filteredTracks.length > 0) {
       selectRow(0);
@@ -1448,8 +1649,27 @@
           );
           td.appendChild(cb);
         } else if (col.key === "_index") {
-          td.textContent = i + 1;
           td.classList.add("col-index");
+          var gid = trackGroupId[trackTid];
+          var vGroup = gid ? versionGroups[gid] : null;
+          if (vGroup && vGroup.members.length > 1) {
+            var vBadge = document.createElement("span");
+            vBadge.className = "badge-versions";
+            vBadge.textContent = "V:" + vGroup.members.length;
+            vBadge.title = "Click or press X to compare versions";
+            vBadge.addEventListener(
+              "click",
+              (function (vGid) {
+                return function (e) {
+                  e.stopPropagation();
+                  toggleVersionGroup(vGid);
+                };
+              })(gid),
+            );
+            td.appendChild(vBadge);
+          } else {
+            td.textContent = i + 1;
+          }
         } else if (col.type === "checkbox") {
           const cb = document.createElement("input");
           cb.type = "checkbox";
@@ -1653,6 +1873,7 @@
     }
 
     tableBody.appendChild(frag);
+    renderVersionChildRows();
 
     // Re-render ghost rows for any proposals already in review state
     if (ghostReview.active && Object.keys(ghostReview.proposals).length > 0) {
@@ -3981,6 +4202,30 @@
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
           jumpNextUndecided();
+        }
+        break;
+
+      case "KeyX":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+            var xTrack = filteredTracks[currentIndex];
+            var xTid = trackId(xTrack);
+            var xGid = trackGroupId[xTid];
+            if (xGid) toggleVersionGroup(xGid);
+          }
+        }
+        break;
+
+      case "KeyP":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+          if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+            var pTrack = filteredTracks[currentIndex];
+            var pTid = trackId(pTrack);
+            var pGid = trackGroupId[pTid];
+            if (pGid) setVersionPreferred(pTid, pGid);
+          }
         }
         break;
 
