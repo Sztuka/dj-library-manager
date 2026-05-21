@@ -2876,6 +2876,188 @@ def api_unapply_status() -> Response:
         return jsonify(dict(_unapply_status))
 
 
+# ── Playlist diff ─────────────────────────────────────────────────────────────
+
+
+def _build_playlist_diff(rb_playlists: Dict[str, Any], lib_rows: list) -> Dict[str, Any]:
+    """Compute diff between Rekordbox playlists and library.csv playlists field.
+
+    Returns {playlist_name: [track_entry]} and rb_only_playlists list.
+    Four states per track:
+      "both"            — in RB playlist AND tagged in library.csv
+      "rb_only"         — in RB playlist, track IS in library.csv but not tagged
+      "rb_only_unknown" — in RB playlist, track NOT in library.csv at all
+      "djlib_only"      — tagged in library.csv, NOT in RB playlist
+    """
+    # Build indexes from library.csv
+    rb_id_to_row: Dict[str, Dict] = {}
+    for row in lib_rows:
+        rb_id = str(row.get("rekordbox_id") or "").strip()
+        if rb_id:
+            rb_id_to_row[rb_id] = row
+
+    # For each track in a djlib playlist, note which playlists it's tagged for
+    # {rekordbox_id: set(playlist_names)}
+    rb_id_to_djlib_playlists: Dict[str, set] = {}
+    for row in lib_rows:
+        rb_id = str(row.get("rekordbox_id") or "").strip()
+        if not rb_id:
+            continue
+        raw = (row.get("playlists") or "").strip()
+        if raw:
+            rb_id_to_djlib_playlists[rb_id] = {p.strip() for p in raw.split("|") if p.strip()}
+        else:
+            rb_id_to_djlib_playlists[rb_id] = set()
+
+    result_playlists: Dict[str, list] = {}
+    # Track which (rb_id, playlist_name) pairs we saw in RB
+    seen_in_rb: Dict[str, set] = {}  # rb_id → set(playlist_names)
+
+    for pl_name, tracks in rb_playlists.items():
+        entries = []
+        for track in tracks:
+            rb_id = str(track.get("rb_id") or "")
+            if not rb_id:
+                continue
+            seen_in_rb.setdefault(rb_id, set()).add(pl_name)
+
+            row = rb_id_to_row.get(rb_id)
+            if row is None:
+                # Track in RB playlist but not in library.csv
+                entries.append({
+                    "track_id": None,
+                    "rekordbox_id": rb_id,
+                    "artist": track.get("artist") or "?",
+                    "title": track.get("title") or "?",
+                    "state": "rb_only_unknown",
+                })
+            else:
+                djlib_pls = rb_id_to_djlib_playlists.get(rb_id, set())
+                state = "both" if pl_name in djlib_pls else "rb_only"
+                entries.append({
+                    "track_id": row.get("track_id"),
+                    "rekordbox_id": rb_id,
+                    "artist": row.get("artist") or track.get("artist") or "",
+                    "title": row.get("title") or track.get("title") or "",
+                    "state": state,
+                })
+        result_playlists[pl_name] = entries
+
+    # djlib_only: tagged in library.csv but NOT seen in any RB playlist.
+    # Deduplicate by (track_id, playlist_name) to avoid double-entries when
+    # library.csv has duplicate rows for the same track.
+    djlib_only_seen: set = set()  # set of (track_id, pl_name) already emitted
+    for row in lib_rows:
+        rb_id = str(row.get("rekordbox_id") or "").strip()
+        tid = row.get("track_id") or ""
+        raw = (row.get("playlists") or "").strip()
+        if not raw:
+            continue
+        for pl_name in (p.strip() for p in raw.split("|") if p.strip()):
+            rb_pls_for_track = seen_in_rb.get(rb_id, set())
+            if pl_name not in rb_pls_for_track:
+                dedup_key = (tid, pl_name)
+                if dedup_key in djlib_only_seen:
+                    continue
+                djlib_only_seen.add(dedup_key)
+                pl_entries = result_playlists.setdefault(pl_name, [])
+                pl_entries.append({
+                    "track_id": tid or None,
+                    "rekordbox_id": rb_id or None,
+                    "artist": row.get("artist") or "",
+                    "title": row.get("title") or "",
+                    "state": "djlib_only",
+                })
+
+    # rb_only_playlists: playlists that exist in RB but have no djlib representation
+    rb_playlist_names = set(rb_playlists.keys())
+    djlib_playlist_names: set = set()
+    for row in lib_rows:
+        raw = (row.get("playlists") or "").strip()
+        for p in raw.split("|"):
+            p = p.strip()
+            if p:
+                djlib_playlist_names.add(p)
+
+    rb_only_playlists = sorted(rb_playlist_names - djlib_playlist_names)
+
+    return {
+        "playlists": result_playlists,
+        "rb_only_playlists": rb_only_playlists,
+    }
+
+
+@app.route("/api/playlists/diff")
+def api_playlists_diff() -> Response:
+    """Compare djlib playlist tags vs Rekordbox playlist membership.
+
+    Returns rb_open flag (push disabled if True), full diff, and
+    rb_only_playlists (playlists only in Rekordbox, not tagged in djlib).
+    """
+    from djlib.rekordbox_playlist_reader import fetch_rb_playlists
+    from djlib.library_schema import load_library_csv
+
+    # Detect if Rekordbox is open (push should be disabled, diff still works)
+    rb_open = False
+    try:
+        from pyrekordbox.utils import get_rekordbox_pid
+        rb_open = bool(get_rekordbox_pid())
+    except Exception:
+        pass
+
+    try:
+        rb_playlists = fetch_rb_playlists()
+    except FileNotFoundError:
+        return jsonify({"error": "Rekordbox master6.db not found", "rb_open": rb_open}), 404
+    except Exception as exc:
+        return jsonify({"error": str(exc), "rb_open": rb_open}), 500
+
+    lib_rows = list(load_library_csv(CSV_PATH))
+    diff = _build_playlist_diff(rb_playlists, lib_rows)
+
+    return jsonify({
+        "rb_open": rb_open,
+        "playlists": diff["playlists"],
+        "rb_only_playlists": diff["rb_only_playlists"],
+    })
+
+
+@app.route("/api/track/<track_id>/adopt-from-rb", methods=["POST"])
+def api_adopt_from_rb(track_id: str) -> Response:
+    """Add a playlist tag to a library.csv track (adopt from Rekordbox).
+
+    Body: {"playlist": "playlist_name"}
+    Atomically updates library.csv via save_library_csv() + csv_lock.
+    """
+    from djlib.library_schema import load_library_csv, save_library_csv
+    from djlib.locks import csv_lock
+
+    body = request.get_json(silent=True) or {}
+    playlist_name = str(body.get("playlist") or "").strip()
+    if not playlist_name:
+        return jsonify({"error": "playlist field required"}), 400
+    if "|" in playlist_name:
+        return jsonify({"error": "playlist name must not contain '|'"}), 400
+
+    with csv_lock(CSV_PATH):
+        rows = load_library_csv(CSV_PATH)
+        found = False
+        for row in rows:
+            if row.get("track_id") == track_id:
+                existing = (row.get("playlists") or "").strip()
+                existing_set = {p.strip() for p in existing.split("|") if p.strip()}
+                if playlist_name not in existing_set:
+                    existing_set.add(playlist_name)
+                    row["playlists"] = "|".join(sorted(existing_set))
+                found = True
+                break
+        if not found:
+            return jsonify({"error": f"track_id {track_id!r} not found in library"}), 404
+        save_library_csv(CSV_PATH, rows)
+
+    return jsonify({"ok": True, "track_id": track_id, "playlist": playlist_name})
+
+
 # ── Server entry point ───────────────────────────────────────────────────────
 
 def run_server(
