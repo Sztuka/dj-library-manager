@@ -4783,14 +4783,13 @@ def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
     old FLAC path and cannot relocate files on its own (different filename +
     different format fingerprint).
     """
-    from djlib.djlib_tags import read_djlib_tags
+    from djlib.djlib_tags import read_djlib_tags, write_djlib_tags
     from djlib.library_schema import load_library_csv, save_library_csv
-    from djlib.config import get_config
+    from djlib.logistics import get_destination_path, sanitize_dir_segment
 
     dry_run: bool = getattr(args, "dry_run", False)
 
-    cfg = get_config()
-    library_dir = Path(cfg.get("LIBRARY_DIR", str(Path.home() / "Music Library")))
+    library_dir = get_destination_path("library")
 
     if not library_dir.exists():
         print(f"❌ Library directory not found: {library_dir}")
@@ -4819,30 +4818,86 @@ def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
             pass
 
     print(f"   Scanned {scanned} files, found {len(rb_id_to_path)} with Rekordbox IDs")
+
+    # ── Step 1b: fallback — match untagged files via library.csv + artist folder ─
+    lib_rows = load_library_csv(CSV_PATH)
+    untagged_matched = 0
+    tag_writes: list[tuple[Path, str, str, str]] = []  # (file, rb_id, track_id, traktor_id)
+
+    for row in lib_rows:
+        rb_id = str(row.get("rekordbox_id") or "").strip()
+        if not rb_id or rb_id in rb_id_to_path:
+            continue  # already found by tag or no rekordbox_id
+        artist = (row.get("artist") or "").strip()
+        title = (row.get("title") or "").strip()
+        if not artist or not title:
+            continue
+        artist_folder = library_dir / sanitize_dir_segment(artist)
+        if not artist_folder.exists():
+            continue
+        candidates = [
+            f for f in artist_folder.iterdir()
+            if f.suffix.lower() in audio_extensions
+        ]
+        # Match: file whose stem contains all significant title words
+        title_words = [w.lower() for w in title.split() if len(w) > 2]
+        matched: Path | None = None
+        for cand in candidates:
+            stem_lower = cand.stem.lower()
+            if all(w in stem_lower for w in title_words):
+                matched = cand
+                break
+        if matched is None and len(candidates) == 1:
+            matched = candidates[0]  # only one file in artist folder — safe bet
+        if matched:
+            rb_id_to_path[rb_id] = matched
+            untagged_matched += 1
+            tag_writes.append((matched, rb_id, str(row.get("track_id") or ""), str(row.get("traktor_id") or "")))
+
+    if untagged_matched:
+        print(f"   + {untagged_matched} matched via artist folder (no djlib tag)")
     print()
 
     if not rb_id_to_path:
-        print("⚠️  No files with DJLIB_REKORDBOX_ID tags found. Nothing to fix.")
+        print("⚠️  No files found to fix. Nothing to do.")
         return
 
-    # ── Step 2: backfill file_path in library.csv ────────────────────────────
+    # ── Step 2: write missing djlib tags to untagged files ──────────────────
+    if tag_writes:
+        print(f"🏷️  Writing DJLIB_REKORDBOX_ID to {len(tag_writes)} untagged files...")
+        tags_written = 0
+        for file_path, rb_id, track_id, traktor_id in tag_writes:
+            print(f"   {'[DRY RUN] ' if dry_run else ''}tag: {file_path.name}")
+            if not dry_run:
+                try:
+                    write_djlib_tags(
+                        file_path,
+                        track_id=track_id or None,
+                        rekordbox_id=rb_id or None,
+                        traktor_id=traktor_id or None,
+                        original_path=str(file_path),
+                    )
+                    tags_written += 1
+                except Exception as e:
+                    print(f"   ⚠️  Tag write failed for {file_path.name}: {e}")
+        if not dry_run:
+            print(f"   ✅ Tagged {tags_written} files")
+        print()
+
+    # ── Step 3: backfill file_path in library.csv ────────────────────────────
     print("📋 Backfilling file_path in library.csv...")
-    lib_rows = load_library_csv(CSV_PATH)
     csv_updated = 0
     for row in lib_rows:
         rb_id = str(row.get("rekordbox_id") or "").strip()
-        if not rb_id:
+        if not rb_id or row.get("file_path"):
             continue
-        if row.get("file_path"):
-            continue  # already set
         new_path = rb_id_to_path.get(rb_id)
         if new_path:
             row["file_path"] = str(new_path)
             csv_updated += 1
-            print(f"   ✅ {new_path.name}")
 
     if csv_updated == 0:
-        print("   Nothing to backfill (all rows already have file_path or no match found)")
+        print("   Nothing to backfill")
     else:
         print(f"   → {csv_updated} rows updated")
         if not dry_run:
@@ -4850,7 +4905,7 @@ def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
             print("   library.csv saved.")
     print()
 
-    # ── Step 3: update FolderPath in Rekordbox master.db ────────────────────
+    # ── Step 4: update FolderPath in Rekordbox master.db ────────────────────
     try:
         from pyrekordbox import Rekordbox6Database
         from pyrekordbox.utils import get_rekordbox_pid
