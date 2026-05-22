@@ -51,11 +51,16 @@ DJ library organizer: scans unsorted audio → enriches metadata (Beatport, Musi
 .venv/bin/python -m djlib.cli gig-cleanup friday-2026-05-15
 .venv/bin/python -m djlib.cli gig-cleanup friday-2026-05-15 --verify-nas
 .venv/bin/python -m djlib.cli gig-cleanup friday-2026-05-15 --dry-run
+
+# Push playlists — sync djlib playlist tags from library.csv to Rekordbox (Rekordbox must be closed)
+.venv/bin/python -m djlib.cli push-playlists
+.venv/bin/python -m djlib.cli push-playlists --dry-run
+.venv/bin/python -m djlib.cli push-playlists --only "PornoStar" "Ultimate BiA"
 ```
 
 ## Project Structure
 
-```
+```text
 djlib/              # Main package
   cli.py            # CLI commands (argparse)
   config.py         # Paths, settings, YAML config loader

@@ -1,6 +1,6 @@
 """AI playlist builder — generates a playlist from a natural-language brief.
 
-Uses Gemini (gemini-2.0-flash) with the full library as context.
+Uses Gemini (gemini-2.5-flash) with the full library as context.
 Writes the chosen playlist name directly to the `playlists` field in
 library.csv so it's immediately visible in the Review UI.
 
@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
-_MODEL = "gemini-2.0-flash"
+_MODEL = "gemini-2.5-flash"
 _MAX_TRACKS_IN_PROMPT = 2000  # safety cap — 1M token window is plenty
 
 

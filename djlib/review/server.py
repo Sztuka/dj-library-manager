@@ -43,6 +43,34 @@ from djlib.filename import parse_from_filename
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, EXPORT_DISPOSITIONS
 from djlib.locks import csv_lock
 
+# ── Gemini client singleton ───────────────────────────────────────────────────
+# Initialised lazily on first use so missing API key doesn't break server start.
+try:
+    from google import genai as _genai  # type: ignore[import]
+    from google.genai import types as _genai_types  # type: ignore[import]
+    _GENAI_AVAILABLE = True
+except ImportError:
+    _genai = None  # type: ignore[assignment]
+    _genai_types = None  # type: ignore[assignment]
+    _GENAI_AVAILABLE = False
+
+_gemini_client: Optional[Any] = None
+
+
+def _get_gemini_client() -> Any:
+    """Return a cached Gemini client, creating it on first call."""
+    from djlib.config import get_gemini_api_key
+    global _gemini_client
+    if not _GENAI_AVAILABLE:
+        raise RuntimeError("google-genai package not installed")
+    if _gemini_client is None:
+        api_key = get_gemini_api_key()
+        if not api_key:
+            raise RuntimeError("Gemini API key not configured — add gemini_api_key to config.local.yml")
+        _gemini_client = _genai.Client(api_key=api_key)
+    return _gemini_client
+
+
 # ── Flask app ────────────────────────────────────────────────────────────────
 
 _HERE = Path(__file__).resolve().parent
@@ -765,6 +793,57 @@ def api_ai_status():
     return jsonify({"available": bool(key)})
 
 
+def _build_year_prompt(ctx: Dict[str, Any]) -> str:
+    """Build the year-suggestion prompt from track context dict."""
+    parts = []
+    for k, label in [
+        ("artist", "Artist"), ("title", "Title"), ("version", "Version/Remix"),
+        ("genre", "Genre"), ("bpm", "BPM"),
+        ("original_release_year", "MusicBrainz original release year"),
+        ("year_suggest", "Enrichment year hint"),
+    ]:
+        if ctx.get(k):
+            parts.append(f"{label}: {ctx[k]}")
+    track_info = "\n".join(parts)
+    return (
+        "You are a music expert. Based on the track metadata below, determine the original release year.\n\n"
+        f"{track_info}\n\n"
+        "Rules:\n"
+        "- Return the ORIGINAL release year, not a remaster or re-release year.\n"
+        "- For remixes/edits, return the year of the remix, not the original track.\n"
+        "- If you are not sure, still give your best estimate — do not refuse.\n"
+        "- Respond ONLY with a JSON object, no markdown, no extra text.\n\n"
+        'Example: {"year": "1998", "confidence": 0.9, "reasoning": "Released on Defected Records in 1998..."}'
+    )
+
+
+def _parse_year_result(raw: str) -> Dict[str, Any]:
+    """Parse JSON from a year-suggestion model response."""
+    import json as _json
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```\w*\n?", "", raw)
+        raw = re.sub(r"\n?```$", "", raw)
+        raw = raw.strip()
+    result = _json.loads(raw)
+    year_val = str(result.get("year", "")).strip()[:4]
+    return {
+        "year": year_val,
+        "confidence": float(result.get("confidence", 0.0)),
+        "reasoning": str(result.get("reasoning", "")),
+    }
+
+
+def _year_gemini(prompt: str) -> Dict[str, Any]:
+    client = _get_gemini_client()
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    raw = response.text or ""
+    try:
+        return _parse_year_result(raw)
+    except Exception:
+        raise ValueError(f"Could not parse year from model response: {raw[:200]!r}")
+
+
 @app.route("/api/suggest-year", methods=["POST"])
 def api_suggest_year():
     """Ask Gemini to suggest a release year based on track metadata.
@@ -775,14 +854,6 @@ def api_suggest_year():
     Returns:
         { "year": "1998", "confidence": 0.85, "reasoning": "..." }
     """
-    from djlib.config import get_gemini_api_key
-    from google import genai  # type: ignore[import]
-    import json as _json
-
-    api_key = get_gemini_api_key()
-    if not api_key:
-        return jsonify({"error": "Gemini API key not configured. Add gemini_api_key to config.local.yml"}), 501
-
     data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "No JSON body"}), 400
@@ -791,45 +862,12 @@ def api_suggest_year():
     if not ctx.get("artist") and not ctx.get("title"):
         return jsonify({"error": "Need at least artist or title"}), 400
 
-    parts = []
-    for k, label in [
-        ("artist", "Artist"), ("title", "Title"), ("version", "Version/Remix"),
-        ("genre", "Genre"), ("bpm", "BPM"), ("original_release_year", "MusicBrainz original release year"),
-        ("year_suggest", "Enrichment year hint"),
-    ]:
-        if ctx.get(k):
-            parts.append(f"{label}: {ctx[k]}")
-
-    track_info = "\n".join(parts)
-
-    prompt = f"""You are a music expert. Based on the track metadata below, determine the original release year.
-
-{track_info}
-
-Rules:
-- Return the ORIGINAL release year, not a remaster or re-release year.
-- For remixes/edits, return the year of the remix, not the original track.
-- If you are not sure, still give your best estimate — do not refuse.
-- Respond ONLY with a JSON object, no markdown, no extra text.
-
-Example: {{"year": "1998", "confidence": 0.9, "reasoning": "Released on Defected Records in 1998..."}}"""
-
+    prompt = _build_year_prompt(ctx)
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-        raw = (response.text or "").strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        result = _json.loads(raw.strip())
-        # Normalise year to 4-digit string
-        year_val = str(result.get("year", "")).strip()[:4]
-        return jsonify({
-            "year": year_val,
-            "confidence": float(result.get("confidence", 0.0)),
-            "reasoning": str(result.get("reasoning", "")),
-        })
+        result = _year_gemini(prompt)
+        return jsonify(result)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 501
     except Exception as exc:
         _log.warning("Gemini suggest-year error: %s", exc)
         return jsonify({"error": f"AI request failed: {exc}"}), 502
@@ -1169,41 +1207,39 @@ def _build_identify_prompt(row: Dict[str, str]) -> str:
     track_info = _gather_track_context(row)
 
     return (
-        "You are a music track identification expert specializing in electronic "
-        "and dance music. Your job is to determine the correct artist name, track "
-        "title, version/remix information, and release year based on all available clues.\n\n"
+        "You are a music track identification expert. Search online to identify "
+        "the correct artist name, track title, version/remix info, and release year.\n\n"
         f"Available information about this track:\n{track_info}\n\n"
+        "CRITICAL: The provided metadata may contain typos or spelling errors in artist/title names. "
+        "Use web search to verify and correct them. For example, 'Key Starr' is likely 'Kay Starr'.\n\n"
         "IDENTIFICATION RULES:\n"
-        "1. The filename is often the strongest clue. DJ naming convention: "
+        "1. Search online to find the actual track — treat provided names as hints, not facts.\n"
+        "2. The filename is often the strongest structural clue. DJ naming convention: "
         "\"Artist - Title (Remix/Edit).ext\"\n"
-        "2. \"w/\" or \"w_\" in filenames means \"featuring\" — format as \"feat.\"\n"
-        "3. SoundCloud uploader is NOT necessarily the artist — it could be a repost "
+        "3. \"w/\" or \"w_\" in filenames means \"featuring\" — format as \"feat.\"\n"
+        "4. SoundCloud uploader is NOT necessarily the artist — it could be a repost "
         "channel, label, remixer, or fan upload\n"
-        "4. For remixes, the version field should contain the remix info: "
+        "5. For remixes, the version field should contain the remix info: "
         "\"Remixer Name Remix\" (without parentheses)\n"
-        "5. Featuring artists go in the title: \"Track Title feat. Artist B\"\n"
-        "6. Use proper capitalization (Title Case for names and titles)\n"
-        "7. If you cannot determine a field with reasonable confidence, return an "
-        "empty string for that field\n"
-        "8. Year should be the original release year. If uncertain, leave empty\n"
-        "9. If original audio tags and filename disagree, prefer the more "
-        "complete/structured source\n"
-        "10. Separate the main title from version info — don't include remix/edit "
-        "in the title field\n\n"
+        "6. Featuring artists go in the title: \"Track Title feat. Artist B\"\n"
+        "7. Use proper capitalization (Title Case for names and titles)\n"
+        "8. If you cannot determine a field with confidence after searching, return empty string\n"
+        "9. Year should be the original release year of this version (remix year for remixes)\n"
+        "10. Separate main title from version info — don't include remix/edit in the title field\n\n"
         "Respond ONLY with valid JSON (no markdown, no code fences):\n"
-        '{"artist": "<Artist Name>", "title": "<Track Title>", '
+        '{"artist": "<Correct Artist Name>", "title": "<Track Title>", '
         '"version": "<Remix/Edit info or empty>", "year": "<YYYY or empty>", '
         '"confidence": <0.0-1.0>, '
-        '"reasoning": "<1-2 sentences explaining your identification>"}'
+        '"reasoning": "<1-2 sentences: what you found online and any corrections made>"}'
     )
 
 
 @app.route("/api/identify-track", methods=["POST"])
 def api_identify_track():
-    """Ask OpenAI to identify a track's artist, title, version, and year.
+    """Ask Gemini (with web search grounding) to identify a track's artist, title, version, and year.
 
-    Loads all available metadata from CSV (filename, tags, BPM, key, online
-    sources) and builds context for the AI to identify the track.
+    Uses Google Search grounding so Gemini can look up the real track online and
+    correct typos in artist/title names (e.g. 'Key Starr' → 'Kay Starr').
 
     Request body (JSON):
         { "track_id": "..." }
@@ -1212,9 +1248,9 @@ def api_identify_track():
         { "artist": "...", "title": "...", "version": "...", "year": "...",
           "confidence": 0.8, "reasoning": "..." }
     """
-    api_key = get_openai_api_key()
-    if not api_key:
-        return jsonify({"error": "OpenAI API key not configured. Add openai_api_key to config.local.yml"}), 501
+    from djlib.config import get_gemini_api_key
+    if not get_gemini_api_key():
+        return jsonify({"error": "Gemini API key not configured. Add gemini_api_key to config.local.yml"}), 501
 
     data = request.get_json(silent=True)
     if not data:
@@ -1243,15 +1279,32 @@ def api_identify_track():
     if cache_key in _identify_cache:
         return jsonify(_identify_cache[cache_key])
 
-    # Build prompt with all available context
     prompt = _build_identify_prompt(row)
 
     try:
-        result = _call_openai_responses_json(api_key, prompt, max_tokens=400)
+        client = _get_gemini_client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=_genai_types.GenerateContentConfig(
+                tools=[_genai_types.Tool(google_search=_genai_types.GoogleSearch())],
+            ),
+        )
+        raw = (response.text or "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```\w*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+            raw = raw.strip()
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError(f"Model returned non-JSON response: {raw[:300]!r}")
         _identify_cache[cache_key] = result
         return jsonify(result)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 501
     except Exception as e:
-        _log.warning("OpenAI identify error: %s", e)
+        _log.warning("Gemini identify error: %s", e)
         return jsonify({"error": f"AI request failed: {e}"}), 502
 
 

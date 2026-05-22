@@ -119,6 +119,7 @@ def test_djlib_owned_fields_list_is_stable():
     """Canary: changing this list has real-world implications (e.g. added
     a field that silently starts surviving syncs). Force a conscious change."""
     assert set(DJLIB_OWNED_FIELDS) == {
+        "file_path",
         "file_hash",
         "original_path",
         "added_date",
