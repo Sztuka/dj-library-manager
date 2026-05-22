@@ -95,6 +95,7 @@
       <input type="text" id="batch-year" class="batch-input batch-year-input" placeholder="Year" maxlength="4" pattern="\d{4}" inputmode="numeric" title="4-digit year (1900–2099)" />
       <input type="text" id="batch-artist" class="batch-input batch-artist-input" placeholder="Artist…" />
       <input type="text" id="batch-group" class="batch-input batch-group-input" placeholder="Group…" title="Collection tag (written to Grouping in Rekordbox/Traktor)" />
+      <input type="text" id="batch-playlist" class="batch-input batch-playlist-input" placeholder="Playlist…" title="Add to playlist (appends, does not overwrite)" />
       <div class="batch-sep"></div>
       <select id="batch-disposition" class="batch-input batch-disposition-select">
         <option value="">Disposition…</option>
@@ -149,6 +150,10 @@
     <div id="playlists-panel" class="playlists-panel hidden">
       <div class="pl-sidebar" id="pl-sidebar">
         <div id="pl-sidebar-list" class="pl-sidebar-list"></div>
+        <div class="pl-new-row">
+          <button class="pl-new-btn" id="pl-new-btn" title="Create new playlist">+ New playlist</button>
+          <input type="text" class="pl-new-input hidden" id="pl-new-input" placeholder="Playlist name…" maxlength="80" />
+        </div>
       </div>
       <div class="pl-content" id="pl-content">
         <div id="pl-tracks" class="pl-tracks"></div>

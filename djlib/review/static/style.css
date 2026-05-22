@@ -3322,6 +3322,40 @@ body.review-locked .track-row td {
   padding: 4px 0;
 }
 
+.pl-new-row {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.pl-new-btn {
+  width: 100%;
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  color: var(--ink-3);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 5px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.pl-new-btn:hover { border-color: var(--keyc); color: var(--keyc); }
+
+.pl-new-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface-2);
+  border: 1px solid var(--keyc);
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 5px 8px;
+  outline: none;
+}
+.pl-new-input.hidden { display: none; }
+
 .pl-sidebar-item {
   display: flex;
   align-items: center;

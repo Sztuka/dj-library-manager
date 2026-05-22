@@ -209,6 +209,7 @@
   const batchGroup = document.getElementById("batch-group");
   const batchDisposition = document.getElementById("batch-disposition");
   const batchRating = document.getElementById("batch-rating");
+  const batchPlaylist = document.getElementById("batch-playlist");
   const batchApply = document.getElementById("batch-apply");
   const batchApplyCount = document.getElementById("batch-apply-count");
 
@@ -745,6 +746,7 @@
     if (batchGroup) batchGroup.value = "";
     if (batchDisposition) batchDisposition.value = "";
     if (batchRating) batchRating.value = "";
+    if (batchPlaylist) batchPlaylist.value = "";
     updateBatchBar();
     applyFilters();
     loadVersionGroups().then(function () { renderVersionChildRows(); });
@@ -893,11 +895,16 @@
     // Sort
     if (sortKey && sortKey !== "_index") {
       filteredTracks.sort(function (a, b) {
-        const va = (a[sortKey] || "").toString();
-        const vb = (b[sortKey] || "").toString();
+        var va = (a[sortKey] || "").toString();
+        var vb = (b[sortKey] || "").toString();
         const na = parseFloat(va),
           nb = parseFloat(vb);
         if (!isNaN(na) && !isNaN(nb)) return (na - nb) * sortDir;
+        // Strip leading "The " for alphabetical sort (display unchanged)
+        if (sortKey === "artist") {
+          va = va.replace(/^the\s+/i, "");
+          vb = vb.replace(/^the\s+/i, "");
+        }
         return (
           va.localeCompare(vb, undefined, { sensitivity: "base" }) * sortDir
         );
@@ -2095,18 +2102,21 @@
       }
     }
 
+    const playlistVal = batchPlaylist ? batchPlaylist.value.trim() : "";
+
     if (genreVal) fields.genre = genreVal;
     if (yearVal) fields.year = yearVal;
     if (artistVal) fields.artist = artistVal;
     if (groupVal !== "") fields.occasion_tags = groupVal;
     if (dispositionVal) fields.disposition = dispositionVal;
     if (ratingVal !== "") fields.rating = ratingVal;  // "0" is valid for clearing
+    // playlists handled separately below (per-track append, not overwrite)
 
     if (selectedSet.size === 0) {
       showToast("Nothing selected", "reject");
       return;
     }
-    if (Object.keys(fields).length === 0) {
+    if (Object.keys(fields).length === 0 && !playlistVal) {
       showToast("No fields to apply", "");
       return;
     }
@@ -2133,8 +2143,26 @@
       rollback.push({ track, prev });
     }
 
+    // Playlist append — per-track (each track may have different existing playlists)
+    if (playlistVal) {
+      var plAdded = 0;
+      for (var _pi = 0; _pi < targets.length; _pi++) {
+        var _t = targets[_pi].track;
+        var _current = (_t.playlists || "").split("|").map(function (s) { return s.trim(); }).filter(Boolean);
+        if (!_current.includes(playlistVal)) {
+          _current.push(playlistVal);
+          var _newVal = _current.join("|");
+          _t.playlists = _newVal;
+          saveTrackField(_t, "playlists", _newVal);
+          plAdded++;
+        }
+      }
+      if (plAdded > 0) showToast("Added " + plAdded + " tracks to \"" + playlistVal + "\"");
+      if (batchPlaylist) batchPlaylist.value = "";
+    }
+
     // Optimistic update in memory + push single-batch undo
-    pushBatchUndo(rollback, fields);
+    if (Object.keys(fields).length > 0) pushBatchUndo(rollback, fields);
     for (const { track } of targets) {
       for (const [k, v] of Object.entries(fields)) {
         track[k] = v;
@@ -2142,6 +2170,7 @@
     }
 
     const n = track_ids.length;
+    if (Object.keys(fields).length === 0) { applyFilters(); return; }
     batchApply.disabled = true;
     fetch("/api/tracks/batch-update", {
       method: "POST",
@@ -5203,6 +5232,8 @@
   (function () {
     var playlistsPanel = document.getElementById("playlists-panel");
     var plSidebarList = document.getElementById("pl-sidebar-list");
+    var plNewBtn = document.getElementById("pl-new-btn");
+    var plNewInput = document.getElementById("pl-new-input");
     var plTracks = document.getElementById("pl-tracks");
     var tableContainer = document.getElementById("table-container");
 
@@ -5477,5 +5508,53 @@
     sourceSelect.addEventListener("change", function () {
       if (playlistsActive) hidePlaylistsPanel();
     });
+
+    // ── New playlist ────────────────────────────────────────────────────────
+    function confirmNewPlaylist() {
+      var name = plNewInput.value.trim();
+      if (!name) { cancelNewPlaylist(); return; }
+      if (playlistNames.includes(name)) {
+        // Just select the existing one
+        var idx = playlistNames.indexOf(name);
+        selectPlaylist(name, idx);
+        cancelNewPlaylist();
+        return;
+      }
+      // Add to local state as a djlib-only empty playlist
+      if (!diffData) diffData = { playlists: {}, rb_only_playlists: [], rb_open: false };
+      diffData.playlists[name] = [];
+      playlistNames.push(name);
+      playlistNames.sort(function (a, b) { return a.localeCompare(b, undefined, { sensitivity: "base" }); });
+      renderSidebar();
+      var newIdx = playlistNames.indexOf(name);
+      selectPlaylist(name, newIdx);
+      cancelNewPlaylist();
+      showToast("Playlist \"" + name + "\" created — assign tracks via batch or row edit");
+    }
+
+    function cancelNewPlaylist() {
+      plNewInput.classList.add("hidden");
+      plNewInput.value = "";
+      plNewBtn.classList.remove("hidden");
+    }
+
+    if (plNewBtn) {
+      plNewBtn.addEventListener("click", function () {
+        plNewBtn.classList.add("hidden");
+        plNewInput.classList.remove("hidden");
+        plNewInput.focus();
+      });
+    }
+
+    if (plNewInput) {
+      plNewInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); confirmNewPlaylist(); }
+        if (e.key === "Escape") { e.preventDefault(); cancelNewPlaylist(); }
+      });
+      plNewInput.addEventListener("blur", function () {
+        // Small delay so click on confirm doesn't race
+        setTimeout(cancelNewPlaylist, 150);
+      });
+    }
   }());
 })();
