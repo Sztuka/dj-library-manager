@@ -23,6 +23,6 @@
       "Bash(which:*)",
       "Bash(cat:*)"
     ],
-    "deny": ["Bash(git push --force*)", "Bash(git reset --hard*)"]
+    "deny": ["Bash(rm -rf /*)", "Bash(git push --force*)", "Bash(git reset --hard*)"]
   }
 }

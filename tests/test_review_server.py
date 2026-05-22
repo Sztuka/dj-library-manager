@@ -1055,23 +1055,20 @@ def test_identify_track_no_api_key(client):
 
 def test_identify_track_no_body(client):
     """Returns 400 when no JSON body."""
-    with patch("djlib.config.get_gemini_api_key", return_value="gemini-test"):
-        resp = client.post("/api/identify-track")
-        assert resp.status_code in (400, 415)
+    resp = client.post("/api/identify-track")
+    assert resp.status_code in (400, 415)
 
 
 def test_identify_track_missing_track_id(client):
     """Returns 400 when track_id missing."""
-    with patch("djlib.config.get_gemini_api_key", return_value="gemini-test"):
-        resp = client.post("/api/identify-track", json={})
-        assert resp.status_code == 400
+    resp = client.post("/api/identify-track", json={})
+    assert resp.status_code == 400
 
 
 def test_identify_track_not_found(client):
     """Returns 404 when track not in unsorted.csv."""
-    with patch("djlib.config.get_gemini_api_key", return_value="gemini-test"):
-        resp = client.post("/api/identify-track", json={"track_id": "nonexistent-xyz"})
-        assert resp.status_code == 404
+    resp = client.post("/api/identify-track", json={"track_id": "nonexistent-xyz"})
+    assert resp.status_code == 404
 
 
 def test_identify_track_success(client, tmp_path):
@@ -1117,8 +1114,7 @@ def test_identify_track_success(client, tmp_path):
     mock_client.models.generate_content.return_value = mock_response
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch("djlib.config.get_gemini_api_key", return_value="gemini-test"), \
-         patch("google.genai.Client", return_value=mock_client):
+         patch("djlib.review.server._get_gemini_client", return_value=mock_client):
 
         resp = client.post("/api/identify-track", json={"track_id": "identify-test-1"})
         assert resp.status_code == 200
@@ -1156,15 +1152,14 @@ def test_identify_track_uses_cache(client, tmp_path):
     }
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch("djlib.config.get_gemini_api_key", return_value="gemini-test"), \
-         patch("google.genai.Client") as mock_client_cls:
+         patch("djlib.review.server._get_gemini_client") as mock_get_client:
         resp = client.post("/api/identify-track", json={"track_id": "cached-identify"})
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert data["artist"] == "Cached Artist"
         assert data["reasoning"] == "cached"
         # Gemini must NOT have been called — result came from cache
-        mock_client_cls.assert_not_called()
+        mock_get_client.assert_not_called()
 
     del srv._identify_cache[cache_key]
 
@@ -1202,8 +1197,7 @@ def test_identify_track_gemini_error(client, tmp_path):
     mock_client.models.generate_content.side_effect = Exception("Connection timeout")
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch("djlib.config.get_gemini_api_key", return_value="gemini-test"), \
-         patch("google.genai.Client", return_value=mock_client):
+         patch("djlib.review.server._get_gemini_client", return_value=mock_client):
 
         resp = client.post("/api/identify-track", json={"track_id": "identify-err-1"})
         assert resp.status_code == 502

@@ -5511,7 +5511,7 @@
 
     // ── New playlist ────────────────────────────────────────────────────────
     function confirmNewPlaylist() {
-      var name = plNewInput.value.trim();
+      var name = plNewInput.value.replace(/\|/g, "").trim();
       if (!name) { cancelNewPlaylist(); return; }
       if (playlistNames.includes(name)) {
         // Just select the existing one

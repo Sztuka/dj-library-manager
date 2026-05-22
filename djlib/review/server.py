@@ -43,6 +43,34 @@ from djlib.filename import parse_from_filename
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, EXPORT_DISPOSITIONS
 from djlib.locks import csv_lock
 
+# ── Gemini client singleton ───────────────────────────────────────────────────
+# Initialised lazily on first use so missing API key doesn't break server start.
+try:
+    from google import genai as _genai  # type: ignore[import]
+    from google.genai import types as _genai_types  # type: ignore[import]
+    _GENAI_AVAILABLE = True
+except ImportError:
+    _genai = None  # type: ignore[assignment]
+    _genai_types = None  # type: ignore[assignment]
+    _GENAI_AVAILABLE = False
+
+_gemini_client: Optional[Any] = None
+
+
+def _get_gemini_client() -> Any:
+    """Return a cached Gemini client, creating it on first call."""
+    from djlib.config import get_gemini_api_key
+    global _gemini_client
+    if not _GENAI_AVAILABLE:
+        raise RuntimeError("google-genai package not installed")
+    if _gemini_client is None:
+        api_key = get_gemini_api_key()
+        if not api_key:
+            raise RuntimeError("Gemini API key not configured — add gemini_api_key to config.local.yml")
+        _gemini_client = _genai.Client(api_key=api_key)
+    return _gemini_client
+
+
 # ── Flask app ────────────────────────────────────────────────────────────────
 
 _HERE = Path(__file__).resolve().parent
@@ -807,14 +835,13 @@ def _parse_year_result(raw: str) -> Dict[str, Any]:
 
 
 def _year_gemini(prompt: str) -> Dict[str, Any]:
-    from djlib.config import get_gemini_api_key
-    from google import genai  # type: ignore[import]
-    api_key = get_gemini_api_key()
-    if not api_key:
-        return {"error": "Gemini API key not configured"}
-    client = genai.Client(api_key=api_key)
+    client = _get_gemini_client()
     response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-    return _parse_year_result(response.text or "")
+    raw = response.text or ""
+    try:
+        return _parse_year_result(raw)
+    except Exception:
+        raise ValueError(f"Could not parse year from model response: {raw[:200]!r}")
 
 
 @app.route("/api/suggest-year", methods=["POST"])
@@ -839,6 +866,8 @@ def api_suggest_year():
     try:
         result = _year_gemini(prompt)
         return jsonify(result)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 501
     except Exception as exc:
         _log.warning("Gemini suggest-year error: %s", exc)
         return jsonify({"error": f"AI request failed: {exc}"}), 502
@@ -1220,11 +1249,7 @@ def api_identify_track():
           "confidence": 0.8, "reasoning": "..." }
     """
     from djlib.config import get_gemini_api_key
-    from google import genai  # type: ignore[import]
-    from google.genai import types  # type: ignore[import]
-
-    api_key = get_gemini_api_key()
-    if not api_key:
+    if not get_gemini_api_key():
         return jsonify({"error": "Gemini API key not configured. Add gemini_api_key to config.local.yml"}), 501
 
     data = request.get_json(silent=True)
@@ -1257,12 +1282,12 @@ def api_identify_track():
     prompt = _build_identify_prompt(row)
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = _get_gemini_client()
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
+            config=_genai_types.GenerateContentConfig(
+                tools=[_genai_types.Tool(google_search=_genai_types.GoogleSearch())],
             ),
         )
         raw = (response.text or "").strip()
@@ -1270,9 +1295,14 @@ def api_identify_track():
             raw = re.sub(r"^```\w*\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
             raw = raw.strip()
-        result = json.loads(raw)
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError(f"Model returned non-JSON response: {raw[:300]!r}")
         _identify_cache[cache_key] = result
         return jsonify(result)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 501
     except Exception as e:
         _log.warning("Gemini identify error: %s", e)
         return jsonify({"error": f"AI request failed: {e}"}), 502
