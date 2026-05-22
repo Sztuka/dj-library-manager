@@ -1045,8 +1045,8 @@ def test_detect_swap_empty_artist_title():
 # ── AI Track Identify API ────────────────────────────────────────────────────
 
 def test_identify_track_no_api_key(client):
-    """Returns 501 when OpenAI API key is not configured."""
-    with patch("djlib.review.server.get_openai_api_key", return_value=""):
+    """Returns 501 when Gemini API key is not configured."""
+    with patch("djlib.config.get_gemini_api_key", return_value=""):
         resp = client.post("/api/identify-track", json={"track_id": "test-123"})
         assert resp.status_code == 501
         data = json.loads(resp.data)
@@ -1055,28 +1055,29 @@ def test_identify_track_no_api_key(client):
 
 def test_identify_track_no_body(client):
     """Returns 400 when no JSON body."""
-    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+    with patch("djlib.config.get_gemini_api_key", return_value="gemini-test"):
         resp = client.post("/api/identify-track")
         assert resp.status_code in (400, 415)
 
 
 def test_identify_track_missing_track_id(client):
     """Returns 400 when track_id missing."""
-    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+    with patch("djlib.config.get_gemini_api_key", return_value="gemini-test"):
         resp = client.post("/api/identify-track", json={})
         assert resp.status_code == 400
 
 
 def test_identify_track_not_found(client):
     """Returns 404 when track not in unsorted.csv."""
-    with patch("djlib.review.server.get_openai_api_key", return_value="sk-test"):
+    with patch("djlib.config.get_gemini_api_key", return_value="gemini-test"):
         resp = client.post("/api/identify-track", json={"track_id": "nonexistent-xyz"})
         assert resp.status_code == 404
 
 
 def test_identify_track_success(client, tmp_path):
-    """Successful AI track identification with mocked OpenAI response."""
+    """Successful AI track identification with mocked Gemini response."""
     from djlib.review import server as srv
+    from unittest.mock import MagicMock
 
     csv_path = _make_unsorted_csv(tmp_path, [{
         "track_id": "identify-test-1",
@@ -1102,24 +1103,22 @@ def test_identify_track_success(client, tmp_path):
         "meta_source": "soundcloud",
     }])
 
-    mock_openai_response = {
-        "output_text": json.dumps({
-            "artist": "Tera Kòrá",
-            "title": "September Maru",
-            "version": "feat. Dave Nunes",
-            "year": "2023",
-            "confidence": 0.75,
-            "reasoning": "Filename suggests 'september maru' with 'w_ Dave Nunes' indicating featuring artist.",
-        }),
-        "output": [],
-    }
+    gemini_json = json.dumps({
+        "artist": "Tera Kòrá",
+        "title": "September Maru",
+        "version": "feat. Dave Nunes",
+        "year": "2023",
+        "confidence": 0.75,
+        "reasoning": "Filename suggests 'september maru' with 'w_ Dave Nunes' indicating featuring artist.",
+    })
+    mock_response = MagicMock()
+    mock_response.text = gemini_json
+    mock_client = MagicMock()
+    mock_client.models.generate_content.return_value = mock_response
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
-         patch("djlib.review.server.http_requests.post") as mock_post:
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.raise_for_status = lambda: None
-        mock_post.return_value.json.return_value = mock_openai_response
+         patch("djlib.config.get_gemini_api_key", return_value="gemini-test"), \
+         patch("google.genai.Client", return_value=mock_client):
 
         resp = client.post("/api/identify-track", json={"track_id": "identify-test-1"})
         assert resp.status_code == 200
@@ -1157,22 +1156,23 @@ def test_identify_track_uses_cache(client, tmp_path):
     }
 
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
-         patch("djlib.review.server.http_requests.post") as mock_post:
+         patch("djlib.config.get_gemini_api_key", return_value="gemini-test"), \
+         patch("google.genai.Client") as mock_client_cls:
         resp = client.post("/api/identify-track", json={"track_id": "cached-identify"})
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert data["artist"] == "Cached Artist"
         assert data["reasoning"] == "cached"
-        # API must NOT have been called — result came from cache
-        mock_post.assert_not_called()
+        # Gemini must NOT have been called — result came from cache
+        mock_client_cls.assert_not_called()
 
     del srv._identify_cache[cache_key]
 
 
-def test_identify_track_openai_error(client, tmp_path):
-    """Returns 502 when OpenAI API call fails."""
+def test_identify_track_gemini_error(client, tmp_path):
+    """Returns 502 when Gemini API call fails."""
     from djlib.review import server as srv
+    from unittest.mock import MagicMock
 
     csv_path = _make_unsorted_csv(tmp_path, [{
         "track_id": "identify-err-1",
@@ -1198,10 +1198,12 @@ def test_identify_track_openai_error(client, tmp_path):
         "meta_source": "",
     }])
 
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = Exception("Connection timeout")
+
     with patch.object(srv, "UNSORTED_CSV", csv_path), \
-         patch("djlib.review.server.get_openai_api_key", return_value="sk-test"), \
-         patch("djlib.review.server.http_requests.post") as mock_post:
-        mock_post.side_effect = Exception("Connection timeout")
+         patch("djlib.config.get_gemini_api_key", return_value="gemini-test"), \
+         patch("google.genai.Client", return_value=mock_client):
 
         resp = client.post("/api/identify-track", json={"track_id": "identify-err-1"})
         assert resp.status_code == 502
