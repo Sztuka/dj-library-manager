@@ -1656,6 +1656,24 @@ def cmd_apply(args: argparse.Namespace) -> None:
         log_rows.append([str(src), str(dest_path), r.get("track_id", "")])
         processed_ids.add(r.get("track_id", ""))
 
+        # Always write djlib tags to the moved file so future scans can find it
+        # by rekordbox_id/track_id without needing fix-rekordbox-paths.
+        _tid = r.get("track_id") or None
+        _rbid = r.get("rekordbox_id") or None
+        _tkid = r.get("traktor_id") or None
+        if _tid or _rbid:
+            try:
+                from djlib.djlib_tags import write_djlib_tags as _wdt
+                _wdt(
+                    dest_path,
+                    track_id=_tid,
+                    rekordbox_id=_rbid,
+                    traktor_id=_tkid,
+                    original_path=str(src),
+                )
+            except Exception as _e:
+                print(f"   ⚠️  Could not write djlib tags to {dest_path.name}: {_e}")
+
         # ── Merge cue points from acoustic duplicates into winner ──────────────
         # Only for library destination; winner's pre-move path (str(src)) is still
         # in the Rekordbox/Traktor DB at this point.
@@ -4822,7 +4840,11 @@ def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
     # ── Step 1b: fallback — match untagged files via library.csv + artist folder ─
     lib_rows = load_library_csv(CSV_PATH)
     untagged_matched = 0
+    untagged_skipped = 0
     tag_writes: list[tuple[Path, str, str, str]] = []  # (file, rb_id, track_id, traktor_id)
+
+    # Track which files are already claimed to prevent one file → multiple rb_ids
+    already_matched_files: set[Path] = set(rb_id_to_path.values())
 
     for row in lib_rows:
         rb_id = str(row.get("rekordbox_id") or "").strip()
@@ -4835,27 +4857,46 @@ def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
         artist_folder = library_dir / sanitize_dir_segment(artist)
         if not artist_folder.exists():
             continue
+        # BUG6 fix: rglob catches files in artist sub-folders too
         candidates = [
-            f for f in artist_folder.iterdir()
-            if f.suffix.lower() in audio_extensions
+            f for f in artist_folder.rglob("*")
+            if f.is_file() and f.suffix.lower() in audio_extensions
         ]
-        # Match: file whose stem contains all significant title words
-        title_words = [w.lower() for w in title.split() if len(w) > 2]
+        import re as _re
+        def _normalize(s: str) -> str:
+            return _re.sub(r"[^\w\s]", " ", s).lower()
+        title_words = [w for w in _normalize(title).split() if len(w) > 2]
         matched: Path | None = None
-        for cand in candidates:
-            stem_lower = cand.stem.lower()
-            if all(w in stem_lower for w in title_words):
-                matched = cand
-                break
+        if title_words:
+            # Word-boundary match on normalized text (strips punctuation from both sides)
+            def _stem_matches(stem: str) -> bool:
+                s = _normalize(stem)
+                return all(_re.search(r'\b' + _re.escape(w) + r'\b', s) for w in title_words)
+            hits = [c for c in candidates if _stem_matches(c.stem)]
+            if len(hits) == 1:
+                matched = hits[0]
+            elif len(hits) > 1:
+                # Prefer AIFF (post-conversion format); if still ambiguous, skip
+                aiff_hits = [h for h in hits if h.suffix.lower() in {".aiff", ".aif"}]
+                if len(aiff_hits) == 1:
+                    matched = aiff_hits[0]
         if matched is None and len(candidates) == 1:
-            matched = candidates[0]  # only one file in artist folder — safe bet
-        if matched:
-            rb_id_to_path[rb_id] = matched
-            untagged_matched += 1
-            tag_writes.append((matched, rb_id, str(row.get("track_id") or ""), str(row.get("traktor_id") or "")))
+            matched = candidates[0]  # single file in artist folder — unambiguous
+        if matched is None:
+            continue
+        # BUG1 fix: skip if another rb_id is already mapped to this file
+        if matched in already_matched_files:
+            untagged_skipped += 1
+            continue
+        rb_id_to_path[rb_id] = matched
+        already_matched_files.add(matched)
+        untagged_matched += 1
+        tag_writes.append((matched, rb_id, str(row.get("track_id") or ""), str(row.get("traktor_id") or "")))
 
     if untagged_matched:
         print(f"   + {untagged_matched} matched via artist folder (no djlib tag)")
+    if untagged_skipped:
+        print(f"   ⚠️  {untagged_skipped} skipped — ambiguous (same file matched multiple tracks)")
     print()
 
     if not rb_id_to_path:
@@ -4863,6 +4904,15 @@ def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
         return
 
     # ── Step 2: write missing djlib tags to untagged files ──────────────────
+    # BUG5 fix: deduplicate tag_writes by file path (same file can't appear twice)
+    seen_tag_files: set[Path] = set()
+    deduped_tag_writes = []
+    for entry in tag_writes:
+        if entry[0] not in seen_tag_files:
+            seen_tag_files.add(entry[0])
+            deduped_tag_writes.append(entry)
+    tag_writes = deduped_tag_writes
+
     if tag_writes:
         print(f"🏷️  Writing DJLIB_REKORDBOX_ID to {len(tag_writes)} untagged files...")
         tags_written = 0
@@ -4927,7 +4977,9 @@ def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
     print("🎛️  Updating Rekordbox master.db...")
     if not dry_run:
         import shutil
-        backup = rekordbox_db_path.with_suffix(".db.backup-fixpaths")
+        from datetime import datetime as _dt
+        _ts = _dt.now().strftime("%Y%m%d-%H%M%S")
+        backup = rekordbox_db_path.with_suffix(f".db.backup-fixpaths-{_ts}")
         shutil.copy2(rekordbox_db_path, backup)
         print(f"   Backup: {backup.name}")
 
