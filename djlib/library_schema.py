@@ -76,6 +76,7 @@ LIBRARY_FIELDNAMES: List[str] = [
     "external_source",
     "external_track_id",
     # ── File location ───────────────────────────────────────────────────
+    "file_path",       # current absolute path after apply (djlib-owned)
     "old_full_path",
     "original_path",
     "file_hash",
@@ -197,6 +198,7 @@ def _write_schema_sidecar(csv_path: Path, row_count: int) -> None:
 #       original form.
 #   analysis_source — reserved for PR3 (tags|rekordbox|traktor|beatport).
 DJLIB_OWNED_FIELDS: List[str] = [
+    "file_path",
     "file_hash",
     "original_path",
     "added_date",
