@@ -726,6 +726,22 @@ th {
   user-select: none;
   cursor: pointer;
   transition: color 0.15s;
+  position: relative;
+}
+
+.col-resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 1;
+}
+.col-resizer:hover,
+.col-resizer.resizing {
+  background: var(--accent);
+  opacity: 0.5;
 }
 
 th:hover {

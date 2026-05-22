@@ -1593,6 +1593,65 @@
     updateReviewToolbar();
   }
 
+  // ── Column resize ────────────────────────────────────────────────────────
+  var _colWidths = {};  // {source:key → px string} — loaded from localStorage
+
+  function _colWidthKey(source, colKey) { return "colW:" + source + ":" + colKey; }
+
+  function _loadColWidths(source, cols) {
+    for (const col of cols) {
+      var stored = localStorage.getItem(_colWidthKey(source, col.key));
+      if (stored) _colWidths[source + ":" + col.key] = stored;
+    }
+  }
+
+  function attachColResizers(source, cols) {
+    _loadColWidths(source, cols);
+    const ths = tableHead.querySelectorAll("th");
+    ths.forEach(function (th) {
+      const key = th.dataset.key;
+      if (!key || key === "_select") return;  // skip checkbox col
+      // Apply saved width
+      var saved = _colWidths[source + ":" + key];
+      if (saved) th.style.width = saved;
+      // Skip if already has a resizer
+      if (th.querySelector(".col-resizer")) return;
+      var handle = document.createElement("div");
+      handle.className = "col-resizer";
+      handle.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        handle.classList.add("resizing");
+        var startX = e.clientX;
+        var startW = th.offsetWidth;
+        var _didResize = false;
+        function onUp() {
+          handle.classList.remove("resizing");
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          var finalW = th.style.width;
+          _colWidths[source + ":" + key] = finalW;
+          localStorage.setItem(_colWidthKey(source, key), finalW);
+          // Block the th click (sort) that fires after mouseup
+          if (_didResize) {
+            th.addEventListener("click", function blockSort(ev) {
+              ev.stopImmediatePropagation();
+              th.removeEventListener("click", blockSort);
+            }, true);
+          }
+        }
+        function onMove(ev) {
+          _didResize = true;
+          var newW = Math.max(30, startW + ev.clientX - startX);
+          th.style.width = newW + "px";
+        }
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+      th.appendChild(handle);
+    });
+  }
+
   function renderTable() {
     const cols = COLUMNS[currentSource] || COLUMNS.unsorted;
 
@@ -1648,6 +1707,7 @@
       hr.appendChild(kebabTh);
     }
     tableHead.appendChild(hr);
+    attachColResizers(currentSource, cols);
 
     // Body
     tableBody.innerHTML = "";
