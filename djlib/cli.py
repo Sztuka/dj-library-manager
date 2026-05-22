@@ -4775,6 +4775,149 @@ def cmd_reconvert(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_fix_rekordbox_paths(args: argparse.Namespace) -> None:
+    """Scan library folder, match files by DJLIB_REKORDBOX_ID tag, update
+    FolderPath in Rekordbox master.db and backfill file_path in library.csv.
+
+    Needed after FLAC→AIFF conversion + apply, where Rekordbox still has the
+    old FLAC path and cannot relocate files on its own (different filename +
+    different format fingerprint).
+    """
+    from djlib.djlib_tags import read_djlib_tags
+    from djlib.library_schema import load_library_csv, save_library_csv
+    from djlib.config import get_config
+
+    dry_run: bool = getattr(args, "dry_run", False)
+
+    cfg = get_config()
+    library_dir = Path(cfg.get("LIBRARY_DIR", str(Path.home() / "Music Library")))
+
+    if not library_dir.exists():
+        print(f"❌ Library directory not found: {library_dir}")
+        raise SystemExit(1)
+
+    print(f"{'[DRY RUN] ' if dry_run else ''}fix-rekordbox-paths")
+    print(f"  Library dir : {library_dir}")
+    print(f"  library.csv : {CSV_PATH}")
+    print()
+
+    # ── Step 1: scan library folder, build {rekordbox_id → file_path} ───────
+    print("📂 Scanning library folder for DJLIB_REKORDBOX_ID tags...")
+    rb_id_to_path: dict[str, Path] = {}
+    audio_extensions = {".aiff", ".aif", ".mp3", ".flac", ".wav", ".m4a", ".ogg"}
+    scanned = 0
+    for audio_file in library_dir.rglob("*"):
+        if audio_file.suffix.lower() not in audio_extensions:
+            continue
+        scanned += 1
+        try:
+            tags = read_djlib_tags(audio_file)
+            rb_id = tags.get("rekordbox_id", "").strip()
+            if rb_id:
+                rb_id_to_path[rb_id] = audio_file
+        except Exception:
+            pass
+
+    print(f"   Scanned {scanned} files, found {len(rb_id_to_path)} with Rekordbox IDs")
+    print()
+
+    if not rb_id_to_path:
+        print("⚠️  No files with DJLIB_REKORDBOX_ID tags found. Nothing to fix.")
+        return
+
+    # ── Step 2: backfill file_path in library.csv ────────────────────────────
+    print("📋 Backfilling file_path in library.csv...")
+    lib_rows = load_library_csv(CSV_PATH)
+    csv_updated = 0
+    for row in lib_rows:
+        rb_id = str(row.get("rekordbox_id") or "").strip()
+        if not rb_id:
+            continue
+        if row.get("file_path"):
+            continue  # already set
+        new_path = rb_id_to_path.get(rb_id)
+        if new_path:
+            row["file_path"] = str(new_path)
+            csv_updated += 1
+            print(f"   ✅ {new_path.name}")
+
+    if csv_updated == 0:
+        print("   Nothing to backfill (all rows already have file_path or no match found)")
+    else:
+        print(f"   → {csv_updated} rows updated")
+        if not dry_run:
+            save_library_csv(CSV_PATH, lib_rows)
+            print("   library.csv saved.")
+    print()
+
+    # ── Step 3: update FolderPath in Rekordbox master.db ────────────────────
+    try:
+        from pyrekordbox import Rekordbox6Database
+        from pyrekordbox.utils import get_rekordbox_pid
+    except ImportError:
+        print("⚠️  pyrekordbox not available — skipping Rekordbox DB update.")
+        print("   library.csv was still fixed above.")
+        return
+
+    rekordbox_db_path = Path.home() / "Library" / "Pioneer" / "rekordbox" / "master.db"
+    if not rekordbox_db_path.exists():
+        print(f"⚠️  Rekordbox DB not found: {rekordbox_db_path}")
+        return
+
+    pid = get_rekordbox_pid()
+    if pid:
+        print("❌ Rekordbox is running — close it first, then re-run this command.")
+        raise SystemExit(1)
+
+    print("🎛️  Updating Rekordbox master.db...")
+    if not dry_run:
+        import shutil
+        backup = rekordbox_db_path.with_suffix(".db.backup-fixpaths")
+        shutil.copy2(rekordbox_db_path, backup)
+        print(f"   Backup: {backup.name}")
+
+    db = Rekordbox6Database(rekordbox_db_path)
+    rb_updated = 0
+    rb_already_ok = 0
+    rb_not_found = 0
+    try:
+        for rb_id_str, new_path in rb_id_to_path.items():
+            try:
+                rb_id_int = int(rb_id_str)
+            except (ValueError, TypeError):
+                continue
+            content = db.get_content(ID=rb_id_int)
+            if content is None:
+                rb_not_found += 1
+                continue
+            current = getattr(content, "FolderPath", "")
+            if current == str(new_path):
+                rb_already_ok += 1
+                continue
+            print(f"   🔄 ID {rb_id_int}: {Path(current).name if current else '?'} → {new_path.name}")
+            if not dry_run:
+                content.FolderPath = str(new_path)
+                content.FileNameL = new_path.name
+            rb_updated += 1
+
+        if not dry_run and rb_updated > 0:
+            db.commit()
+            print(f"   ✅ Committed {rb_updated} path updates to Rekordbox DB")
+        elif dry_run and rb_updated > 0:
+            print(f"   [DRY RUN] Would update {rb_updated} paths in Rekordbox DB")
+    finally:
+        db.close()
+
+    print()
+    print("=" * 55)
+    print(f"  library.csv backfilled : {csv_updated}")
+    print(f"  Rekordbox updated      : {rb_updated}")
+    print(f"  Rekordbox already OK   : {rb_already_ok}")
+    if rb_not_found:
+        print(f"  Not found in DB        : {rb_not_found}")
+    print("=" * 55)
+
+
 # ============ PARSER ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4854,7 +4997,14 @@ def build_parser() -> argparse.ArgumentParser:
     ldp.set_defaults(func=cmd_library_dedup)
     
     # ========== END EXTERNAL INTEGRATION ==========
-    
+
+    frp = sp.add_parser(
+        "fix-rekordbox-paths",
+        help="Scan library folder, match files by DJLIB_REKORDBOX_ID tag, fix FolderPath in Rekordbox DB and backfill file_path in library.csv (use after FLAC→AIFF conversion)",
+    )
+    frp.add_argument("--dry-run", action="store_true", help="Show what would change without writing")
+    frp.set_defaults(func=cmd_fix_rekordbox_paths)
+
     scan_parser = sp.add_parser("scan", help="Scan UNSORTED folder for new tracks")
     scan_parser.add_argument(
         "--strict",
