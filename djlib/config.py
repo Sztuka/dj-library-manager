@@ -622,3 +622,22 @@ def get_ai_quick_model() -> str:
         if val:
             return val
     return _DEFAULT_AI_QUICK_MODEL
+
+
+def get_genre_classifier_provider() -> str:
+    """Return genre classifier provider: 'openai' (default) or 'gemini'.
+
+    Override in config.local.yml:
+        genre_classifier_provider: gemini
+    Or via env var DJLIB_GENRE_CLASSIFIER_PROVIDER=gemini.
+    """
+    env = os.getenv("DJLIB_GENRE_CLASSIFIER_PROVIDER")
+    if env:
+        return env.strip().lower()
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("genre_classifier_provider", "") or "").strip().lower()
+        if val:
+            return val
+    return "openai"

@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 import requests
 import yaml
 
-from djlib.config import get_openai_api_key
+from djlib.config import get_openai_api_key, get_gemini_api_key, get_genre_classifier_provider
 from djlib.metadata import lastfm
 from djlib.metadata.web_search import create_searcher, search_track_genre
 
@@ -37,6 +37,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _GENRES_FILE = _REPO / "genres.yml"
 
 MODEL = "gpt-5-nano"
+GEMINI_MODEL = "gemini-2.5-flash"
 OPENAI_TIMEOUT = 120
 OPENAI_URL = "https://api.openai.com/v1/responses"
 _YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2}|2100)\b")
@@ -441,6 +442,41 @@ def _call_openai(api_key: str, prompt_json: str, model: str = MODEL) -> Dict[str
     return result
 
 
+def _call_gemini(api_key: str, prompt_json: str, model: str = GEMINI_MODEL) -> Dict[str, Any]:
+    messages = json.loads(prompt_json)
+    system_text = next((m["content"] for m in messages if m["role"] == "system"), "")
+    user_text = next((m["content"] for m in messages if m["role"] == "user"), "")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        raise ClassifierError("google-genai not installed: pip install google-genai")
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=user_text,
+        config=types.GenerateContentConfig(
+            system_instruction=system_text,
+            response_mime_type="application/json",
+            max_output_tokens=4096,
+        ),
+    )
+    text = response.text or ""
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if not m:
+            raise ClassifierError(f"Gemini returned non-JSON: {text[:200]}")
+        result = json.loads(m.group(1))
+
+    if "genre" not in result:
+        raise ClassifierError(f"Gemini response missing 'genre' field: {text[:200]}")
+    return result
+
+
 def classify_genre(
     artist: str,
     title: str,
@@ -477,9 +513,15 @@ def classify_genre(
             except Exception:
                 pass
 
-    api_key = get_openai_api_key()
-    if not api_key:
-        raise ClassifierError("OpenAI API key not configured (get_openai_api_key returned empty)")
+    provider = get_genre_classifier_provider()
+    if provider == "gemini":
+        api_key = get_gemini_api_key()
+        if not api_key:
+            raise ClassifierError("Gemini API key not configured (set gemini_api_key in config.local.yml)")
+    else:
+        api_key = get_openai_api_key()
+        if not api_key:
+            raise ClassifierError("OpenAI API key not configured (set openai_api_key in config.local.yml)")
 
     artist = (artist or "").strip()
     title = (title or "").strip()
@@ -498,10 +540,12 @@ def classify_genre(
         genre_labels=_genre_labels(),
     )
 
+    _caller = _call_gemini if provider == "gemini" else _call_openai
+
     last_err: Optional[Exception] = None
     for attempt in range(max_retries + 1):
         try:
-            result = _call_openai(api_key, prompt)
+            result = _caller(api_key, prompt)
             release_year = _normalize_release_year(
                 result.get("year") or result.get("release_year")
             )
@@ -521,17 +565,17 @@ def classify_genre(
                 "reasoning": str(result.get("reasoning", "")).strip(),
                 "year": release_year,
                 "year_evidence": year_evidence,
-                "source": "nano+WS+LF",
+                "source": f"{GEMINI_MODEL}+WS+LF" if provider == "gemini" else "nano+WS+LF",
                 "lastfm_tags": lf_tags,
             }
         except (requests.Timeout, requests.ConnectionError) as e:
             last_err = e
-            log.warning("OpenAI timeout (attempt %d/%d): %s", attempt + 1, max_retries + 1, e)
+            log.warning("%s timeout (attempt %d/%d): %s", provider, attempt + 1, max_retries + 1, e)
             if attempt < max_retries:
                 time.sleep(1.5 * (attempt + 1))
         except Exception as e:
             last_err = e
-            log.warning("OpenAI call failed (attempt %d/%d): %s", attempt + 1, max_retries + 1, e)
+            log.warning("%s call failed (attempt %d/%d): %s", provider, attempt + 1, max_retries + 1, e)
             if attempt < max_retries:
                 time.sleep(1.0)
 
