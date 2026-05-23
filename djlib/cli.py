@@ -1413,6 +1413,19 @@ def cmd_apply(args: argparse.Namespace) -> None:
             # with `analysis_source=tags` so consumers (REVIEW UI, ML export)
             # know BPM/Key came from the audio file, not Rekordbox analysis.
             final_rekordbox_id = current_rekordbox_id or file_rekordbox_id
+            # Ghost-row fallback: file was moved from library to unsorted so it
+            # has no tag and no live RB path, but library.csv still holds the ID.
+            if not final_rekordbox_id:
+                _tid = r.get("track_id", "")
+                if _tid:
+                    for _lib_row in library_rows:
+                        if _lib_row.get("track_id") == _tid:
+                            _ghost_rbid = (_lib_row.get("rekordbox_id") or "").strip()
+                            if _ghost_rbid:
+                                final_rekordbox_id = _ghost_rbid
+                                r["rekordbox_id"] = _ghost_rbid
+                                print(f"   🔗 Ghost-row: restored rekordbox_id {_ghost_rbid} for {src.name}")
+                            break
             if not final_rekordbox_id:
                 if not getattr(args, "allow_no_rekordbox", False):
                     _skip(

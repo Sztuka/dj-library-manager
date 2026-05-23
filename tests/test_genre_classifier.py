@@ -12,7 +12,8 @@ def test_classify_genre_returns_validated_year_from_web_search():
   Released: 2024 on Example Records
 """.strip()
 
-    with patch.object(gc, "get_openai_api_key", return_value="test-key"), \
+    with patch.object(gc, "get_genre_classifier_provider", return_value="openai"), \
+         patch.object(gc, "get_openai_api_key", return_value="test-key"), \
          patch.object(gc, "_fetch_web_search", return_value=ws_ctx), \
          patch.object(gc, "_fetch_lastfm_tags", return_value=""), \
          patch.object(gc, "_genre_labels", return_value=["Deep House", "House"]), \
@@ -40,7 +41,8 @@ def test_classify_genre_keeps_year_when_web_snippets_lack_year():
   Classic house release from the early days.
 """.strip()
 
-    with patch.object(gc, "get_openai_api_key", return_value="test-key"), \
+    with patch.object(gc, "get_genre_classifier_provider", return_value="openai"), \
+         patch.object(gc, "get_openai_api_key", return_value="test-key"), \
          patch.object(gc, "_fetch_web_search", return_value=ws_ctx), \
          patch.object(gc, "_fetch_lastfm_tags", return_value=""), \
          patch.object(gc, "_genre_labels", return_value=["House"]), \
