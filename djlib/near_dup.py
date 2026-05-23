@@ -132,6 +132,8 @@ def flag_near_dups(
                 if row_b is row_a:
                     continue
                 tid_b = row_b.get("track_id") or ""
+                if tid_a and tid_b and tid_a == tid_b:
+                    continue  # same track (ghost row in library) — not a duplicate
                 if _rows_match(row_a, row_b):
                     row_a["near_duplicate_of"] = tid_b
                     flagged += 1

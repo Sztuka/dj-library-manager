@@ -201,3 +201,24 @@ def test_flag_near_dups_no_false_positive_different_titles():
     ]
     count = flag_near_dups(rows)
     assert count == 0
+
+
+def test_ghost_row_same_track_id_not_flagged():
+    """Track moved from Rekordbox to Music Unsorted creates a ghost row in
+    library.csv with the same track_id. Must NOT be flagged as a near-duplicate
+    — it is the same file, not a separate copy."""
+    staging = [_staging_row("uuid-123", "Blue Monday")]
+    library = [{"track_id": "uuid-123", "title": "Blue Monday", "artist": "New Order"}]
+    count = flag_near_dups(staging, library)
+    assert count == 0
+    assert staging[0]["near_duplicate_of"] == ""
+
+
+def test_different_track_id_same_title_still_flagged():
+    """Two tracks with the same title but different track_ids are genuinely
+    suspect and should still be flagged."""
+    staging = [_staging_row("tid-A", "Blue Monday")]
+    library = [{"track_id": "tid-B", "title": "Blue Monday", "artist": "New Order"}]
+    count = flag_near_dups(staging, library)
+    assert count == 1
+    assert staging[0]["near_duplicate_of"] == "tid-B"
