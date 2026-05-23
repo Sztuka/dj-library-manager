@@ -1823,9 +1823,24 @@ def cmd_apply(args: argparse.Namespace) -> None:
             merged.update(record)
             # Never clear rekordbox_id / traktor_id if the incoming record has
             # empty values — scan can't see those IDs when the file moved paths.
+            # Use .strip() on both sides so whitespace-only values aren't preserved.
             for _dj_id in ("rekordbox_id", "traktor_id"):
-                if not record.get(_dj_id) and library_rows[existing_idx].get(_dj_id):
-                    merged[_dj_id] = library_rows[existing_idx][_dj_id]
+                _incoming = (record.get(_dj_id) or "").strip()
+                _existing_raw = library_rows[existing_idx].get(_dj_id) or ""
+                if not _incoming and _existing_raw.strip():
+                    merged[_dj_id] = _existing_raw
+            # Re-derive analysis_source from the actual merged IDs so that preserving
+            # a rekordbox_id above also preserves the "rekordbox" provenance label.
+            _mrb = (merged.get("rekordbox_id") or "").strip()
+            _mtr = (merged.get("traktor_id") or "").strip()
+            if _mrb:
+                merged["analysis_source"] = "rekordbox"
+            elif _mtr:
+                merged["analysis_source"] = merged.get("analysis_source") or "traktor"
+            elif not merged.get("analysis_source"):
+                merged["analysis_source"] = (
+                    library_rows[existing_idx].get("analysis_source") or ""
+                )
             # Playlist merge: union by default; "CLEAR" sentinel removes all.
             prev_pl = (library_rows[existing_idx].get("playlists") or "").strip()
             new_pl  = (merged.get("playlists") or "").strip()
