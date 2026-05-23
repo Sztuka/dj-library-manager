@@ -1821,6 +1821,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
             # (rating, color, cue_points_rb, live_location, etc.) survive re-apply.
             merged = dict(library_rows[existing_idx])
             merged.update(record)
+            # Never clear rekordbox_id / traktor_id if the incoming record has
+            # empty values — scan can't see those IDs when the file moved paths.
+            for _dj_id in ("rekordbox_id", "traktor_id"):
+                if not record.get(_dj_id) and library_rows[existing_idx].get(_dj_id):
+                    merged[_dj_id] = library_rows[existing_idx][_dj_id]
             # Playlist merge: union by default; "CLEAR" sentinel removes all.
             prev_pl = (library_rows[existing_idx].get("playlists") or "").strip()
             new_pl  = (merged.get("playlists") or "").strip()
