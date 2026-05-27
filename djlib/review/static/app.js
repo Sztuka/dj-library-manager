@@ -62,6 +62,11 @@
   const MAX_UNDO = 50;
   let undoStack = [];
 
+  // Duplicate comparison state (D:N badge + inline expand)
+  let duplicateGroups = {};       // group_id → { group_id, members[] }
+  let trackToDupGroup = {};       // track_id → group_id
+  let expandedDupGroups = new Set();
+
   // Debounced saves: { trackId: { timer, fields } }
   let pendingSaves = {};
   const SAVE_DEBOUNCE_MS = 80;
@@ -503,6 +508,310 @@
 
   let _loadError = false;
 
+  // ── Duplicate groups (D:N badge + comparison view) ─────────────────────────
+
+  async function loadDuplicateGroups() {
+    duplicateGroups = {};
+    trackToDupGroup = {};
+    if (currentSource !== "unsorted") return;
+    try {
+      var r = await fetch("/api/duplicate-groups?source=" + currentSource);
+      var data = await r.json();
+      (data.groups || []).forEach(function (g) {
+        duplicateGroups[g.group_id] = g;
+        g.members.forEach(function (m) {
+          var tid = m.track_id || m.file_hash || "";
+          if (tid) trackToDupGroup[tid] = g.group_id;
+        });
+      });
+    } catch (e) {
+      // non-fatal — D:N badges just won't show
+    }
+  }
+
+  function toggleDupGroup(gid) {
+    if (expandedDupGroups.has(gid)) {
+      expandedDupGroups.delete(gid);
+    } else {
+      expandedDupGroups.add(gid);
+    }
+    renderDupComparisonRows();
+  }
+
+  function renderDupComparisonRows() {
+    tableBody.querySelectorAll("tr.dup-comparison").forEach(function (r) { r.remove(); });
+    tableBody.querySelectorAll("tr.dup-expanded").forEach(function (r) {
+      r.classList.remove("dup-expanded");
+    });
+    if (!expandedDupGroups.size) return;
+
+    var tidToIdx = {};
+    for (var fi = 0; fi < filteredTracks.length; fi++) {
+      var ftid = trackId(filteredTracks[fi]);
+      if (ftid) tidToIdx[ftid] = fi;
+    }
+
+    var mainCols = COLUMNS[currentSource] || COLUMNS.unsorted;
+    var totalCols = mainCols.length + (isEditableSource() ? 1 : 0);
+
+    expandedDupGroups.forEach(function (gid) {
+      var group = duplicateGroups[gid];
+      if (!group) return;
+
+      // Find the topmost visible group member to anchor the panel
+      var parentTid = null;
+      var parentIdx = Infinity;
+      group.members.forEach(function (m) {
+        var mTid = m.track_id || m.file_hash || "";
+        var idx = tidToIdx[mTid];
+        if (idx !== undefined && idx < parentIdx) {
+          parentIdx = idx;
+          parentTid = mTid;
+        }
+      });
+      if (parentTid === null) return;
+
+      var parentTr = tableBody.querySelector("tr[data-idx='" + parentIdx + "']");
+      if (!parentTr) return;
+      parentTr.classList.add("dup-expanded");
+
+      var compRow = buildDupComparisonRow(group, gid, totalCols);
+      parentTr.insertAdjacentElement("afterend", compRow);
+    });
+  }
+
+  function buildDupComparisonRow(group, gid, totalCols) {
+    var tr = document.createElement("tr");
+    tr.className = "dup-comparison";
+
+    var td = document.createElement("td");
+    td.colSpan = totalCols;
+    td.className = "dup-comparison-cell";
+
+    var members = group.members;
+    var recommendedTid = (members[0] && (members[0].track_id || members[0].file_hash)) || "";
+
+    // Header
+    var hdr = document.createElement("div");
+    hdr.className = "dup-comparison-header";
+    var artist = members[0].artist || "—";
+    var title = members[0].title || "—";
+    hdr.innerHTML = '<span class="dup-comparison-title">' + escHTML(artist) + ' — ' + escHTML(title) + '</span>' +
+      '<span class="dup-comparison-sub">' + members.length + ' duplicates — pick best quality</span>';
+    td.appendChild(hdr);
+
+    // Grid of fields × members
+    var grid = document.createElement("div");
+    grid.className = "dup-grid";
+    grid.style.gridTemplateColumns = "auto repeat(" + members.length + ", 1fr)";
+
+    // Fields to compare: label, key, formatter, hasDiff-helper
+    var FIELDS = [
+      { label: "version",  get: function (m) { return m.version_info || ""; } },
+      { label: "format",   get: function (m) { return formatQuality(m); }, isQuality: true },
+      { label: "duration", get: function (m) { return fmtDuration(m.duration_seconds || ""); } },
+      { label: "bpm",      get: function (m) { return m.bpm ? Math.round(parseFloat(m.bpm)) + "" : ""; } },
+      { label: "key",      get: function (m) { return m.key_camelot || m.key || ""; } },
+      { label: "year",     get: function (m) { return m.year || ""; } },
+      { label: "rating",   get: function (m) { return m.rating ? ratingToStars(m.rating) : ""; }, isHtml: true },
+      { label: "source",   get: function (m) { return m._source || ""; } },
+      { label: "file",     get: function (m) { var fp = m.file_path || ""; return fp.split("/").pop(); } },
+    ];
+
+    // Member headers (track A / B / C ...)
+    var labelCell = document.createElement("div");
+    labelCell.className = "dup-grid-label-header";
+    labelCell.textContent = "";
+    grid.appendChild(labelCell);
+
+    members.forEach(function (m, mi) {
+      var letter = String.fromCharCode(65 + mi); // A, B, C...
+      var mTid = m.track_id || m.file_hash || "";
+      var hdrCell = document.createElement("div");
+      hdrCell.className = "dup-grid-member-header";
+      if (mTid === recommendedTid) hdrCell.classList.add("recommended");
+      var letterSpan = '<span class="dup-letter">[' + letter + ']</span>';
+      var recBadge = mTid === recommendedTid ? ' <span class="dup-rec-badge">★ recommended</span>' : "";
+      hdrCell.innerHTML = letterSpan + recBadge;
+      grid.appendChild(hdrCell);
+    });
+
+    // Field rows
+    FIELDS.forEach(function (field) {
+      var lbl = document.createElement("div");
+      lbl.className = "dup-grid-label";
+      lbl.textContent = field.label;
+      grid.appendChild(lbl);
+
+      var values = members.map(field.get);
+      var uniqueNonEmpty = new Set(values.filter(function (v) { return v !== "" && v != null; }));
+      var hasDiff = uniqueNonEmpty.size > 1;
+
+      members.forEach(function (m, mi) {
+        var cell = document.createElement("div");
+        cell.className = "dup-grid-cell";
+        if (hasDiff) cell.classList.add("dup-diff");
+        if (field.isHtml) {
+          cell.innerHTML = values[mi] || "—";
+        } else {
+          cell.textContent = values[mi] || "—";
+        }
+        grid.appendChild(cell);
+      });
+    });
+
+    td.appendChild(grid);
+
+    // Per-member action buttons row
+    var actionsRow = document.createElement("div");
+    actionsRow.className = "dup-actions-row";
+    // Spacer for label column
+    var spacer = document.createElement("div");
+    actionsRow.appendChild(spacer);
+
+    members.forEach(function (m, mi) {
+      var mTid = m.track_id || m.file_hash || "";
+      var btnWrap = document.createElement("div");
+      btnWrap.className = "dup-action-cell";
+
+      if (m._source === "library") {
+        // Library row: only inform, no action (this is reference, not staging)
+        var libLabel = document.createElement("span");
+        libLabel.className = "dup-lib-label";
+        libLabel.textContent = "already in library";
+        btnWrap.appendChild(libLabel);
+      } else {
+        var keepBtn = document.createElement("button");
+        keepBtn.className = "dup-mini-btn dup-keep";
+        keepBtn.textContent = "Keep";
+        keepBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          setTrackDisposition(mTid, "library");
+          renderDupComparisonRows();
+        });
+        var rejBtn = document.createElement("button");
+        rejBtn.className = "dup-mini-btn dup-reject";
+        rejBtn.textContent = "Reject";
+        rejBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          setTrackDisposition(mTid, "reject");
+          renderDupComparisonRows();
+        });
+        btnWrap.appendChild(keepBtn);
+        btnWrap.appendChild(rejBtn);
+      }
+      actionsRow.appendChild(btnWrap);
+    });
+
+    td.appendChild(actionsRow);
+
+    // Footer with primary action
+    var footer = document.createElement("div");
+    footer.className = "dup-comparison-footer";
+
+    var keepBestBtn = document.createElement("button");
+    keepBestBtn.className = "dup-primary-btn";
+    keepBestBtn.textContent = "Keep ★ recommended, reject others";
+    keepBestBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      applyDupGroupDecision(gid, "keep_recommended");
+    });
+
+    var keepBothBtn = document.createElement("button");
+    keepBothBtn.className = "dup-secondary-btn";
+    keepBothBtn.textContent = "Keep all";
+    keepBothBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      applyDupGroupDecision(gid, "keep_all");
+    });
+
+    var closeBtn = document.createElement("button");
+    closeBtn.className = "dup-close-btn";
+    closeBtn.textContent = "Close";
+    closeBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      expandedDupGroups.delete(gid);
+      renderDupComparisonRows();
+    });
+
+    footer.appendChild(keepBestBtn);
+    footer.appendChild(keepBothBtn);
+    footer.appendChild(closeBtn);
+    td.appendChild(footer);
+
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function applyDupGroupDecision(gid, decision) {
+    var group = duplicateGroups[gid];
+    if (!group) return;
+    var stagingMembers = group.members.filter(function (m) { return m._source === "unsorted"; });
+    if (stagingMembers.length === 0) return;
+
+    var recommendedTid = group.members[0] && group.members[0]._source === "unsorted"
+      ? (group.members[0].track_id || group.members[0].file_hash)
+      : (stagingMembers[0].track_id || stagingMembers[0].file_hash);
+
+    var keepIds = [];
+    var rejectIds = [];
+
+    if (decision === "keep_recommended") {
+      stagingMembers.forEach(function (m) {
+        var mTid = m.track_id || m.file_hash || "";
+        if (mTid === recommendedTid) keepIds.push(mTid);
+        else rejectIds.push(mTid);
+      });
+    } else if (decision === "keep_all") {
+      stagingMembers.forEach(function (m) {
+        keepIds.push(m.track_id || m.file_hash || "");
+      });
+    }
+
+    fetch("/api/resolve-duplicates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keep: keepIds, reject: rejectIds, source: "unsorted" }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.ok) {
+          showToast("Duplicate group resolved — " + data.updated + " tracks updated", "");
+          // Reflect in local state
+          keepIds.forEach(function (tid) {
+            var live = allTracks.find(function (t) { return (t.track_id || t.file_hash) === tid; });
+            if (live) live.disposition = "library";
+          });
+          rejectIds.forEach(function (tid) {
+            var live = allTracks.find(function (t) { return (t.track_id || t.file_hash) === tid; });
+            if (live) live.disposition = "reject";
+          });
+          expandedDupGroups.delete(gid);
+          applyFilters();
+        } else {
+          showToast("Resolve failed: " + (data.error || "unknown"), "");
+        }
+      })
+      .catch(function () { showToast("Network error resolving duplicates", ""); });
+  }
+
+  function setTrackDisposition(tid, disposition) {
+    var live = allTracks.find(function (t) { return (t.track_id || t.file_hash) === tid; });
+    if (!live) return;
+    live.disposition = disposition;
+    saveTrackField(live, "disposition", disposition);
+  }
+
+  function formatQuality(track) {
+    var aq = (track.audio_quality || "").trim();
+    return aq || "—";
+  }
+
+  function escHTML(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c];
+    });
+  }
 
   async function loadTracks(source) {
     currentSource = source;
@@ -520,6 +829,7 @@
     selectedSet.clear();
     selectionAnchor = -1;
     undoStack = [];
+    expandedDupGroups.clear();
     // Exit review mode when switching sources (ghost rows belong to unsorted only)
     if (ghostReview.active) exitReviewMode(true);
     // Reset batch bar inputs to avoid ghost values across source switches
@@ -532,6 +842,7 @@
     if (batchPlaylist) batchPlaylist.value = "";
     updateBatchBar();
     applyFilters();
+    loadDuplicateGroups().then(function () { renderDupComparisonRows(); });
     // Auto-select first row
     if (filteredTracks.length > 0) {
       selectRow(0);
@@ -1537,7 +1848,26 @@
           td.appendChild(cb);
         } else if (col.key === "_index") {
           td.classList.add("col-index");
-          td.textContent = i + 1;
+          var dupGid = trackToDupGroup[trackTid];
+          var dupGroup = dupGid ? duplicateGroups[dupGid] : null;
+          if (dupGroup && dupGroup.members.length > 1) {
+            var dBadge = document.createElement("span");
+            dBadge.className = "badge-duplicates";
+            dBadge.textContent = "D:" + dupGroup.members.length;
+            dBadge.title = "Acoustic duplicate group — click to compare and resolve (D)";
+            dBadge.addEventListener(
+              "click",
+              (function (g) {
+                return function (e) {
+                  e.stopPropagation();
+                  toggleDupGroup(g);
+                };
+              })(dupGid),
+            );
+            td.appendChild(dBadge);
+          } else {
+            td.textContent = i + 1;
+          }
         } else if (col.type === "checkbox") {
           const cb = document.createElement("input");
           cb.type = "checkbox";
@@ -1755,6 +2085,7 @@
     }
 
     tableBody.appendChild(frag);
+    renderDupComparisonRows();
 
     // Re-render ghost rows for any proposals already in review state
     if (ghostReview.active && Object.keys(ghostReview.proposals).length > 0) {
@@ -4194,6 +4525,19 @@
         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
           e.preventDefault();
           jumpNextUndecided();
+        }
+        break;
+
+      case "KeyD":
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          if (currentIndex >= 0 && currentIndex < filteredTracks.length) {
+            var dTid = trackId(filteredTracks[currentIndex]);
+            var dGid = trackToDupGroup[dTid];
+            if (dGid) {
+              e.preventDefault();
+              toggleDupGroup(dGid);
+            }
+          }
         }
         break;
 

@@ -263,6 +263,187 @@ def api_tracks():
     return jsonify(rows)
 
 
+@app.route("/api/duplicate-groups")
+def api_duplicate_groups():
+    """Return groups of near-duplicate tracks for the duplicates comparison UI.
+
+    Uses ``near_duplicate_of`` (populated by ``flag_near_dups`` during scan).
+    Since ``near_duplicate_of`` is a one-directional pointer, transitive groups
+    (A→B, C→B) need union-find to collapse into a single group {A,B,C}.
+
+    ?source=unsorted (default) — only unsorted rows form group anchors.
+    Library rows referenced by a staging row's pointer are included in the
+    group so the user can compare against what's already in the library.
+
+    Response:
+      {
+        "groups": [ { "group_id": "<hash>", "members": [ {track}, ... ] }, ... ],
+        "total_groups": N
+      }
+
+    Each member has ``_source`` ("unsorted" or "library") and ``_quality_score``
+    (integer, higher = better, used for the "recommended" highlighting).
+    """
+    source = request.args.get("source", "unsorted")
+    if source not in ("unsorted", "library"):
+        return jsonify({"error": f"Unknown source: {source}"}), 400
+
+    if source == "unsorted":
+        anchor_rows = load_unsorted_rows(UNSORTED_CSV)
+        for r in anchor_rows:
+            r["_source"] = "unsorted"
+    else:
+        anchor_rows = _load_library_csv()
+        for r in anchor_rows:
+            r["_source"] = "library"
+
+    library_rows = _load_library_csv() if source == "unsorted" else []
+    for r in library_rows:
+        r["_source"] = "library"
+
+    by_tid: Dict[str, Dict] = {}
+    for r in anchor_rows + library_rows:
+        tid = r.get("track_id") or ""
+        if tid:
+            by_tid[tid] = r
+
+    # Union-find: collect edges from near_duplicate_of pointers (in both directions
+    # — A.near_duplicate_of==B means A and B are in the same group).
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    edges_from_anchors = 0
+    for r in anchor_rows:
+        tid = r.get("track_id") or ""
+        ndup = (r.get("near_duplicate_of") or "").strip()
+        if not tid or not ndup:
+            continue
+        parent.setdefault(tid, tid)
+        parent.setdefault(ndup, ndup)
+        union(tid, ndup)
+        edges_from_anchors += 1
+
+    if edges_from_anchors == 0:
+        return jsonify({"groups": [], "total_groups": 0})
+
+    # Build groups from union-find
+    groups_map: Dict[str, List[Dict]] = {}
+    for tid in list(parent.keys()):
+        root = find(tid)
+        row = by_tid.get(tid)
+        if row is None:
+            continue
+        groups_map.setdefault(root, []).append(row)
+
+    result_groups: List[Dict] = []
+    for root, members in groups_map.items():
+        if len(members) < 2:
+            continue
+        for m in members:
+            m["_quality_score"] = _quality_score(m)
+        # Sort: highest quality first (recommended pick is the first member)
+        members.sort(key=lambda r: (
+            -r.get("_quality_score", 0),
+            r.get("_source") != "library",  # library wins ties (already curated)
+            (r.get("title") or ""),
+        ))
+        # Stable group_id = sha1 of sorted track_ids — survives across reloads
+        tids = sorted([m.get("track_id") or "" for m in members])
+        import hashlib as _h
+        gid = _h.md5("|".join(tids).encode()).hexdigest()[:16]
+        result_groups.append({"group_id": gid, "members": members})
+
+    result_groups.sort(key=lambda g: (
+        -len(g["members"]),
+        (g["members"][0].get("artist") or "") + (g["members"][0].get("title") or ""),
+    ))
+
+    return jsonify({"groups": result_groups, "total_groups": len(result_groups)})
+
+
+def _quality_score(row: Dict) -> int:
+    """Compute integer quality score for a row, higher = better.
+
+    Priority: format tier (FLAC/AIFF/WAV > MP3 ≥320 > MP3 256 > MP3 ≤192)
+    + bitrate. Used to recommend a winner when multiple duplicates exist.
+    """
+    # audio_quality is "FLAC", "AIFF", "MP3 320", "MP3 192", etc.
+    aq = (row.get("audio_quality") or "").strip().upper()
+    fmt = aq.split(" ")[0] if aq else ""
+    bitrate = 0
+    parts = aq.split(" ")
+    if len(parts) >= 2:
+        try:
+            bitrate = int(parts[1])
+        except ValueError:
+            bitrate = 0
+
+    if fmt in ("FLAC", "AIFF", "WAV"):
+        return 10000 + bitrate
+    if fmt == "MP3":
+        if bitrate >= 320:
+            return 5000 + bitrate
+        if bitrate >= 256:
+            return 3000 + bitrate
+        return 1000 + bitrate
+    if fmt == "M4A":
+        return 2000 + bitrate
+    return bitrate
+
+
+@app.route("/api/resolve-duplicates", methods=["POST"])
+def api_resolve_duplicates():
+    """Apply a bulk decision to a duplicate group.
+
+    Body:
+      {
+        "keep": ["track_id", ...],     // dispositions set to "library"
+        "reject": ["track_id", ...],   // dispositions set to "reject"
+        "source": "unsorted"
+      }
+
+    Returns: {"ok": True, "updated": N}
+    """
+    data = request.get_json(silent=True) or {}
+    keep_ids = set(data.get("keep") or [])
+    reject_ids = set(data.get("reject") or [])
+    source = data.get("source", "unsorted")
+
+    if not keep_ids and not reject_ids:
+        return jsonify({"error": "Nothing to update"}), 400
+
+    if source != "unsorted":
+        return jsonify({"error": "resolve-duplicates supports only unsorted source"}), 400
+
+    updated = 0
+    with _CSV_LOCK:
+        with csv_lock(UNSORTED_CSV):
+            rows = load_unsorted_rows(UNSORTED_CSV)
+            for row in rows:
+                tid = row.get("track_id") or ""
+                if not tid:
+                    continue
+                if tid in keep_ids:
+                    row["disposition"] = "library"
+                    updated += 1
+                elif tid in reject_ids:
+                    row["disposition"] = "reject"
+                    updated += 1
+            if updated:
+                write_unsorted_rows(UNSORTED_CSV, rows, [])
+    return jsonify({"ok": True, "updated": updated})
+
+
 @app.route("/api/library-index")
 def api_library_index():
     """Return normalised artist::title keys for duplicate detection.
