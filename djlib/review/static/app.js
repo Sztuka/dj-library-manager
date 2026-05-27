@@ -235,6 +235,7 @@
       { key: "title", label: "Title", width: "16%", type: "editable" },
       { key: "version_info", label: "Version", width: "10%", type: "editable" },
       { key: "_in_library", label: "Lib", width: "36px", type: "in-library" },
+      { key: "conflict_library_path", label: "Cnfl", width: "44px", type: "lib-conflict" },
       { key: "near_duplicate_of", label: "~Dup", width: "40px", type: "near-dup" },
       {
         key: "file_path",
@@ -1871,6 +1872,18 @@
           if (isInLibrary(track)) {
             td.innerHTML = '<span class="badge-in-lib">LIB</span>';
             td.title = "Already in library (artist + title match)";
+          }
+        } else if (col.type === "lib-conflict") {
+          var conflictPath = track.conflict_library_path || "";
+          if (conflictPath) {
+            var conflictBadge = document.createElement("span");
+            conflictBadge.className = "badge-lib-conflict";
+            conflictBadge.textContent = "CNFL";
+            conflictBadge.title = "Duplicate exists in library — click to compare and resolve";
+            conflictBadge.addEventListener("click", (function (t) {
+              return function (e) { e.stopPropagation(); openConflictModal(t); };
+            })(track));
+            td.appendChild(conflictBadge);
           }
         } else if (col.type === "near-dup") {
           var nearDupId = track[col.key];
@@ -5617,4 +5630,205 @@
       });
     }
   }());
+
+  // ── Library Conflict Resolution Modal ──────────────────────────────────────
+
+  var conflictModal = document.getElementById("conflict-modal");
+  var conflictOverlay = document.getElementById("conflict-overlay");
+  var _conflictAudioStaging = null;
+  var _conflictAudioLibrary = null;
+  var _conflictTrack = null;
+
+  function fmtBitrate(fmt, bitrate) {
+    if (!fmt) return "—";
+    var b = parseInt(bitrate) || 0;
+    return fmt.toUpperCase() + (b ? " " + b + "kbps" : "");
+  }
+
+  function fmtDurSec(sec) {
+    var s = parseFloat(sec) || 0;
+    var m = Math.floor(s / 60);
+    var r = Math.round(s % 60);
+    return m + ":" + (r < 10 ? "0" : "") + r;
+  }
+
+  function qualityBar(score) {
+    var pct = Math.min(100, Math.max(0, score / 15));  // 1500 max (FLAC 24-bit)
+    return '<div class="conflict-qbar-wrap"><div class="conflict-qbar" style="width:' + pct.toFixed(1) + '%"></div><span class="conflict-qscore">' + score + '</span></div>';
+  }
+
+  function encodePath(path) {
+    // base64url encode the path for /api/library-audio
+    return btoa(unescape(encodeURIComponent(path))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  }
+
+  function openConflictModal(track) {
+    if (!conflictModal) return;
+    _conflictTrack = track;
+
+    var stagingFmt = (track.audio_quality || "").split(" ")[0] || "?";
+    var stagingBitrate = (track.audio_quality || "").match(/(\d+)/);
+    stagingBitrate = stagingBitrate ? stagingBitrate[1] : "0";
+    var stagingDur = track.duration_seconds || "0";
+    var stagingScore = 0;
+    if (stagingFmt.toLowerCase() === "flac" || stagingFmt.toLowerCase() === "aiff" || stagingFmt.toLowerCase() === "wav") {
+      stagingScore = 1000 + (parseInt(stagingBitrate) / 10);
+    } else if (parseInt(stagingBitrate) >= 320) {
+      stagingScore = 500 + parseInt(stagingBitrate);
+    } else {
+      stagingScore = 400 + parseInt(stagingBitrate);
+    }
+
+    var libFmt = track.conflict_library_format || "?";
+    var libBitrate = parseInt(track.conflict_library_bitrate) || 0;
+    var libDur = track.conflict_library_duration || "0";
+    var libScore = parseInt(track.conflict_library_quality_score) || 0;
+
+    var newIsBetter = stagingScore > libScore;
+    var sameQuality = stagingScore === libScore;
+
+    var stagingPath = track.file_path || "";
+    var libPath = track.conflict_library_path || "";
+
+    var el = function (id) { return document.getElementById(id); };
+
+    el("conflict-title").textContent = (track.artist || "") + " – " + (track.title || "");
+
+    // Staging side
+    el("conflict-staging-fmt").textContent = fmtBitrate(stagingFmt, stagingBitrate);
+    el("conflict-staging-dur").textContent = fmtDurSec(stagingDur);
+    el("conflict-staging-qbar").innerHTML = qualityBar(stagingScore);
+    el("conflict-staging-path").textContent = stagingPath.split("/").slice(-2).join("/");
+    el("conflict-staging-path").title = stagingPath;
+
+    // Library side
+    el("conflict-lib-fmt").textContent = fmtBitrate(libFmt, libBitrate);
+    el("conflict-lib-dur").textContent = fmtDurSec(libDur);
+    el("conflict-lib-qbar").innerHTML = qualityBar(libScore);
+    el("conflict-lib-path").textContent = libPath.split("/").slice(-2).join("/");
+    el("conflict-lib-path").title = libPath;
+
+    // Quality verdict
+    var verdict = el("conflict-verdict");
+    if (sameQuality) {
+      verdict.textContent = "Same quality";
+      verdict.className = "conflict-verdict eq";
+    } else if (newIsBetter) {
+      verdict.textContent = "New is better (+" + (stagingScore - libScore) + " pts)";
+      verdict.className = "conflict-verdict new-better";
+    } else {
+      verdict.textContent = "Library is better (+" + (libScore - stagingScore) + " pts)";
+      verdict.className = "conflict-verdict lib-better";
+    }
+
+    // Default action highlight
+    var keepNewBtn = el("conflict-keep-new");
+    var keepExistingBtn = el("conflict-keep-existing");
+    keepNewBtn.className = "conflict-action" + (newIsBetter || sameQuality ? " primary" : "");
+    keepExistingBtn.className = "conflict-action" + (!newIsBetter ? " primary" : "");
+
+    // Audio players
+    if (_conflictAudioStaging) { _conflictAudioStaging.pause(); _conflictAudioStaging.src = ""; }
+    if (_conflictAudioLibrary) { _conflictAudioLibrary.pause(); _conflictAudioLibrary.src = ""; }
+    _conflictAudioStaging = new Audio();
+    _conflictAudioLibrary = new Audio();
+
+    var stagingPlayBtn = el("conflict-play-staging");
+    var libPlayBtn = el("conflict-play-library");
+
+    stagingPlayBtn.textContent = "▶";
+    libPlayBtn.textContent = "▶";
+
+    stagingPlayBtn.onclick = function () {
+      if (_conflictAudioLibrary) _conflictAudioLibrary.pause();
+      libPlayBtn.textContent = "▶";
+      if (_conflictAudioStaging.paused) {
+        if (!_conflictAudioStaging.src) {
+          _conflictAudioStaging.src = "/api/audio?path=" + encodeURIComponent(stagingPath);
+        }
+        _conflictAudioStaging.play().catch(function () {});
+        stagingPlayBtn.textContent = "⏸";
+      } else {
+        _conflictAudioStaging.pause();
+        stagingPlayBtn.textContent = "▶";
+      }
+    };
+    _conflictAudioStaging.onended = function () { stagingPlayBtn.textContent = "▶"; };
+    _conflictAudioStaging.onpause = function () { stagingPlayBtn.textContent = "▶"; };
+    _conflictAudioStaging.onplay = function () { stagingPlayBtn.textContent = "⏸"; };
+
+    libPlayBtn.onclick = function () {
+      if (_conflictAudioStaging) _conflictAudioStaging.pause();
+      stagingPlayBtn.textContent = "▶";
+      if (_conflictAudioLibrary.paused) {
+        if (!_conflictAudioLibrary.src) {
+          _conflictAudioLibrary.src = "/api/library-audio?path=" + encodePath(libPath);
+        }
+        _conflictAudioLibrary.play().catch(function () {});
+        libPlayBtn.textContent = "⏸";
+      } else {
+        _conflictAudioLibrary.pause();
+        libPlayBtn.textContent = "▶";
+      }
+    };
+    _conflictAudioLibrary.onended = function () { libPlayBtn.textContent = "▶"; };
+    _conflictAudioLibrary.onpause = function () { libPlayBtn.textContent = "▶"; };
+    _conflictAudioLibrary.onplay = function () { libPlayBtn.textContent = "⏸"; };
+
+    conflictModal.classList.remove("hidden");
+    conflictOverlay.classList.remove("hidden");
+  }
+
+  function closeConflictModal() {
+    if (_conflictAudioStaging) { _conflictAudioStaging.pause(); _conflictAudioStaging.src = ""; }
+    if (_conflictAudioLibrary) { _conflictAudioLibrary.pause(); _conflictAudioLibrary.src = ""; }
+    _conflictTrack = null;
+    if (conflictModal) conflictModal.classList.add("hidden");
+    if (conflictOverlay) conflictOverlay.classList.add("hidden");
+  }
+
+  function resolveConflict(action) {
+    if (!_conflictTrack) return;
+    var tid = trackId(_conflictTrack);
+    closeConflictModal();
+    fetch("/api/resolve-conflict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ track_id: tid, action: action }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.ok) {
+          showToast(
+            action === "keep_new" ? "Library updated with new version" :
+            action === "keep_existing" ? "Kept existing library version" :
+            "Both versions kept in library",
+            ""
+          );
+          refreshTracks();
+        } else {
+          showToast("Error: " + (d.error || "unknown"), "");
+        }
+      })
+      .catch(function () { showToast("Network error resolving conflict", ""); });
+  }
+
+  if (conflictOverlay) {
+    conflictOverlay.addEventListener("click", closeConflictModal);
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && conflictModal && !conflictModal.classList.contains("hidden")) {
+      closeConflictModal();
+    }
+  });
+
+  var keepNewBtn = document.getElementById("conflict-keep-new");
+  var keepExistingBtn = document.getElementById("conflict-keep-existing");
+  var keepBothBtn = document.getElementById("conflict-keep-both");
+  var conflictCloseBtn = document.getElementById("conflict-close");
+  if (keepNewBtn) keepNewBtn.addEventListener("click", function () { resolveConflict("keep_new"); });
+  if (keepExistingBtn) keepExistingBtn.addEventListener("click", function () { resolveConflict("keep_existing"); });
+  if (keepBothBtn) keepBothBtn.addEventListener("click", function () { resolveConflict("keep_both"); });
+  if (conflictCloseBtn) conflictCloseBtn.addEventListener("click", closeConflictModal);
+
 })();
