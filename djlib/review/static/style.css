@@ -4004,3 +4004,195 @@ body.review-locked .track-row td {
 .playlist-panel-create.highlighted {
   color: #a89cff;
 }
+
+/* ── Library Conflict Modal visibility ──────────────────────────────────── */
+.conflict-modal.hidden,
+.conflict-overlay.hidden {
+  display: none;
+}
+
+/* ── Library Conflict Badge ──────────────────────────────────────────────── */
+.badge-lib-conflict {
+  display: inline-block;
+  padding: 2px 5px;
+  background: #7a2a2a;
+  color: #ff9999;
+  border: 1px solid #c04040;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.badge-lib-conflict:hover {
+  background: #a03030;
+  color: #ffbbbb;
+}
+
+/* ── Library Conflict Modal ──────────────────────────────────────────────── */
+.conflict-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 1200;
+}
+.conflict-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1201;
+  background: #1a1a2e;
+  border: 1px solid #3a3a5c;
+  border-radius: 6px;
+  width: 700px;
+  max-width: 95vw;
+  font-family: monospace;
+  color: #e0e0e0;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+.conflict-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid #2a2a44;
+}
+.conflict-modal-tag {
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  color: #ff9999;
+  background: #4a1a1a;
+  border: 1px solid #883333;
+  border-radius: 3px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+.conflict-modal-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: bold;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conflict-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.conflict-close:hover { color: #ccc; }
+.conflict-modal-body {
+  display: grid;
+  grid-template-columns: 1fr 80px 1fr;
+  gap: 0;
+  padding: 16px;
+}
+.conflict-side {
+  padding: 12px;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conflict-side.staging { background: #1e2a1e; border: 1px solid #2a4a2a; }
+.conflict-side.library  { background: #1e1e2a; border: 1px solid #2a2a4a; }
+.conflict-side-label {
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 0.8px;
+  color: #888;
+  margin-bottom: 4px;
+}
+.conflict-side.staging .conflict-side-label { color: #7abf7a; }
+.conflict-side.library  .conflict-side-label { color: #7a7abf; }
+.conflict-play-btn {
+  width: 36px;
+  height: 28px;
+  background: #2a2a44;
+  border: 1px solid #4a4a6a;
+  border-radius: 4px;
+  color: #e0e0e0;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.conflict-play-btn:hover { background: #3a3a5c; }
+.conflict-fmt {
+  font-size: 13px;
+  font-weight: bold;
+}
+.conflict-qbar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.conflict-qbar {
+  height: 6px;
+  background: #5a9a5a;
+  border-radius: 3px;
+  min-width: 2px;
+}
+.conflict-side.library .conflict-qbar { background: #5a5abf; }
+.conflict-qscore {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+}
+.conflict-dur { font-size: 12px; color: #aaa; }
+.conflict-path {
+  font-size: 10px;
+  color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conflict-verdict-col {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.conflict-verdict {
+  font-size: 11px;
+  text-align: center;
+  padding: 6px 4px;
+  border-radius: 3px;
+}
+.conflict-verdict.new-better { color: #7abf7a; background: #1a2a1a; }
+.conflict-verdict.lib-better { color: #7a7abf; background: #1a1a2a; }
+.conflict-verdict.eq          { color: #aaa;    background: #222; }
+.conflict-modal-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid #2a2a44;
+}
+.conflict-action {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid #3a3a5c;
+  background: #16162a;
+  color: #c0c0e0;
+  font-family: monospace;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.conflict-action:hover { background: #2a2a44; }
+.conflict-action.primary {
+  background: #2a3a5a;
+  border-color: #4a6a9a;
+  color: #b0d0ff;
+  font-weight: bold;
+}
+.conflict-action.primary:hover { background: #3a4a6a; }
+.conflict-action.secondary { color: #888; }

@@ -1538,6 +1538,15 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     if dur_diff > 3:
                         print(f"   ⏱️  Duration differs by {dur_diff:.0f}s - might be different edits!")
                 
+                if getattr(args, "non_interactive", False):
+                    print(f"   → Non-interactive mode: flagging conflict for UI resolution")
+                    r["conflict_library_path"] = str(existing.path)
+                    r["conflict_library_format"] = existing.format
+                    r["conflict_library_bitrate"] = str(existing.bitrate)
+                    r["conflict_library_duration"] = str(round(existing.duration, 1))
+                    r["conflict_library_quality_score"] = str(existing.quality_score)
+                    skipped_reasons["ALREADY_IN_LIBRARY"] = skipped_reasons.get("ALREADY_IN_LIBRARY", 0) + 1
+                    continue
                 choice = input("   Continue anyway? [y/N]: ").strip().lower()
                 if choice != 'y':
                     _skip("ALREADY_IN_LIBRARY", f"{artist} - {title}")
@@ -1617,12 +1626,19 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     processed_ids.add(r.get("track_id", ""))
                     continue
 
-                # Different file, same name — ask user
+                # Different file, same name — ask user (or auto-skip when non-interactive)
                 print(f"\n⚠️  FILE CONFLICT at destination:")
                 print(f"   Target: {dest_path}")
                 print(f"   A file with this name already exists (different content).")
                 print(f"   Source hash:   {new_hash[:16]}...")
                 print(f"   Existing hash: {existing_hash[:16]}...")
+                _non_interactive = getattr(args, "non_interactive", False)
+                if _non_interactive:
+                    print(f"   → Non-interactive mode: skipping (use CLI apply to resolve manually)")
+                    if _converted_tmp:
+                        _converted_tmp.unlink(missing_ok=True)
+                    _skip("FILE_CONFLICT", f"{dest_path.name}  (non-interactive: auto-skip)")
+                    continue
                 conflict_choice = input("   [S]kip / [R]ename with (2) / [O]verwrite? [S/r/o]: ").strip().lower()
 
                 if conflict_choice == 'o':
@@ -1684,6 +1700,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     traktor_id=_tkid,
                     original_path=str(src),
                 )
+                # Writing tags changes file content → recompute hash so the
+                # library row reflects the on-disk state. Without this, unapply's
+                # hash verification (lib_row.file_hash == sha256(file_on_disk))
+                # would always fail with hash_mismatch.
+                try:
+                    r["file_hash"] = file_sha256(dest_path)
+                except Exception as _hexc:
+                    print(f"   ⚠️  Could not recompute hash after tagging {dest_path.name}: {_hexc}")
             except Exception as _e:
                 print(f"   ⚠️  Could not write djlib tags to {dest_path.name}: {_e}")
 
@@ -1793,7 +1817,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "year": r.get("year") or r.get("release_year") or "",
             "grouping": r.get("grouping") or "",
             "bpm": r.get("bpm") or "",
-            "key_camelot": r.get("key_camelot") or "",
+            # library.csv schema uses "key" (camelot) — unsorted uses "key_camelot".
+            # Without this remap the field gets silently dropped on save and unapply
+            # restores empty key for tracks that had a key during scan (GH issue: stale-key-on-unapply).
+            "key": r.get("key_camelot") or r.get("key") or "",
             "analysis_source": analysis_source,
             "energy_hint": r.get("energy_hint") or "",
             "destination": destination or "library",  # Default to library if not specified

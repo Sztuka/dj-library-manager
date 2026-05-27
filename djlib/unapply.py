@@ -247,9 +247,13 @@ def _build_unsorted_row(
     row["disposition"] = ""
     row["near_duplicate_of"] = ""
 
-    # Fields lost at apply time (written to audio tags, not to library.csv)
+    # version_info IS persisted to library.csv (since the schema fix), so restore it
+    row["version_info"] = lib_row.get("version_info") or ""
+    row["genre"] = lib_row.get("genre") or ""
+
+    # Fields lost at apply time (not persisted to library.csv)
     for lost in (
-        "genre", "version_info", "genre_suggest", "artist_suggest",
+        "genre_suggest", "artist_suggest",
         "title_suggest", "version_suggest", "year_suggest", "duration_suggest",
         "ai_artist", "ai_title", "ai_version", "ai_genre",
         "ai_confidence", "ai_reasoning", "ai_classify_date",

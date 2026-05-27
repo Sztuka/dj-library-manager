@@ -2860,13 +2860,22 @@ def api_export_start() -> Response:
         try:
             import argparse as _ap
             from djlib.cli import cmd_apply
-            cmd_apply(_ap.Namespace(dry_run=False))  # dry_run required — Namespace() raises AttributeError
+            before_rows = load_unsorted_rows(UNSORTED_CSV)
+            cmd_apply(_ap.Namespace(dry_run=False, non_interactive=True))
             after_rows = load_unsorted_rows(UNSORTED_CSV)
             after_ready = sum(
                 1 for r in after_rows
                 if (r.get("disposition") or "").lower().strip() in EXPORT_DISPOSITIONS
             )
             moved = ready_count - after_ready
+            # Clean up sidecar for exported tracks so the review bar doesn't linger
+            remaining_tids = {r.get("track_id", "") for r in after_rows}
+            stale_tids = [
+                r.get("track_id", "") for r in before_rows
+                if r.get("track_id", "") and r.get("track_id", "") not in remaining_tids
+            ]
+            if stale_tids:
+                _sidecar_remove(stale_tids)
             with _export_lock:
                 _export_status = {
                     "state": "done",
@@ -2893,6 +2902,210 @@ def api_export_status() -> Response:
     """Poll export job status."""
     with _export_lock:
         return jsonify(dict(_export_status))
+
+
+# ── Library Conflict Resolution ──────────────────────────────────────────────
+
+@app.route("/api/conflicts")
+def api_conflicts() -> Response:
+    """Return tracks with pending library conflict (conflict_library_path set)."""
+    rows = load_unsorted_rows(UNSORTED_CSV)
+    conflicts = [r for r in rows if (r.get("conflict_library_path") or "").strip()]
+    return jsonify({"conflicts": conflicts, "count": len(conflicts)})
+
+
+@app.route("/api/library-audio")
+def api_library_audio() -> Response:  # noqa: C901
+    """Stream an audio file from the library by absolute path.
+
+    Security: only files within LIB_ROOT, MIXES_ROOT, or REJECT_ROOT are served.
+    Path is base64-encoded to avoid URL encoding issues with special chars.
+    """
+    import base64
+    from djlib.config import load_config
+    encoded = request.args.get("path", "")
+    if not encoded:
+        return Response("missing path", status=400)
+    try:
+        raw_path = base64.urlsafe_b64decode(encoded.encode()).decode("utf-8")
+    except Exception:
+        return Response("invalid path encoding", status=400)
+
+    file_path = Path(raw_path).resolve()
+    cfg = load_config()
+    allowed_roots = [
+        Path(cfg.get("LIB_ROOT", "")).expanduser().resolve(),
+        Path(cfg.get("MIXES_ROOT", "")).expanduser().resolve(),
+        Path(cfg.get("REJECT_ROOT", "")).expanduser().resolve(),
+        Path(cfg.get("UNSORTED_ROOT", "")).expanduser().resolve(),
+    ]
+    if not any(str(file_path).startswith(str(r)) for r in allowed_roots if r.parts and r != Path.cwd()):
+        return Response("path not in allowed library roots", status=403)
+    if not file_path.is_file():
+        return Response("file not found", status=404)
+
+    ext = file_path.suffix.lower()
+    mime_map = {
+        ".mp3": "audio/mpeg", ".flac": "audio/flac", ".aiff": "audio/aiff",
+        ".aif": "audio/aiff", ".wav": "audio/wav", ".m4a": "audio/mp4",
+        ".ogg": "audio/ogg",
+    }
+    mime = mime_map.get(ext, "audio/octet-stream")
+
+    def generate():
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+
+    return Response(generate(), mimetype=mime, headers={
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_path.stat().st_size),
+    })
+
+
+@app.route("/api/resolve-conflict", methods=["POST"])
+def api_resolve_conflict() -> Response:
+    """Resolve a library duplicate conflict.
+
+    Body: {"track_id": "...", "action": "keep_new"|"keep_existing"|"keep_both"}
+    - keep_new: overwrite library file with staging file, update library.csv
+    - keep_existing: remove staging row (file stays in library as-is)
+    - keep_both: move staging file with -v2 suffix, add to library.csv
+    """
+    import shutil
+    from djlib.config import load_config as _load_config
+    from djlib.locks import csv_lock as _csv_lock
+    from djlib.library_schema import load_library_csv as _load_lib, save_library_csv as _save_lib
+
+    data = request.get_json(silent=True) or {}
+    track_id = data.get("track_id", "").strip()
+    action = data.get("action", "").strip()
+    if not track_id or action not in ("keep_new", "keep_existing", "keep_both"):
+        return jsonify({"error": "invalid parameters"}), 400
+
+    rows = load_unsorted_rows(UNSORTED_CSV)
+    idx = next((i for i, r in enumerate(rows) if r.get("track_id") == track_id), None)
+    if idx is None:
+        return jsonify({"error": "track not found"}), 404
+
+    row = rows[idx]
+    lib_path = Path(row.get("conflict_library_path", "") or "")
+    if not lib_path.is_file():
+        return jsonify({"error": f"library file not found: {lib_path}"}), 404
+
+    staging_path = Path(row.get("file_path", "") or "")
+    if not staging_path.is_file():
+        return jsonify({"error": f"staging file not found: {staging_path}"}), 404
+
+    def _clear_conflict(r):
+        for f in ("conflict_library_path", "conflict_library_format",
+                  "conflict_library_bitrate", "conflict_library_duration",
+                  "conflict_library_quality_score"):
+            r[f] = ""
+
+    cfg = _load_config()
+    reject_root = Path(cfg.get("REJECT_ROOT", "")).expanduser()
+    reject_root.mkdir(parents=True, exist_ok=True)
+
+    def _find_old_lib_entry(library_rows, lib_file_path: str):
+        """Find library.csv entry for the file being displaced (by file path)."""
+        return next(
+            (i for i, lr in enumerate(library_rows)
+             if (lr.get("old_full_path") or lr.get("file_path") or "") == lib_file_path),
+            None,
+        )
+
+    def _merge_play_history(dest_row: dict, src_row: dict) -> None:
+        """Copy play history and curation fields from src (old lib row) to dest (new row)."""
+        for field in ("play_count", "rating", "cue_count", "color", "playlists"):
+            val = src_row.get(field) or ""
+            if val:
+                dest_row[field] = val
+
+    if action == "keep_existing":
+        # Library file wins — move staging file to rejected so it doesn't orphan on disk
+        reject_dest = reject_root / staging_path.name
+        i = 2
+        while reject_dest.exists():
+            reject_dest = reject_root / f"{staging_path.stem} ({i}){staging_path.suffix}"
+            i += 1
+        try:
+            shutil.move(str(staging_path), str(reject_dest))
+        except Exception as e:
+            log.warning("keep_existing: could not move staging file to rejected: %s", e)
+        remaining = [r for r in rows if r.get("track_id") != track_id]
+        write_unsorted_rows(UNSORTED_CSV, remaining, [])
+        return jsonify({"ok": True, "action": "keep_existing"})
+
+    elif action == "keep_new":
+        # Move old library file to rejected (stays on disk, Rekordbox shows it as missing)
+        reject_dest = reject_root / lib_path.name
+        i = 2
+        while reject_dest.exists():
+            reject_dest = reject_root / f"{lib_path.stem} ({i}){lib_path.suffix}"
+            i += 1
+        try:
+            shutil.move(str(lib_path), str(reject_dest))
+            shutil.move(str(staging_path), str(lib_path))
+        except Exception as e:
+            return jsonify({"error": f"file operation failed: {e}"}), 500
+
+        try:
+            from djlib.djlib_tags import write_djlib_tags as _wdt
+            _wdt(lib_path, track_id=row.get("track_id"), rekordbox_id=row.get("rekordbox_id"),
+                 traktor_id=row.get("traktor_id"), original_path=str(staging_path))
+        except Exception:
+            pass
+
+        with _csv_lock(CSV_PATH):
+            library_rows = _load_lib(CSV_PATH)
+            # Find old library entry (different track_id, same file path) to merge
+            # play history and then remove the stale record.
+            old_idx = _find_old_lib_entry(library_rows, str(lib_path))
+            if old_idx is not None:
+                _merge_play_history(row, library_rows[old_idx])
+                library_rows.pop(old_idx)
+
+            row["old_full_path"] = str(lib_path)
+            _clear_conflict(row)
+            library_rows.append(row)
+            _save_lib(CSV_PATH, library_rows)
+
+        remaining = [r for r in rows if r.get("track_id") != track_id]
+        write_unsorted_rows(UNSORTED_CSV, remaining, [])
+        return jsonify({"ok": True, "action": "keep_new"})
+
+    elif action == "keep_both":
+        # Move staging with -v2 suffix next to existing library file
+        stem = lib_path.stem
+        ext = lib_path.suffix
+        i = 2
+        dest = lib_path.parent / f"{stem} (v{i}){ext}"
+        while dest.exists():
+            i += 1
+            dest = lib_path.parent / f"{stem} (v{i}){ext}"
+        try:
+            shutil.move(str(staging_path), str(dest))
+        except Exception as e:
+            return jsonify({"error": f"file operation failed: {e}"}), 500
+        try:
+            from djlib.djlib_tags import write_djlib_tags as _wdt
+            _wdt(dest, track_id=row.get("track_id"), rekordbox_id=row.get("rekordbox_id"),
+                 traktor_id=row.get("traktor_id"), original_path=str(staging_path))
+        except Exception:
+            pass
+        with _csv_lock(CSV_PATH):
+            library_rows = _load_lib(CSV_PATH)
+            row["old_full_path"] = str(dest)
+            _clear_conflict(row)
+            library_rows.append(row)
+            _save_lib(CSV_PATH, library_rows)
+        remaining = [r for r in rows if r.get("track_id") != track_id]
+        write_unsorted_rows(UNSORTED_CSV, remaining, [])
+        return jsonify({"ok": True, "action": "keep_both", "dest": str(dest)})
 
 
 # ── Push Playlists ───────────────────────────────────────────────────────────

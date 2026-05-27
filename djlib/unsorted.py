@@ -87,6 +87,12 @@ UNSORTED_COLUMNS: Sequence[ColumnSpec] = [
     ColumnSpec("ai_reasoning", hidden=True, width=60, locked=True),
     ColumnSpec("ai_classify_date", hidden=True, width=18, locked=True),
     ColumnSpec("artist_normalized", hidden=True, width=12, locked=True),
+    # Library conflict fields — set by cmd_apply when ALREADY_IN_LIBRARY detected
+    ColumnSpec("conflict_library_path", hidden=True, width=120, locked=True),
+    ColumnSpec("conflict_library_format", hidden=True, width=10, locked=True),
+    ColumnSpec("conflict_library_bitrate", hidden=True, width=10, locked=True),
+    ColumnSpec("conflict_library_duration", hidden=True, width=12, locked=True),
+    ColumnSpec("conflict_library_quality_score", hidden=True, width=10, locked=True),
 ]
 
 # Canonical fieldnames list for CSV I/O
