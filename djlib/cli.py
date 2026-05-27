@@ -1537,7 +1537,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     dur_diff = abs(src_info.duration - existing.duration)
                     if dur_diff > 3:
                         print(f"   ⏱️  Duration differs by {dur_diff:.0f}s - might be different edits!")
-
+                
                 if getattr(args, "non_interactive", False):
                     print(f"   → Non-interactive mode: flagging conflict for UI resolution")
                     r["conflict_library_path"] = str(existing.path)
@@ -1700,6 +1700,14 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     traktor_id=_tkid,
                     original_path=str(src),
                 )
+                # Writing tags changes file content → recompute hash so the
+                # library row reflects the on-disk state. Without this, unapply's
+                # hash verification (lib_row.file_hash == sha256(file_on_disk))
+                # would always fail with hash_mismatch.
+                try:
+                    r["file_hash"] = file_sha256(dest_path)
+                except Exception as _hexc:
+                    print(f"   ⚠️  Could not recompute hash after tagging {dest_path.name}: {_hexc}")
             except Exception as _e:
                 print(f"   ⚠️  Could not write djlib tags to {dest_path.name}: {_e}")
 
@@ -1809,7 +1817,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
             "year": r.get("year") or r.get("release_year") or "",
             "grouping": r.get("grouping") or "",
             "bpm": r.get("bpm") or "",
-            "key_camelot": r.get("key_camelot") or "",
+            # library.csv schema uses "key" (camelot) — unsorted uses "key_camelot".
+            # Without this remap the field gets silently dropped on save and unapply
+            # restores empty key for tracks that had a key during scan (GH issue: stale-key-on-unapply).
+            "key": r.get("key_camelot") or r.get("key") or "",
             "analysis_source": analysis_source,
             "energy_hint": r.get("energy_hint") or "",
             "destination": destination or "library",  # Default to library if not specified

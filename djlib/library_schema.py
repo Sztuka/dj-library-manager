@@ -83,6 +83,7 @@ LIBRARY_FIELDNAMES: List[str] = [
     # ── Bibliographic metadata ──────────────────────────────────────────
     "artist",
     "title",
+    "version_info",   # remix/edit/rework suffix (e.g. "Extended Mix", "TBS & The Twinz Rework")
     "year",
     "grouping",
     # ── Musical attributes (DJ-software-owned) ──────────────────────────
