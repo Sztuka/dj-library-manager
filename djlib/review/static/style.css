@@ -1531,64 +1531,6 @@ kbd {
   cursor: help;
 }
 
-/* ── Version comparison ────────────────────────────────────── */
-
-.badge-versions {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  letter-spacing: 0.3px;
-  background: rgba(99, 179, 237, 0.15);
-  color: #63b3ed;
-  white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-}
-
-.badge-versions:hover {
-  background: rgba(99, 179, 237, 0.28);
-}
-
-tr.version-expanded .badge-versions {
-  background: rgba(99, 179, 237, 0.28);
-}
-
-/* Child rows (sibling versions) */
-tr.version-child {
-  background: rgba(99, 179, 237, 0.04);
-}
-
-tr.version-child > td:first-child {
-  border-left: 3px solid rgba(99, 179, 237, 0.5);
-  padding-left: 18px;
-}
-
-tr.version-child td.col-artist,
-tr.version-child td.col-title {
-  opacity: 0.35;
-}
-
-tr.version-child.preferred-version > td:first-child {
-  border-left: 3px solid var(--lib);
-}
-
-/* Warning when group has mixed artists (potential covers) */
-.badge-covers-alert {
-  display: inline-block;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 9px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  background: rgba(245, 101, 101, 0.15);
-  color: #fc8181;
-  cursor: help;
-  margin-left: 3px;
-}
-
 /* ── Library stats (in stats bar) ─────────────────────────── */
 
 .stat-lib-sources,
