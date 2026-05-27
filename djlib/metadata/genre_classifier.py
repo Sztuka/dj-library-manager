@@ -330,8 +330,13 @@ def _build_prompt(
     remix_leak_warning = ""
     if not is_remix and not is_multi_source_mashup:
         remix_leak_warning = (
-            " IMPORTANT: This track is NOT a remix. If web results mention remixes or "
-            "alternative versions, classify based on the ORIGINAL track's genre, not the remix's."
+            "\n   ⚠️  THIS TRACK IS NOT A REMIX (no remix/edit in filename or version field). "
+            "If a web result — including [SOUNDCLOUD PAGE METADATA] — contains words like "
+            "'remix', 'edit', 'bootleg', 'rework', or 'mashup' in its title or tags, "
+            "that result is for a DIFFERENT VERSION of this track. IGNORE it entirely. "
+            "The [SOUNDCLOUD PAGE METADATA] override only applies when the SC page describes "
+            "the ORIGINAL track, not a remix. For originals by well-known artists, "
+            "your knowledge of the artist's genre is authoritative."
         )
     web_search_signal = ""
     if web_search_context and not web_search_context.startswith("(No web search"):
@@ -339,7 +344,8 @@ def _build_prompt(
             "\n3. WEB SEARCH RESULTS — includes a [SOUNDCLOUD PAGE METADATA] block (if present) "
             "scraped directly from the SC track page, followed by search snippets from DJ sites.\n"
             "   [SOUNDCLOUD PAGE METADATA] Genre tag / Tags — set by the uploader for THIS exact "
-            "track. When present, treat as ground truth for genre (overrides artist knowledge).\n"
+            "track. When present, treat as ground truth for genre (overrides artist knowledge) "
+            "UNLESS the SC page is for a remix/edit and this track is not (see warning below).\n"
             "   EXACT MATCH RULE: If a result from Beatport, Traxsource, or Discogs closely matches "
             "THIS track, its genre tag is also authoritative.\n"
             "   If results are ambiguous or match a different version/artist, fall back to artist knowledge."
@@ -559,8 +565,24 @@ def classify_genre(
                 year_evidence = ""
             if not release_year:
                 year_evidence = ""
+            raw_genre = str(result.get("genre", "")).strip()
+            canonical_labels = set(_genre_labels())
+            if raw_genre and raw_genre not in canonical_labels:
+                from djlib.genre_mapper import map_genre as _map_genre
+                mapped = _map_genre(raw_genre)
+                if mapped:
+                    log.warning(
+                        "Classifier returned non-canonical genre %r for %s - %s; mapped to %r",
+                        raw_genre, artist, title, mapped,
+                    )
+                    raw_genre = mapped
+                else:
+                    log.warning(
+                        "Classifier returned non-canonical genre %r for %s - %s; no mapping found",
+                        raw_genre, artist, title,
+                    )
             return {
-                "genre": str(result.get("genre", "")).strip(),
+                "genre": raw_genre,
                 "confidence": float(result.get("confidence", 0.0) or 0.0),
                 "reasoning": str(result.get("reasoning", "")).strip(),
                 "year": release_year,
