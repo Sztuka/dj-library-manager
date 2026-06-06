@@ -177,25 +177,24 @@ config.local.yml    # Local overrides (gitignored)
 - CSV fields: `snake_case` (`track_id`, `key_camelot`)
 - Git branches: `feature/<name>`, `fix/<name>`, `refactor/<name>`, `chore/<name>`
 
-## Multi-Persona Design Workflow
+## Agents
 
-For non-trivial features, consult the specialized subagents in `.claude/agents/` before writing code. Each represents a distinct perspective:
+Project agents (`.claude/agents/`, domain-specific to genre classification):
 
-**General engineering team** (invokable for any feature):
+- **spock** (`spock.md`) — ML experiment design & evaluation: AB tests, baselines, confusion matrices, variance, "signal or noise".
+- **sheldon** (`sheldon.md`) — data pipeline & external signals: ingestion, caching, normalization, failure modes (Essentia, Gemini, web search, MusicBrainz, Beatport).
+- **jarvis** (`jarvis.md`) — LLM prompt design & AB-test symmetry: the classifier prompt, signal framing, "improvement vs. just different".
+- **susie** (`susie.md`) — genre taxonomy: genres.yml, family splits/merges, scene & historical accuracy.
+- **koop** (`koop.md`) — working-DJ floor perspective: real crate culture, "which DJs play it and when".
 
-- **Julia** — creative idea generator, opens the solution space
-- **Zosia** — CTO / systems architect, guards data integrity and simplicity
-- **Adam** — product designer, guards UX and Review UI patterns
-- **Kasia** — product owner, guards scope and opportunity cost
-- **Łukasz** — technical writer, keeps docs in sync with code
-- **Marek** — destructive QA, stress-tests with dirty data and edge cases
+User-level bench (`~/.claude/agents/`, shared across projects; domain from this file):
 
-**Domain specialists** (for genre classification work):
+- **gilfoyle** — architecture/stack decisions: CSV-as-DB, Flask, pipeline shape, schema, data integrity. Decides, doesn't code.
+- **dinesh** — code implementation (Python 3.13, Flask, vanilla JS, pytest, CLI). Only one who writes code.
+- **donna** — UX/UI for the Review UI, column/badge patterns, DJ-facing copy and flow.
+- **miranda** — scope/ship: MVP discipline, kill scope creep, opportunity cost.
+- **hania** — conformance: Conventional Commits, branch-not-main rule, pytest-before-commit, Pyright/Ruff/Black, data-safety rules. Gates before commit.
+- **marvin** — red team: dirty paths (spaces/Unicode/&), corrupted CSV, race conditions on library.csv, lost rekordbox_id, interrupted gig copies.
+- **gall** — docs/memory hygiene, ARCHITECTURE.md coherence, session close.
 
-- **ML Researcher** — AB test design, baselines, confusion matrices
-- **Taxonomy Expert** — genres.yml, genre family disputes, scene accuracy
-- **DJ Domain Expert** — real-world DJ usage and crate culture
-- **Data Engineer** — pipeline design, caching, external signal integration
-- **Prompt Engineer** — LLM prompt design and AB test symmetry
-
-Typical flow: **Julia** (brainstorm) → **Zosia/Adam/Kasia** (filter for feasibility, UX, scope) → implement → **Marek** (destructive test) → **Łukasz** (document) → commit.
+Typical flow: **gilfoyle/donna/miranda** (decide approach, UX, scope) → **dinesh** (implement) → **marvin** (destructive test) → **hania** (conformance gate: tests pass, branch correct, commit format) → commit. For genre-classification work, pull in **spock/sheldon/jarvis/susie/koop** as the domain demands.
