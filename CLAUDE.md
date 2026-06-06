@@ -195,6 +195,6 @@ User-level bench (`~/.claude/agents/`, shared across projects; domain from this 
 - **miranda** — scope/ship: MVP discipline, kill scope creep, opportunity cost.
 - **hania** — conformance: Conventional Commits, branch-not-main rule, pytest-before-commit, Pyright/Ruff/Black, data-safety rules. Gates before commit.
 - **marvin** — red team: dirty paths (spaces/Unicode/&), corrupted CSV, race conditions on library.csv, lost rekordbox_id, interrupted gig copies.
-- **gall** — docs/memory hygiene, ARCHITECTURE.md coherence, session close.
+- **ford** — docs/memory hygiene, ARCHITECTURE.md coherence, session close.
 
 Typical flow: **gilfoyle/donna/miranda** (decide approach, UX, scope) → **dinesh** (implement) → **marvin** (destructive test) → **hania** (conformance gate: tests pass, branch correct, commit format) → commit. For genre-classification work, pull in **spock/sheldon/jarvis/susie/koop** as the domain demands.
