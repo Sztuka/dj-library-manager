@@ -181,20 +181,20 @@ config.local.yml    # Local overrides (gitignored)
 
 Project agents (`.claude/agents/`, domain-specific to genre classification):
 
-- **spock** (`spock.md`) — ML experiment design & evaluation: AB tests, baselines, confusion matrices, variance, "signal or noise".
-- **sheldon** (`sheldon.md`) — data pipeline & external signals: ingestion, caching, normalization, failure modes (Essentia, Gemini, web search, MusicBrainz, Beatport).
-- **jarvis** (`jarvis.md`) — LLM prompt design & AB-test symmetry: the classifier prompt, signal framing, "improvement vs. just different".
-- **susie** (`susie.md`) — genre taxonomy: genres.yml, family splits/merges, scene & historical accuracy.
-- **koop** (`koop.md`) — working-DJ floor perspective: real crate culture, "which DJs play it and when".
+- **ml-scientist** (`ml-scientist.md`) — ML experiment design & evaluation: AB tests, baselines, confusion matrices, variance, "signal or noise".
+- **data-engineer** (`data-engineer.md`) — data pipeline & external signals: ingestion, caching, normalization, failure modes (Essentia, Gemini, web search, MusicBrainz, Beatport).
+- **prompt-engineer** (`prompt-engineer.md`) — LLM prompt design & AB-test symmetry: the classifier prompt, signal framing, "improvement vs. just different".
+- **taxonomist** (`taxonomist.md`) — genre taxonomy: genres.yml, family splits/merges, scene & historical accuracy.
+- **dj** (`dj.md`) — working-DJ floor perspective: real crate culture, "which DJs play it and when".
 
 User-level bench (`~/.claude/agents/`, shared across projects; domain from this file):
 
-- **gilfoyle** — architecture/stack decisions: CSV-as-DB, Flask, pipeline shape, schema, data integrity. Decides, doesn't code.
-- **dinesh** — code implementation (Python 3.13, Flask, vanilla JS, pytest, CLI). Only one who writes code.
-- **donna** — UX/UI for the Review UI, column/badge patterns, DJ-facing copy and flow.
-- **miranda** — scope/ship: MVP discipline, kill scope creep, opportunity cost.
-- **hania** — conformance: Conventional Commits, branch-not-main rule, pytest-before-commit, Pyright/Ruff/Black, data-safety rules. Gates before commit.
-- **marvin** — red team: dirty paths (spaces/Unicode/&), corrupted CSV, race conditions on library.csv, lost rekordbox_id, interrupted gig copies.
-- **ford** — docs/memory hygiene, ARCHITECTURE.md coherence, session close.
+- **cto** — architecture/stack decisions: CSV-as-DB, Flask, pipeline shape, schema, data integrity. Decides, doesn't code.
+- **dev** — code implementation (Python 3.13, Flask, vanilla JS, pytest, CLI). Only one who writes code.
+- **ux** — UX/UI for the Review UI, column/badge patterns, DJ-facing copy and flow.
+- **product-owner** — scope/ship: MVP discipline, kill scope creep, opportunity cost.
+- **gatekeeper** — conformance: Conventional Commits, branch-not-main rule, pytest-before-commit, Pyright/Ruff/Black, data-safety rules. Gates before commit.
+- **redteam** — red team: dirty paths (spaces/Unicode/&), corrupted CSV, race conditions on library.csv, lost rekordbox_id, interrupted gig copies.
+- **docs** — docs/memory hygiene, ARCHITECTURE.md coherence, session close.
 
-Typical flow: **gilfoyle/donna/miranda** (decide approach, UX, scope) → **dinesh** (implement) → **marvin** (destructive test) → **hania** (conformance gate: tests pass, branch correct, commit format) → commit. For genre-classification work, pull in **spock/sheldon/jarvis/susie/koop** as the domain demands.
+Typical flow: **cto/ux/product-owner** (decide approach, UX, scope) → **dev** (implement) → **redteam** (destructive test) → **gatekeeper** (conformance gate: tests pass, branch correct, commit format) → commit. For genre-classification work, pull in **ml-scientist/data-engineer/prompt-engineer/taxonomist/dj** as the domain demands.
