@@ -32,6 +32,7 @@ def _snapshot(root: Path) -> set:
 
 # ── 1. errno classification ─────────────────────────────────────────────
 
+
 def test_scan_distinguishes_eio_from_enoent(tmp_path, monkeypatch):
     root = tmp_path / "ORIGINAL"
     area_root = root / "BEFORE"
@@ -63,6 +64,7 @@ def test_scan_distinguishes_eio_from_enoent(tmp_path, monkeypatch):
 
 # ── 2. partial walk never marks the rest missing ────────────────────────
 
+
 def test_partial_walk_does_not_mark_rest_as_missing(tmp_path, monkeypatch):
     root = tmp_path / "ORIGINAL"
     area_root = root / "BEFORE"
@@ -72,7 +74,9 @@ def test_partial_walk_does_not_mark_rest_as_missing(tmp_path, monkeypatch):
     index_path = tmp_path / "data" / "source_index.csv"
     # First, clean complete scan so rows pre-exist with state="new".
     original.scan_area(root, "before", index_path)
-    before_rows = {r["source_id"]: dict(r) for r in original.load_source_index(index_path)}
+    before_rows = {
+        r["source_id"]: dict(r) for r in original.load_source_index(index_path)
+    }
     assert all(r["state"] != "missing" for r in before_rows.values())
 
     real_walk = os.walk
@@ -97,6 +101,7 @@ def test_partial_walk_does_not_mark_rest_as_missing(tmp_path, monkeypatch):
 
 
 # ── 3. checkpoints survive a mid-run crash ──────────────────────────────
+
 
 def test_scan_checkpoints_survive_midrun_crash(tmp_path, monkeypatch):
     root = tmp_path / "ORIGINAL"
@@ -124,6 +129,7 @@ def test_scan_checkpoints_survive_midrun_crash(tmp_path, monkeypatch):
 
 
 # ── 4. rescan preserves fingerprint/state/batch_id/dup_of ──────────────
+
 
 def test_rescan_preserves_fingerprint_and_state(tmp_path):
     root = tmp_path / "ORIGINAL"
@@ -154,6 +160,7 @@ def test_rescan_preserves_fingerprint_and_state(tmp_path):
 
 # ── 5. source_id is stable across NFC/NFD ───────────────────────────────
 
+
 def test_source_id_stable_across_nfc_nfd(tmp_path):
     nfc_name = unicodedata.normalize("NFC", "plaża.mp3")
     nfd_name = unicodedata.normalize("NFD", "plaża.mp3")
@@ -176,6 +183,7 @@ def test_source_id_stable_across_nfc_nfd(tmp_path):
 
 
 # ── 6. fingerprint pass skips already-fingerprinted rows ────────────────
+
 
 def test_fingerprint_pass_skips_already_fingerprinted(tmp_path):
     root = tmp_path / "ORIGINAL"
@@ -213,7 +221,9 @@ def test_fingerprint_pass_skips_already_fingerprinted(tmp_path):
     index_path = tmp_path / "data" / "source_index.csv"
     original.save_source_index(index_path, rows)
 
-    with patch.object(original, "fingerprint_info", return_value=(120, "NEWFP")) as mock_fp:
+    with patch.object(
+        original, "fingerprint_info", return_value=(120, "NEWFP")
+    ) as mock_fp:
         result = original.fingerprint_area(root, index_path)
 
     assert mock_fp.call_count == 1
@@ -226,6 +236,7 @@ def test_fingerprint_pass_skips_already_fingerprinted(tmp_path):
 
 
 # ── 7. fingerprint pass recomputes on size/mtime drift ──────────────────
+
 
 def test_fingerprint_pass_recomputes_when_size_or_mtime_changed(tmp_path):
     root = tmp_path / "ORIGINAL"
@@ -248,7 +259,9 @@ def test_fingerprint_pass_recomputes_when_size_or_mtime_changed(tmp_path):
     index_path = tmp_path / "data" / "source_index.csv"
     original.save_source_index(index_path, rows)
 
-    with patch.object(original, "fingerprint_info", return_value=(120, "RECOMPUTED")) as mock_fp:
+    with patch.object(
+        original, "fingerprint_info", return_value=(120, "RECOMPUTED")
+    ) as mock_fp:
         result = original.fingerprint_area(root, index_path)
 
     assert mock_fp.call_count == 1
@@ -258,6 +271,7 @@ def test_fingerprint_pass_recomputes_when_size_or_mtime_changed(tmp_path):
 
 
 # ── 8. fpcalc timeout doesn't crash the process ─────────────────────────
+
 
 def test_fingerprint_timeout_marks_status_not_crash(tmp_path):
     root = tmp_path / "ORIGINAL"
@@ -288,6 +302,7 @@ def test_fingerprint_timeout_marks_status_not_crash(tmp_path):
 
 # ── 9. #recycle and dotfiles are skipped ────────────────────────────────
 
+
 def test_scan_skips_recycle_and_dotfiles(tmp_path):
     root = tmp_path / "ORIGINAL"
     area_root = root / "BEFORE"
@@ -304,7 +319,30 @@ def test_scan_skips_recycle_and_dotfiles(tmp_path):
     assert rows[0]["filename"] == "visible.mp3"
 
 
+# ── 10b. a file marked missing that reappears returns to "new" ──────────
+
+
+def test_reappeared_file_returns_from_missing_to_new(tmp_path):
+    root = tmp_path / "ORIGINAL"
+    area_root = root / "BEFORE"
+    track = area_root / "track.mp3"
+    _write_file(track)
+
+    index_path = tmp_path / "data" / "source_index.csv"
+    original.scan_area(root, "before", index_path)
+
+    rows = original.load_source_index(index_path)
+    rows[0]["state"] = "missing"
+    original.save_source_index(index_path, rows)
+
+    original.scan_area(root, "before", index_path)
+
+    rows_after = original.load_source_index(index_path)
+    assert rows_after[0]["state"] == "new"
+
+
 # ── 10. dry-run writes nothing to disk ──────────────────────────────────
+
 
 def test_dry_run_writes_nothing(tmp_path):
     root = tmp_path / "ORIGINAL"
@@ -328,7 +366,9 @@ def test_dry_run_writes_nothing(tmp_path):
     original.save_source_index(index_path, rows)
 
     before_fp = _snapshot(tmp_path)
-    with patch.object(original, "fingerprint_info", return_value=(120, "SHOULDNOTPERSIST")):
+    with patch.object(
+        original, "fingerprint_info", return_value=(120, "SHOULDNOTPERSIST")
+    ):
         fp_result = original.fingerprint_area(root, index_path, dry_run=True)
     after_fp = _snapshot(tmp_path)
     assert before_fp == after_fp

@@ -21,8 +21,10 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 import webbrowser
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,14 +36,19 @@ from djlib.config import (
     CSV_PATH,
     INBOX_DIR,
     LOGS_DIR,
+    SOURCE_INDEX_CSV,
     UNSORTED_CSV,
     get_ai_chat_model,
     get_ai_quick_model,
     get_openai_api_key,
+    get_original_root,
 )
 from djlib.filename import parse_from_filename
 from djlib.unsorted import load_unsorted_rows, write_unsorted_rows, EXPORT_DISPOSITIONS
 from djlib.locks import csv_lock
+from djlib.original import load_source_index, save_source_index
+from djlib.gig import copy_track_atomic
+from djlib.cli import _ensure_unique_path
 
 # ── Gemini client singleton ───────────────────────────────────────────────────
 # Initialised lazily on first use so missing API key doesn't break server start.
@@ -608,6 +615,252 @@ def api_batch_update_tracks():
 def api_genres():
     """Return list of valid genre labels from genres.yml."""
     return jsonify(_load_genres())
+
+
+# ── Original tab (pre-pipeline NAS library) ──────────────────────────────────
+#
+# Reads data/source_index.csv (see djlib/original.py). Read-only against the
+# NAS — the only write path is api_original_send, which COPIES into
+# INBOX_DIR and updates source_index.csv, never touching ORIGINAL_ROOT.
+
+_ORIGINAL_STATUS_BUCKETS = ("not_sent", "sent", "in_library", "duplicate")
+
+
+def _classify_original_status(row: Dict[str, str]) -> str:
+    """Classify a source_index row into one status bucket.
+
+    Precedence: missing (file is gone) > duplicate (dup_of set) >
+    in_library (already processed) > sent > not_sent. A row can technically
+    have `dup_of` set on an already-sent row, but for display/filtering
+    purposes it only ever needs one bucket.
+    """
+    state = (row.get("state") or "").strip()
+    if state == "missing":
+        return "missing"
+    if (row.get("dup_of") or "").strip():
+        return "duplicate"
+    if state == "processed" or (row.get("in_library") or "").strip():
+        return "in_library"
+    if state == "sent":
+        return "sent"
+    return "not_sent"
+
+
+def _original_row_bytes(row: Dict[str, str]) -> int:
+    try:
+        return int(row.get("size_bytes") or 0)
+    except ValueError:
+        return 0
+
+
+@app.route("/api/original/tree")
+def api_original_tree():
+    """Folder tree with per-node counts, computed in one pass over the index."""
+    rows = load_source_index(SOURCE_INDEX_CSV)
+    nodes: Dict[str, Dict[str, Any]] = {}
+
+    for row in rows:
+        area = (row.get("area") or "").strip()
+        if not area:
+            continue
+        folder = (row.get("folder") or "").strip()
+        segments = [area] + [s for s in folder.split("/") if s]
+        status = _classify_original_status(row)
+        size = _original_row_bytes(row)
+
+        path_parts: List[str] = []
+        for i, seg in enumerate(segments):
+            path_parts.append(seg)
+            path = "/".join(path_parts)
+            node = nodes.get(path)
+            if node is None:
+                label = seg.capitalize() if i == 0 else seg
+                node = {
+                    "path": path, "label": label, "total": 0,
+                    "not_sent": 0, "sent": 0, "in_library": 0, "duplicate": 0,
+                    "bytes": 0,
+                }
+                nodes[path] = node
+            node["total"] += 1
+            node["bytes"] += size
+            if status in _ORIGINAL_STATUS_BUCKETS:
+                node[status] += 1
+
+    return jsonify({"nodes": sorted(nodes.values(), key=lambda n: n["path"])})
+
+
+@app.route("/api/original/tracks")
+def api_original_tracks():
+    """Filtered, paginated rows from source_index.csv."""
+    rows = load_source_index(SOURCE_INDEX_CSV)
+
+    area = request.args.get("area", "").strip().lower()
+    folder = request.args.get("folder", "").strip()
+    status = request.args.get("status", "").strip().lower()
+    q = request.args.get("q", "").strip().lower()
+    quality = request.args.get("quality", "").strip()
+    genre = request.args.get("genre", "")
+    limit = request.args.get("limit", type=int)
+    offset = request.args.get("offset", type=int) or 0
+
+    def matches(row: Dict[str, str]) -> bool:
+        if area and (row.get("area") or "") != area:
+            return False
+        if folder:
+            rf = row.get("folder") or ""
+            if rf != folder and not rf.startswith(folder + "/"):
+                return False
+        if status and _classify_original_status(row) != status:
+            return False
+        if quality and (row.get("audio_quality") or "") != quality:
+            return False
+        if genre and (row.get("tag_genre") or "") != genre:
+            return False
+        if q:
+            haystack = " ".join([
+                row.get("filename") or "", row.get("tag_artist") or "", row.get("tag_title") or "",
+            ]).lower()
+            if q not in haystack:
+                return False
+        return True
+
+    filtered = [r for r in rows if matches(r)]
+    filtered.sort(key=lambda r: (r.get("folder") or "", r.get("filename") or ""))
+    total = len(filtered)
+    page = filtered[offset: offset + limit] if limit is not None else filtered[offset:]
+
+    tracks = [
+        {
+            "source_id": r.get("source_id", ""),
+            "area": r.get("area", ""),
+            "folder": r.get("folder", ""),
+            "filename": r.get("filename", ""),
+            "tag_artist": r.get("tag_artist", ""),
+            "tag_title": r.get("tag_title", ""),
+            "tag_genre": r.get("tag_genre", ""),
+            "duration_seconds": r.get("duration_seconds", ""),
+            "audio_quality": r.get("audio_quality", ""),
+            "mtime": r.get("mtime", ""),
+            "size_bytes": r.get("size_bytes", ""),
+            "status": _classify_original_status(r),
+            "dup_of": r.get("dup_of", ""),
+        }
+        for r in page
+    ]
+    return jsonify({"tracks": tracks, "total": total})
+
+
+@app.route("/api/original/genres")
+def api_original_genres():
+    """Raw `tag_genre` values with counts, descending. Never mapped to genres.yml."""
+    rows = load_source_index(SOURCE_INDEX_CSV)
+    counts: Dict[str, int] = {}
+    for r in rows:
+        g = (r.get("tag_genre") or "").strip()
+        if not g:
+            continue
+        counts[g] = counts.get(g, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return jsonify([{"genre": g, "count": c} for g, c in ordered])
+
+
+@app.route("/api/original/stats")
+def api_original_stats():
+    """Global progress across the whole index, in pieces and bytes."""
+    rows = load_source_index(SOURCE_INDEX_CSV)
+    stats: Dict[str, int] = {
+        "total": 0, "not_sent": 0, "sent": 0, "in_library": 0,
+        "duplicate": 0, "missing": 0,
+        "bytes_total": 0, "bytes_not_sent": 0, "bytes_sent": 0, "bytes_in_library": 0,
+    }
+    for r in rows:
+        status = _classify_original_status(r)
+        size = _original_row_bytes(r)
+        stats["total"] += 1
+        stats["bytes_total"] += size
+        stats[status] = stats.get(status, 0) + 1
+        if status in ("not_sent", "sent", "in_library"):
+            stats["bytes_" + status] += size
+    return jsonify(stats)
+
+
+def _slugify_batch_name(name: str) -> str:
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_name).strip("-").lower()
+    return slug or "batch"
+
+
+@app.route("/api/original/send", methods=["POST"])
+def api_original_send():
+    """Copy selected rows from ORIGINAL_ROOT into INBOX_DIR/<batch_id>/.
+
+    COPY only, never move — the NAS copy is the archive of record. See
+    module docstring for the atomic-copy and collision-safety details.
+    """
+    data = request.get_json(silent=True) or {}
+    source_ids: List[str] = data.get("source_ids") or []
+    if not source_ids:
+        return jsonify({"error": "No source_ids provided"}), 400
+
+    root = get_original_root()
+    if root is None:
+        return jsonify({"error": "ORIGINAL_ROOT is not configured"}), 501
+
+    include_duplicates = bool(data.get("include_duplicates", False))
+    batch_id = f"{_slugify_batch_name(data.get('name') or '')}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}"
+    dest_root = INBOX_DIR / batch_id
+
+    copied = 0
+    skipped = 0
+    failed: List[Dict[str, str]] = []
+
+    with _CSV_LOCK:
+        with csv_lock(SOURCE_INDEX_CSV):
+            rows = load_source_index(SOURCE_INDEX_CSV)
+            by_id = {r["source_id"]: r for r in rows}
+            since_checkpoint = 0
+
+            for sid in source_ids:
+                row = by_id.get(sid)
+                if row is None:
+                    continue
+                # `in_library` is never overridable — the checkbox is scoped to
+                # duplicates only ("Uwzględnij duplikaty"), not to resurrecting
+                # tracks the pipeline already processed.
+                if (row.get("in_library") or "").strip():
+                    skipped += 1
+                    continue
+                if not include_duplicates and (row.get("dup_of") or "").strip():
+                    skipped += 1
+                    continue
+
+                src = root / (row.get("area") or "").upper() / (row.get("rel_path") or "")
+                dest = dest_root / (row.get("folder") or "") / (row.get("filename") or "")
+                try:
+                    dest = _ensure_unique_path(dest)
+                    copy_track_atomic(src, dest)
+                except (OSError, ValueError) as exc:
+                    row["notes"] = f"send failed: {exc}"
+                    failed.append({
+                        "source_id": sid, "filename": row.get("filename", ""), "reason": str(exc),
+                    })
+                    continue
+
+                row["state"] = "sent"
+                row["batch_id"] = batch_id
+                row["notes"] = ""
+                copied += 1
+                since_checkpoint += 1
+                if since_checkpoint >= 25:
+                    save_source_index(SOURCE_INDEX_CSV, list(by_id.values()))
+                    since_checkpoint = 0
+
+            save_source_index(SOURCE_INDEX_CSV, list(by_id.values()))
+
+    return jsonify({
+        "batch_id": batch_id, "copied": copied, "skipped": skipped,
+        "failed": failed, "dest": str(dest_root),
+    })
 
 
 @app.route("/api/reveal", methods=["POST"])

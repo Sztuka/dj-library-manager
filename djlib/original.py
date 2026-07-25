@@ -242,11 +242,16 @@ def _build_row(
     row["size_bytes"] = str(st.st_size)
     row["mtime"] = _mtime_to_iso(st.st_mtime)
     row["last_seen"] = now
-    if is_new:
+    if is_new or row.get("state") == "missing":
         row["state"] = "new"
     # Existing rows: `state` (and fingerprint/batch_id/dup_of/notes, carried
     # over via `dict(existing)` above) are intentionally left untouched here —
-    # a rescan updates file metadata, not workflow state.
+    # a rescan updates file metadata, not workflow state. The one exception is
+    # "missing": a successful read means the file reappeared, so it must
+    # return to the "new" workflow instead of staying stuck as missing.
+    # "sent"/"processed" rows are never in this branch by definition — they
+    # only become "missing" if the file vanishes, which this function
+    # (a successful read) can't be seeing.
 
     tags = _read_raw_tags(path)
     row["tag_artist"] = tags.get("tag_artist", "")

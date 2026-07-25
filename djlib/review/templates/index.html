@@ -20,6 +20,7 @@
         <button class="tab-btn active" data-source="unsorted">Unsorted <span class="tab-count" id="tab-count-unsorted"></span></button>
         <button class="tab-btn" data-source="library">Library <span class="tab-count" id="tab-count-library"></span></button>
         <button class="tab-btn" data-source="processed">Processed <span class="tab-count" id="tab-count-processed"></span></button>
+        <button class="tab-btn" id="original-tab-btn" data-source="original">Original</button>
         <button class="tab-btn" id="artists-tab-btn" data-source="artists">Artists</button>
         <button class="tab-btn" data-source="playlists">Playlists</button>
       </nav>
@@ -171,6 +172,50 @@
         <span class="artists-hint">Click a cluster to expand · <kbd>M</kbd> Merge · <kbd>S</kbd> Skip</span>
       </div>
       <div id="artists-cluster-list" class="artists-cluster-list"></div>
+    </div>
+
+    <!-- ── Original tab panel (pre-pipeline NAS library) ─────────── -->
+    <div id="original-panel" class="original-panel hidden">
+      <div class="orig-sidebar" id="orig-sidebar">
+        <div class="orig-progress-global" id="orig-progress-global">0 z 0 przejrzane (0%)</div>
+        <div id="orig-tree" class="orig-tree"></div>
+      </div>
+      <div class="orig-content">
+        <div class="orig-filters">
+          <select id="orig-filter-status">
+            <option value="">Status: All</option>
+            <option value="not_sent">Not sent</option>
+            <option value="sent">Sent</option>
+            <option value="in_library">In Library</option>
+            <option value="duplicate">Duplicate</option>
+            <option value="missing">Missing</option>
+          </select>
+          <select id="orig-filter-quality">
+            <option value="">Quality: All</option>
+          </select>
+          <select id="orig-filter-genre">
+            <option value="">Genre: All</option>
+          </select>
+          <input type="text" id="orig-search" class="orig-search" placeholder="Search filename, artist, title…" autocomplete="off" />
+        </div>
+        <div class="orig-table-wrap">
+          <table id="orig-table">
+            <thead id="orig-table-head"></thead>
+            <tbody id="orig-table-body"></tbody>
+          </table>
+          <div id="orig-empty-state" class="orig-empty-state hidden">No files match the current filters.</div>
+        </div>
+        <div class="orig-send-bar">
+          <span id="orig-summary-line" class="orig-summary-line"></span>
+          <label class="orig-include-dup">
+            <input type="checkbox" id="orig-include-duplicates" />
+            <span id="orig-include-dup-label">Uwzględnij duplikaty (0)</span>
+          </label>
+          <input type="text" id="orig-batch-name" class="orig-batch-name" placeholder="Nazwa partii (opcjonalnie)…" maxlength="60" />
+          <button id="orig-send-btn" class="orig-send-btn" disabled>Send to Unsorted →</button>
+          <span class="orig-copy-notice">Pliki są kopiowane, nie przenoszone. Oryginały na NAS zostają nietknięte.</span>
+        </div>
+      </div>
     </div>
 
     <!-- ── Track table ─────────────────────────────────────────── -->

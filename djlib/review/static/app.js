@@ -4624,6 +4624,9 @@
       // Playlists tab — handled by the playlists IIFE below
       if (src === "playlists") return;
 
+      // Original tab — handled by the Original IIFE below
+      if (src === "original") return;
+
       // Regular source tabs — update visual, update hidden select, dispatch change
       sourceTabs.querySelectorAll(".tab-btn").forEach(function (b) {
         b.classList.toggle("active", b === btn);
@@ -5710,6 +5713,413 @@
         setTimeout(cancelNewPlaylist, 150);
       });
     }
+  }());
+
+  // ── Original tab (pre-pipeline NAS library) ──────────────────────────────
+  (function () {
+    var originalPanel = document.getElementById("original-panel");
+    var tableContainer = document.getElementById("table-container");
+    var origTabBtn = document.getElementById("original-tab-btn");
+    var origTree = document.getElementById("orig-tree");
+    var origProgressGlobal = document.getElementById("orig-progress-global");
+    var origTableHead = document.getElementById("orig-table-head");
+    var origTableBody = document.getElementById("orig-table-body");
+    var origEmptyState = document.getElementById("orig-empty-state");
+    var origFilterStatus = document.getElementById("orig-filter-status");
+    var origFilterQuality = document.getElementById("orig-filter-quality");
+    var origFilterGenre = document.getElementById("orig-filter-genre");
+    var origSearch = document.getElementById("orig-search");
+    var origSummaryLine = document.getElementById("orig-summary-line");
+    var origIncludeDup = document.getElementById("orig-include-duplicates");
+    var origIncludeDupLabel = document.getElementById("orig-include-dup-label");
+    var origBatchName = document.getElementById("orig-batch-name");
+    var origSendBtn = document.getElementById("orig-send-btn");
+
+    var ORIG_COLUMNS = [
+      { key: "filename", label: "Filename" },
+      { key: "folder", label: "Folder" },
+      { key: "tag_artist", label: "Artist" },
+      { key: "tag_title", label: "Title" },
+      { key: "duration_seconds", label: "Time", fmt: fmtDuration },
+      { key: "audio_quality", label: "Quality" },
+      { key: "tag_genre", label: "Genre" },
+      { key: "mtime", label: "Modified" },
+    ];
+
+    var originalActive = false;
+    var prevSource = null;
+    var scopeArea = "";
+    var scopeFolder = "";
+    var tracks = [];
+    var selectedSet = new Set();
+    var selectionAnchor = -1;
+
+    function origCell(val, fmt) {
+      var v = fmt ? fmt(val) : val;
+      if (v === null || v === undefined || v === "") return "—";
+      return escHtml(String(v));
+    }
+
+    function origStatusBadgeHtml(status) {
+      var defs = {
+        not_sent: { text: "Not sent", cls: "orig-status-not-sent" },
+        sent: { text: "Sent", cls: "orig-status-sent" },
+        in_library: { text: "In Library", cls: "orig-status-in-library" },
+        missing: { text: "Missing", cls: "orig-status-missing" },
+      };
+      var d = defs[status] || { text: status, cls: "" };
+      return '<span class="orig-status-badge ' + d.cls + '">' + d.text + "</span>";
+    }
+
+    function origDupBadgeHtml(dupOf) {
+      if (!dupOf) return "";
+      return '<span class="orig-dup-badge" title="Duplicate of ' + escHtml(dupOf) + '">Duplicate</span>';
+    }
+
+    function fmtBytes(n) {
+      var v = parseInt(n, 10) || 0;
+      if (v >= 1e9) return (v / 1e9).toFixed(1) + " GB";
+      if (v >= 1e6) return (v / 1e6).toFixed(1) + " MB";
+      if (v >= 1e3) return (v / 1e3).toFixed(1) + " KB";
+      return v + " B";
+    }
+
+    function showOriginalPanel() {
+      originalActive = true;
+      prevSource = currentSource;
+      currentSource = "original";
+      tableContainer.style.display = "none";
+      originalPanel.classList.remove("hidden");
+      document.querySelectorAll("#source-tabs .tab-btn").forEach(function (b) {
+        b.classList.toggle("active", b === origTabBtn);
+      });
+      loadStats();
+      loadTree();
+      loadGenres();
+      loadTracks();
+    }
+
+    function hideOriginalPanel() {
+      originalActive = false;
+      currentSource = prevSource || "unsorted";
+      originalPanel.classList.add("hidden");
+      tableContainer.style.display = "";
+      document.querySelectorAll("#source-tabs .tab-btn").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.source === currentSource);
+      });
+    }
+
+    // ── Global progress ────────────────────────────────────────────────────
+    async function loadStats() {
+      try {
+        var resp = await fetch("/api/original/stats");
+        var s = await resp.json();
+        var reviewed = (s.sent || 0) + (s.in_library || 0);
+        var pct = s.total ? Math.round((reviewed / s.total) * 100) : 0;
+        origProgressGlobal.textContent =
+          reviewed.toLocaleString() + " z " + (s.total || 0).toLocaleString() + " przejrzane (" + pct + "%)";
+      } catch (e) {
+        origProgressGlobal.textContent = "";
+      }
+    }
+
+    // ── Folder tree ─────────────────────────────────────────────────────────
+    async function loadTree() {
+      origTree.innerHTML = '<div class="orig-tree-loading">Loading…</div>';
+      try {
+        var resp = await fetch("/api/original/tree");
+        var data = await resp.json();
+        renderTree(data.nodes || []);
+      } catch (e) {
+        origTree.innerHTML = '<div class="orig-tree-loading">Error loading tree.</div>';
+      }
+    }
+
+    function renderTree(nodes) {
+      origTree.innerHTML = "";
+      var byPath = {};
+      nodes.forEach(function (n) { byPath[n.path] = n; });
+
+      var root = document.createElement("div");
+      root.className = "orig-tree-node orig-tree-root";
+      root.dataset.path = "";
+      root.dataset.depth = "0";
+      root.innerHTML = '<span class="orig-tree-label">All folders</span>';
+      root.addEventListener("click", function () { selectScope(""); });
+      origTree.appendChild(root);
+
+      nodes.forEach(function (n) {
+        var depth = n.path.split("/").length - 1;
+        var reviewed = (n.sent || 0) + (n.in_library || 0);
+        var el = document.createElement("div");
+        el.className = "orig-tree-node";
+        el.dataset.path = n.path;
+        el.style.paddingLeft = (10 + depth * 14) + "px";
+        el.innerHTML =
+          '<span class="orig-tree-label">' + escHtml(n.label) + ' (' + n.total + ')</span>' +
+          '<div class="orig-tree-progress"><div class="orig-tree-progress-bar" style="width:' +
+            (n.total ? Math.round((reviewed / n.total) * 100) : 0) + '%"></div></div>' +
+          '<span class="orig-tree-progress-label">' + reviewed + ' z ' + n.total + ' wysłane</span>';
+        el.addEventListener("click", function () { selectScope(n.path); });
+        origTree.appendChild(el);
+      });
+    }
+
+    function selectScope(path) {
+      var parts = (path || "").split("/").filter(Boolean);
+      scopeArea = parts.length ? parts[0] : "";
+      scopeFolder = parts.length > 1 ? parts.slice(1).join("/") : "";
+      origTree.querySelectorAll(".orig-tree-node").forEach(function (el) {
+        el.classList.toggle("active", el.dataset.path === path);
+      });
+      loadTracks();
+    }
+
+    // ── Genre filter ────────────────────────────────────────────────────────
+    async function loadGenres() {
+      try {
+        var resp = await fetch("/api/original/genres");
+        var data = await resp.json();
+        var current = origFilterGenre.value;
+        origFilterGenre.innerHTML = '<option value="">Genre: All</option>';
+        data.forEach(function (g) {
+          var opt = document.createElement("option");
+          opt.value = g.genre;
+          opt.textContent = g.genre + " (" + g.count + ")";
+          origFilterGenre.appendChild(opt);
+        });
+        origFilterGenre.value = current;
+      } catch (e) {
+        // filter just stays empty
+      }
+    }
+
+    // ── Quality filter (populated from whatever is currently loaded — narrows
+    //    along with the other filters, no separate endpoint needed) ─────────
+    function populateQualityOptions() {
+      var current = origFilterQuality.value;
+      var seen = {};
+      tracks.forEach(function (t) { if (t.audio_quality) seen[t.audio_quality] = true; });
+      if (current) seen[current] = true; // keep the active selection even if narrowed out
+      var values = Object.keys(seen).sort();
+      origFilterQuality.innerHTML = '<option value="">Quality: All</option>';
+      values.forEach(function (v) {
+        var opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = v;
+        origFilterQuality.appendChild(opt);
+      });
+      origFilterQuality.value = current;
+    }
+
+    // ── Track table ──────────────────────────────────────────────────────────
+    var _origLoadSeq = 0;
+    async function loadTracks() {
+      var seq = ++_origLoadSeq;
+      var params = new URLSearchParams();
+      if (scopeArea) params.set("area", scopeArea);
+      if (scopeFolder) params.set("folder", scopeFolder);
+      if (origFilterStatus.value) params.set("status", origFilterStatus.value);
+      if (origFilterQuality.value) params.set("quality", origFilterQuality.value);
+      if (origFilterGenre.value) params.set("genre", origFilterGenre.value);
+      if (origSearch.value.trim()) params.set("q", origSearch.value.trim());
+
+      try {
+        var resp = await fetch("/api/original/tracks?" + params.toString());
+        var data = await resp.json();
+        if (seq !== _origLoadSeq) return; // stale response, a newer filter change fired
+        tracks = data.tracks || [];
+        selectedSet.clear();
+        selectionAnchor = -1;
+        populateQualityOptions();
+        renderOrigTable();
+        updateSummaryBar();
+      } catch (e) {
+        tracks = [];
+        renderOrigTable();
+      }
+    }
+
+    function renderOrigTable() {
+      origEmptyState.classList.toggle("hidden", tracks.length > 0);
+
+      var hr = document.createElement("tr");
+      var selTh = document.createElement("th");
+      selTh.className = "orig-col-select";
+      var selAllCb = document.createElement("input");
+      selAllCb.type = "checkbox";
+      selAllCb.addEventListener("change", function () {
+        if (selAllCb.checked) {
+          tracks.forEach(function (t) { selectedSet.add(t.source_id); });
+        } else {
+          selectedSet.clear();
+        }
+        renderOrigTable();
+        updateSummaryBar();
+      });
+      selTh.appendChild(selAllCb);
+      hr.appendChild(selTh);
+      ORIG_COLUMNS.forEach(function (col) {
+        var th = document.createElement("th");
+        th.textContent = col.label;
+        hr.appendChild(th);
+      });
+      var statusTh = document.createElement("th");
+      statusTh.textContent = "Status";
+      hr.appendChild(statusTh);
+      var dupTh = document.createElement("th");
+      dupTh.textContent = "";
+      hr.appendChild(dupTh);
+      origTableHead.innerHTML = "";
+      origTableHead.appendChild(hr);
+
+      var frag = document.createDocumentFragment();
+      tracks.forEach(function (t, i) {
+        var tr = document.createElement("tr");
+        tr.dataset.idx = i;
+        if (selectedSet.has(t.source_id)) tr.classList.add("selected");
+
+        var selTd = document.createElement("td");
+        selTd.className = "orig-col-select";
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = selectedSet.has(t.source_id);
+        cb.addEventListener("change", function (e) {
+          e.stopPropagation();
+          if (cb.checked) selectedSet.add(t.source_id);
+          else selectedSet.delete(t.source_id);
+          tr.classList.toggle("selected", cb.checked);
+          updateSummaryBar();
+        });
+        selTd.appendChild(cb);
+        tr.appendChild(selTd);
+
+        ORIG_COLUMNS.forEach(function (col) {
+          var td = document.createElement("td");
+          td.innerHTML = origCell(t[col.key], col.fmt);
+          tr.appendChild(td);
+        });
+
+        var statusTd = document.createElement("td");
+        statusTd.innerHTML = origStatusBadgeHtml(t.status);
+        tr.appendChild(statusTd);
+
+        var dupTd = document.createElement("td");
+        dupTd.innerHTML = origDupBadgeHtml(t.dup_of);
+        tr.appendChild(dupTd);
+
+        tr.addEventListener("click", function (e) {
+          if (e.target.tagName === "INPUT") return;
+          if (e.shiftKey) {
+            extendOrigSelection(i);
+          } else {
+            selectionAnchor = i;
+            var checked = !selectedSet.has(t.source_id);
+            if (checked) selectedSet.add(t.source_id);
+            else selectedSet.delete(t.source_id);
+            renderOrigTable();
+            updateSummaryBar();
+          }
+        });
+
+        frag.appendChild(tr);
+      });
+      origTableBody.innerHTML = "";
+      origTableBody.appendChild(frag);
+    }
+
+    function extendOrigSelection(toIndex) {
+      if (selectionAnchor < 0) selectionAnchor = toIndex;
+      var lo = Math.min(selectionAnchor, toIndex);
+      var hi = Math.max(selectionAnchor, toIndex);
+      for (var i = lo; i <= hi; i++) {
+        if (tracks[i]) selectedSet.add(tracks[i].source_id);
+      }
+      renderOrigTable();
+      updateSummaryBar();
+    }
+
+    // ── Summary bar + send ─────────────────────────────────────────────────
+    function updateSummaryBar() {
+      var selected = tracks.filter(function (t) { return selectedSet.has(t.source_id); });
+      var n = selected.length;
+      var bytesTotal = selected.reduce(function (sum, t) { return sum + (parseInt(t.size_bytes, 10) || 0); }, 0);
+      var dupCount = selected.filter(function (t) { return !!t.dup_of; }).length;
+      var libCount = selected.filter(function (t) { return t.status === "in_library"; }).length;
+      var skippedCount = libCount + (origIncludeDup.checked ? 0 : dupCount);
+      var newCount = n - skippedCount;
+
+      origIncludeDupLabel.textContent = "Uwzględnij duplikaty (" + dupCount + ")";
+
+      if (n === 0) {
+        origSummaryLine.textContent = "Zaznacz pliki do wysłania.";
+        origSendBtn.disabled = true;
+        return;
+      }
+      origSummaryLine.textContent =
+        n + " plik" + (n === 1 ? "" : "i") + " · " + fmtBytes(bytesTotal) +
+        " · " + skippedCount + " już w Library / duplikaty (pominięte) · " +
+        newCount + " nowych";
+      origSendBtn.disabled = newCount <= 0;
+    }
+
+    async function sendBatch() {
+      var selected = Array.from(selectedSet);
+      if (!selected.length) return;
+      origSendBtn.disabled = true;
+      origSendBtn.textContent = "Sending…";
+      try {
+        var resp = await fetch("/api/original/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_ids: selected,
+            name: origBatchName.value.trim(),
+            include_duplicates: origIncludeDup.checked,
+          }),
+        });
+        var data = await resp.json();
+        if (!resp.ok) {
+          showToast("Send failed: " + (data.error || "unknown"));
+        } else {
+          var msg = "Sent " + data.copied + " to " + data.batch_id;
+          if (data.skipped) msg += " (" + data.skipped + " skipped)";
+          if (data.failed && data.failed.length) msg += " — " + data.failed.length + " failed";
+          showToast(msg);
+          origBatchName.value = "";
+          selectedSet.clear();
+          loadStats();
+          loadTree();
+          loadTracks();
+        }
+      } catch (e) {
+        showToast("Network error sending batch");
+      } finally {
+        origSendBtn.textContent = "Send to Unsorted →";
+        updateSummaryBar();
+      }
+    }
+
+    // ── Wiring ───────────────────────────────────────────────────────────────
+    if (origTabBtn) {
+      origTabBtn.addEventListener("click", function () {
+        if (originalActive) hideOriginalPanel();
+        else showOriginalPanel();
+      });
+    }
+    sourceSelect.addEventListener("change", function () {
+      if (originalActive) hideOriginalPanel();
+    });
+    origFilterStatus.addEventListener("change", loadTracks);
+    origFilterQuality.addEventListener("change", loadTracks);
+    origFilterGenre.addEventListener("change", loadTracks);
+    var origSearchTimer = null;
+    origSearch.addEventListener("input", function () {
+      clearTimeout(origSearchTimer);
+      origSearchTimer = setTimeout(loadTracks, 250);
+    });
+    origIncludeDup.addEventListener("change", updateSummaryBar);
+    origSendBtn.addEventListener("click", sendBatch);
   }());
 
   // ── Library Conflict Resolution Modal ──────────────────────────────────────
