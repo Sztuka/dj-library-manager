@@ -4335,3 +4335,289 @@ body.review-locked .track-row td {
 }
 .conflict-action.primary:hover { background: #3a4a6a; }
 .conflict-action.secondary { color: #888; }
+
+/* ── Original tab (pre-pipeline NAS library) ─────────────────────────────── */
+
+.original-panel.hidden {
+  display: none;
+}
+
+.original-panel {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  overflow: hidden;
+  height: calc(100vh - 160px);
+}
+
+.orig-progress-global {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.orig-sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.orig-tree {
+  overflow-y: auto;
+  flex: 1;
+  padding: 4px 0;
+}
+
+.orig-tree-node {
+  padding: 7px 10px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  font-size: 12px;
+}
+
+.orig-tree-node:hover {
+  background: var(--bg-2);
+}
+
+.orig-tree-node.active {
+  background: var(--bg-3);
+  border-left-color: var(--acc);
+}
+
+.orig-tree-root {
+  font-weight: 600;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.orig-tree-label {
+  display: block;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.orig-tree-progress {
+  height: 3px;
+  background: var(--bg-3);
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.orig-tree-progress-bar {
+  height: 100%;
+  background: var(--lib);
+}
+
+.orig-tree-progress-label {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.orig-tree-loading {
+  padding: 10px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.orig-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.orig-filters {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.orig-filters select,
+.orig-search {
+  background: var(--surface-2, var(--bg-2));
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 5px 8px;
+}
+
+.orig-search {
+  flex: 1;
+  min-width: 160px;
+}
+
+.orig-table-wrap {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+#orig-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+#orig-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-1);
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-3);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#orig-table tbody td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+#orig-table tbody tr:hover {
+  background: var(--bg-2);
+}
+
+#orig-table tbody tr.selected {
+  background: var(--bg-3);
+}
+
+.orig-col-select {
+  width: 28px;
+}
+
+.orig-empty-state {
+  padding: 24px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.orig-empty-state.hidden {
+  display: none;
+}
+
+/* ── Status / duplicate badges ────────────────────────────────────────── */
+
+.orig-status-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.orig-status-badge.orig-status-not-sent {
+  background: rgba(124, 120, 104, 0.2);
+  color: var(--ink-2);
+}
+.orig-status-badge.orig-status-sent {
+  background: rgba(212, 167, 62, 0.2);
+  color: var(--pnd);
+}
+.orig-status-badge.orig-status-in-library {
+  background: rgba(78, 192, 119, 0.2);
+  color: var(--lib);
+}
+.orig-status-badge.orig-status-missing {
+  background: rgba(208, 74, 74, 0.2);
+  color: var(--rej);
+}
+
+.orig-dup-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: rgba(184, 108, 208, 0.2);
+  color: var(--lat);
+}
+
+/* ── Send bar ─────────────────────────────────────────────────────────── */
+
+.orig-send-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.orig-summary-line {
+  font-size: 12px;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+}
+
+.orig-include-dup {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.orig-batch-name {
+  background: var(--surface-2, var(--bg-2));
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--ink);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 6px 8px;
+  min-width: 160px;
+}
+
+.orig-send-btn {
+  background: var(--accent, #1db954);
+  color: #000;
+  border: none;
+  border-radius: 5px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.orig-send-btn:disabled {
+  background: var(--bg-3);
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+.orig-copy-notice {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-style: italic;
+}
