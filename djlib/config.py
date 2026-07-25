@@ -326,6 +326,11 @@ CSV_PATH = _REPO / "data" / "library.csv"
 # Used by cmd_scan to skip files that were previously rejected
 REJECTED_CSV_PATH = _REPO / "data" / "library-rejected.csv"
 
+# source_index.csv — read-only index of the original (pre-pipeline) NAS
+# library, maintained by `original-scan`/`original-fingerprint`. Separate
+# from library.csv on purpose (see djlib/original.py module docstring).
+SOURCE_INDEX_CSV = _REPO / "data" / "source_index.csv"
+
 # UNSORTED_CSV — staging file for unsorted tracks (migrated from .xlsx to .csv)
 def _get_unsorted_csv() -> Path:
     """Get UNSORTED_CSV path from config file, avoiding circular dependency.
@@ -622,6 +627,29 @@ def get_ai_quick_model() -> str:
         if val:
             return val
     return _DEFAULT_AI_QUICK_MODEL
+
+
+# Original (pre-pipeline) NAS library root — read-only source for the
+# original-index module (djlib/original.py). Empty string / unset disables
+# the module entirely (original-scan/original-fingerprint print an error).
+def get_original_root() -> Path | None:
+    """Return ORIGINAL_ROOT: env DJLIB_ORIGINAL_ROOT > config.local.yml > config.yml > None."""
+    env = os.getenv("DJLIB_ORIGINAL_ROOT")
+    if env:
+        return _expand(env)
+    existing = _first_existing(_CANDIDATES)
+    if existing:
+        d = _read_yaml(existing)
+        val = str(d.get("ORIGINAL_ROOT", "") or "").strip()
+        if val:
+            return _expand(val)
+    repo_cfg = _REPO / "config.yml"
+    if repo_cfg.exists():
+        d = _read_yaml(repo_cfg)
+        val = str(d.get("ORIGINAL_ROOT", "") or "").strip()
+        if val:
+            return _expand(val)
+    return None
 
 
 def get_genre_classifier_provider() -> str:

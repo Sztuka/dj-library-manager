@@ -4,6 +4,7 @@ REJECT_ROOT: ~/Music Rejected # Rejected tracks (flat structure)
 MIXES_ROOT: ~/Music Library/MIXES # DJ mixes (flat structure, no metadata)
 LOGS_DIR: ./LOGS # Application logs (inside project repo)
 UNSORTED_CSV: ./data/unsorted.csv # Staging CSV file (inside repo)
+ORIGINAL_ROOT: "" # Read-only root of the original/unsorted NAS library (BEFORE/AFTER subfolders). Empty = original-index module disabled. Set in config.local.yml.
 
 # AI models — override in config.local.yml (gitignored)
 # Chat model: used for AI Chat with web search (needs Responses API support)

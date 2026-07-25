@@ -121,6 +121,32 @@ FIELDNAMES = [
 ]
 ```
 
+### source_index.csv (Original NAS Library Index — read-only)
+
+Separate CSV, never mixed with `library.csv`. Indexes the original,
+not-yet-processed library sitting on `ORIGINAL_ROOT` (a NAS volume, e.g.
+`BEFORE`/`AFTER` subfolders). Maintained by `original-scan` and
+`original-fingerprint` (see `djlib/original.py`). `ORIGINAL_ROOT` is
+configured in `config.local.yml` (or `config.yml`, or env
+`DJLIB_ORIGINAL_ROOT`); empty/unset disables the module. Both commands are
+100% read-only with respect to `ORIGINAL_ROOT` — they only write to
+`data/source_index.csv`.
+
+Key columns: `source_id` (UUID5 of `area + "/" + rel_path`, NFC-normalized —
+its own namespace, distinct from `track_id`), `area` (`before`/`after`),
+`rel_path`/`folder`/`filename`, `size_bytes`/`mtime`, raw `tag_artist`/
+`tag_title`/`tag_genre` (unmapped — no genres.yml resolution), `fingerprint`/
+`fp_status`, `state` (`new`/`sent`/`processed`/`missing`/`error`), `dup_of`,
+`in_library`, `batch_id`.
+
+A per-file `OSError` during scan is classified by `errno`: `ENOENT` →
+`state="missing"`; anything else (`EIO`, `ETIMEDOUT`, `ESTALE`, `EACCES`) →
+`state="error"` and the previous state is preserved. An `OSError` while
+*enumerating* directories aborts the whole scan with a non-zero exit and
+writes nothing as `missing` — a partial walk is never read as "the rest of
+the files disappeared". Both commands checkpoint the CSV periodically so an
+interrupted run doesn't lose earlier progress.
+
 ### unsorted.csv (Staging CSV)
 
 CSV file with all pending tracks. Key columns:
@@ -165,13 +191,15 @@ CSV file with all pending tracks. Key columns:
 
 ### Utility Commands
 
-| Command                               | Description             |
-| ------------------------------------- | ----------------------- |
-| `analyze-audio [--check-env]`         | Essentia audio analysis |
-| `ml-export-training-dataset`          | Export ML training data |
-| `dupes`                               | Show duplicate tracks   |
-| `fix-fingerprints`                    | Repair fingerprint data |
-| `genres resolve --artist X --title Y` | Test genre resolution   |
+| Command                                                               | Description                                                 |
+| ---------------------------------------------------------------------| ------------------------------------------------------------|
+| `analyze-audio [--check-env]`                                        | Essentia audio analysis                                     |
+| `ml-export-training-dataset`                                         | Export ML training data                                     |
+| `dupes`                                                              | Show duplicate tracks                                       |
+| `fix-fingerprints`                                                   | Repair fingerprint data                                     |
+| `genres resolve --artist X --title Y`                                | Test genre resolution                                        |
+| `original-scan [--area before\|after\|both] [--dry-run] [--limit N]` | Read-only scan of ORIGINAL_ROOT into data/source_index.csv  |
+| `original-fingerprint [--area ...] [--dry-run] [--limit N]`          | Compute acoustic fingerprints for source_index.csv rows     |
 
 ---
 
