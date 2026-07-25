@@ -1217,6 +1217,113 @@ def cmd_backfill_fingerprints(args: argparse.Namespace) -> None:
         f"updated={updated}, errors={errors}, missing={missing}"
     )
 
+def cmd_original_scan(args: argparse.Namespace) -> None:
+    """Read-only scan of ORIGINAL_ROOT/BEFORE and /AFTER into data/source_index.csv.
+
+    Never touches ORIGINAL_ROOT (read-only) or library.csv — this is a
+    separate index for the not-yet-processed NAS library. See
+    djlib/original.py for the network-failure handling (ENOENT vs other
+    errno, checkpointing, and why a partial walk never marks files missing).
+    """
+    from djlib.config import get_original_root, SOURCE_INDEX_CSV
+    from djlib.original import scan_area
+
+    root = get_original_root()
+    if root is None:
+        print("❌ ORIGINAL_ROOT is not configured. Set it in config.local.yml.")
+        return
+    if not root.exists():
+        print(f"❌ ORIGINAL_ROOT does not exist: {root}")
+        return
+
+    dry_run = getattr(args, "dry_run", False)
+    limit = getattr(args, "limit", None)
+    area_arg = getattr(args, "area", "both")
+    areas = ["before", "after"] if area_arg == "both" else [area_arg]
+
+    status_path = LOGS_DIR / "original_scan_status.json"
+
+    def _write_status(data: Dict[str, Any]) -> None:
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            with status_path.open("w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    had_failure = False
+    for area in areas:
+        print(f"→ Scanning area '{area}'...")
+
+        def _progress(done: int, total: int) -> None:
+            print(f"   {done}/{total} files scanned ({area})")
+            _write_status({"state": "running", "area": area, "processed": done, "total": total})
+
+        result = scan_area(root, area, SOURCE_INDEX_CSV, limit=limit, dry_run=dry_run, on_progress=_progress)
+        print(
+            f"   ✓ {area}: scanned={result['scanned']} new={result['new']} "
+            f"updated={result['updated']} errors={result['errors']} "
+            f"complete={result['complete']} missing_marked={result['missing_marked']}"
+        )
+        if result.get("walk_error"):
+            print(f"   ⚠ Enumeration aborted: {result['walk_error']}")
+            had_failure = True
+        _write_status({"state": "done", "area": area, **result})
+
+    if had_failure:
+        raise SystemExit(1)
+
+
+def cmd_original_fingerprint(args: argparse.Namespace) -> None:
+    """Compute acoustic fingerprints for data/source_index.csv rows missing one.
+
+    source_index.csv is its own cache — rows with a fingerprint are skipped
+    unless size/mtime drifted since it was recorded. See djlib/original.py.
+    """
+    from djlib.config import get_original_root, SOURCE_INDEX_CSV
+    from djlib.original import fingerprint_area
+
+    root = get_original_root()
+    if root is None:
+        print("❌ ORIGINAL_ROOT is not configured. Set it in config.local.yml.")
+        return
+    if not root.exists():
+        print(f"❌ ORIGINAL_ROOT does not exist: {root}")
+        return
+
+    dry_run = getattr(args, "dry_run", False)
+    limit = getattr(args, "limit", None)
+    area_arg = getattr(args, "area", "both")
+    areas = ["before", "after"] if area_arg == "both" else [area_arg]
+
+    status_path = LOGS_DIR / "original_fingerprint_status.json"
+
+    def _write_status(data: Dict[str, Any]) -> None:
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            payload = dict(data)
+            payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            with status_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _progress(stats: Dict[str, Any]) -> None:
+        print(
+            f"   {stats['processed']}/{stats['total']} ok={stats['ok']} "
+            f"timeout={stats['timeout']} error={stats['error']} unreadable={stats['unreadable']} "
+            f"eta={stats['eta_seconds']:.0f}s"
+        )
+        _write_status({"state": "running", **stats})
+
+    result = fingerprint_area(root, SOURCE_INDEX_CSV, areas=areas, limit=limit, dry_run=dry_run, on_progress=_progress)
+    _write_status({"state": "done", **result})
+    print(
+        f"✓ original-fingerprint done: total={result['total']} ok={result['ok']} "
+        f"timeout={result['timeout']} error={result['error']} unreadable={result['unreadable']}"
+    )
+
+
 def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
     """Napraw rekordy z pustym/niewłaściwym artist/title korzystając z nazwy pliku."""
     from djlib.filename import parse_from_filename
@@ -5316,6 +5423,25 @@ def build_parser() -> argparse.ArgumentParser:
     bfp.add_argument("--dry-run", action="store_true", help="Report what would be computed without writing")
     bfp.add_argument("--limit", type=int, default=None, help="Process at most N rows (for testing on a small sample)")
     bfp.set_defaults(func=cmd_backfill_fingerprints)
+
+    osc = sp.add_parser(
+        "original-scan",
+        help="Read-only scan of ORIGINAL_ROOT (BEFORE/AFTER) into data/source_index.csv",
+    )
+    osc.add_argument("--dry-run", action="store_true", help="Scan without writing source_index.csv")
+    osc.add_argument("--limit", type=int, default=None, help="Process at most N files per area (for testing)")
+    osc.add_argument("--area", choices=["before", "after", "both"], default="both", help="Which area(s) to scan")
+    osc.set_defaults(func=cmd_original_scan)
+
+    ofp = sp.add_parser(
+        "original-fingerprint",
+        help="Compute acoustic fingerprints for source_index.csv rows missing one",
+    )
+    ofp.add_argument("--area", choices=["before", "after", "both"], default="both")
+    ofp.add_argument("--limit", type=int, default=None, help="Process at most N files (for testing)")
+    ofp.add_argument("--dry-run", action="store_true", help="Compute without writing source_index.csv")
+    ofp.set_defaults(func=cmd_original_fingerprint)
+
     sp.add_parser("fix-filenames").set_defaults(func=cmd_fix_titles_from_filenames)
     ep = sp.add_parser("enrich-online")
     ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm nawet jeśli już wypełnione")
