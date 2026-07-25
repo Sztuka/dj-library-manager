@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import logging
 import os
 import sys
 import shutil
@@ -15,6 +16,20 @@ except Exception as e:
     raise RuntimeError(
         "Brak modułu 'pyacoustid'. Uruchom task: 'Setup: create venv & install deps'."
     ) from e
+
+log = logging.getLogger(__name__)
+
+# fpcalc domyślnie analizuje pierwsze 120s audio. Pliki bywają na sieciowym
+# NASie, więc odczyt bywa wolny — ale 2 minuty na jeden plik to patologia,
+# nie wolna sieć. Nadpisywalne przez DJLIB_FPCALC_TIMEOUT (sekundy).
+FPCALC_TIMEOUT_SECONDS = 120
+
+
+def _fpcalc_timeout() -> int:
+    override = os.environ.get("DJLIB_FPCALC_TIMEOUT")
+    if override:
+        return int(override)
+    return FPCALC_TIMEOUT_SECONDS
 
 
 def _project_root() -> Path:
@@ -141,12 +156,25 @@ def fingerprint_info(path: Path) -> tuple[int, str]:
         pass
 
     # 2) Fallback: wywołaj fpcalc bezpośrednio (bez pyacoustid)
+    timeout = _fpcalc_timeout()
     try:
-        out = subprocess.run([str(fpcalc_path), "-json", str(path)], capture_output=True, text=True, check=False)
+        out = subprocess.run(
+            [str(fpcalc_path), "-json", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
         txt = out.stdout.strip()
         # jeśli -json nie wspierane, spróbuj zwykłego trybu
         if out.returncode != 0 or not txt:
-            out = subprocess.run([str(fpcalc_path), str(path)], capture_output=True, text=True, check=False)
+            out = subprocess.run(
+                [str(fpcalc_path), str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
             txt = out.stdout.strip()
         duration_sec = 0
         fp = ""
@@ -172,6 +200,8 @@ def fingerprint_info(path: Path) -> tuple[int, str]:
                     fp = line.split("=",1)[1].strip()
         if fp:
             return max(0, duration_sec), fp
+    except subprocess.TimeoutExpired:
+        log.warning("fpcalc timed out after %ss on %s", timeout, path)
     except Exception:
         pass
 
