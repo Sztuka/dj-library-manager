@@ -200,6 +200,8 @@ CSV file with all pending tracks. Key columns:
 | `genres resolve --artist X --title Y`                                | Test genre resolution                                        |
 | `original-scan [--area before\|after\|both] [--dry-run] [--limit N]` | Read-only scan of ORIGINAL_ROOT into data/source_index.csv  |
 | `original-fingerprint [--area ...] [--dry-run] [--limit N]`          | Compute acoustic fingerprints for source_index.csv rows     |
+| `original-match [--dry-run]`                                         | Fill in_library/dup_of in source_index.csv from fingerprints|
+| `original-archive [--execute]`                                       | Move processed BEFORE files into AFTER (dry-run by default) |
 
 ---
 

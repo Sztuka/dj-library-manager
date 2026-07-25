@@ -24,6 +24,7 @@ from __future__ import annotations
 import csv
 import errno
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -467,4 +468,247 @@ def fingerprint_area(
         "timeout": timeout_n,
         "error": error_n,
         "unreadable": unreadable_n,
+    }
+
+
+# ── Matching: in_library / dup_of ───────────────────────────────────────
+
+def match_source_index(
+    index_path: Path,
+    library_csv_path: Path,
+    rejected_csv_path: Path,
+    *,
+    dry_run: bool = False,
+) -> Dict[str, object]:
+    """Fill `in_library` and `dup_of` on `index_path` rows from fingerprints.
+
+    `in_library` — proof a file already passed the pipeline, matched by
+    acoustic fingerprint (Chromaprint is bitrate-independent, so it catches
+    the same track re-encoded at a different quality):
+      - fingerprint matches `library.csv` -> `in_library` = that row's
+        `track_id`
+      - fingerprint matches `library-rejected.csv` -> `in_library` =
+        `"rejected:<file_hash>"`, distinguishable from an accepted match —
+        the file was consciously rejected, not lost track of
+    Rows with no fingerprint, or no match, keep `in_library` empty. No
+    filename-based guessing.
+
+    `dup_of` — groups rows in `index_path` itself sharing an identical,
+    non-empty fingerprint. Within each group, exactly one row is the
+    winner (empty `dup_of`); the rest get `dup_of` = winner's `source_id`.
+    Winner selection, in order:
+      1. `area="after"` beats `area="before"` (a BEFORE copy of a file
+         already in AFTER is the redundant one)
+      2. larger `size_bytes` wins (proxy for quality — FLAC/320 over 128)
+      3. smaller `source_id` wins — stable tie-break so reruns are
+         deterministic
+    This is the rule the user deletes files by — keep it in sync with
+    `_winner_key` below if it ever changes.
+
+    Idempotent: both columns are reset to "" before recomputing, same
+    "reset before recalculation" pattern as `flag_near_dups` in
+    `djlib/near_dup.py`, so a rerun after files are added/removed never
+    leaves stale flags behind.
+
+    `dry_run=True` computes and returns the summary without writing
+    `index_path`.
+    """
+    rows = load_source_index(index_path)
+
+    for row in rows:
+        row["in_library"] = ""
+        row["dup_of"] = ""
+
+    from djlib.csvdb import load_rejected, load_records
+
+    lib_by_fp: Dict[str, str] = {}
+    for r in load_records(library_csv_path):
+        fp = (r.get("fingerprint") or "").strip()
+        if fp and fp not in lib_by_fp:
+            lib_by_fp[fp] = r.get("track_id", "")
+
+    rejected_by_fp: Dict[str, str] = {}
+    for r in load_rejected(rejected_csv_path):
+        fp = (r.get("fingerprint") or "").strip()
+        if fp and fp not in rejected_by_fp:
+            rejected_by_fp[fp] = r.get("file_hash", "")
+
+    in_library_count = rejected_count = 0
+    for row in rows:
+        fp = (row.get("fingerprint") or "").strip()
+        if not fp:
+            continue
+        if fp in lib_by_fp:
+            row["in_library"] = lib_by_fp[fp]
+            in_library_count += 1
+        elif fp in rejected_by_fp:
+            row["in_library"] = f"rejected:{rejected_by_fp[fp]}"
+            rejected_count += 1
+
+    by_fp: Dict[str, List[Dict[str, str]]] = {}
+    for row in rows:
+        fp = (row.get("fingerprint") or "").strip()
+        if fp:
+            by_fp.setdefault(fp, []).append(row)
+
+    def _winner_key(row: Dict[str, str]) -> tuple:
+        area_rank = 0 if row.get("area") == "after" else 1
+        try:
+            size_rank = -int(row.get("size_bytes") or 0)
+        except ValueError:
+            size_rank = 0
+        return (area_rank, size_rank, row.get("source_id", ""))
+
+    dup_groups = redundant_files = redundant_bytes = 0
+    for group in by_fp.values():
+        if len(group) < 2:
+            continue
+        winner = min(group, key=_winner_key)
+        dup_groups += 1
+        for row in group:
+            if row is winner:
+                continue
+            row["dup_of"] = winner["source_id"]
+            redundant_files += 1
+            try:
+                redundant_bytes += int(row.get("size_bytes") or 0)
+            except ValueError:
+                pass
+
+    if not dry_run:
+        save_source_index(index_path, rows)
+
+    return {
+        "total": len(rows),
+        "in_library": in_library_count,
+        "rejected": rejected_count,
+        "dup_groups": dup_groups,
+        "redundant_files": redundant_files,
+        "redundant_bytes": redundant_bytes,
+    }
+
+
+# ── Archive: move processed BEFORE files into AFTER ─────────────────────
+
+def archive_before_to_after(
+    root: Path,
+    index_path: Path,
+    *,
+    execute: bool = False,
+    checkpoint_every: int = 25,
+) -> Dict[str, object]:
+    """Move BEFORE-area files that already passed the pipeline into AFTER.
+
+    Qualification: a `before` row qualifies only when `in_library` is
+    non-empty — i.e. `match_source_index` proved it via acoustic
+    fingerprint against `library.csv` (accepted) or `library-rejected.csv`
+    (rejected). `state="sent"` alone does NOT qualify: sending a file to
+    `unsorted.csv` is not the same as it having gone through the pipeline —
+    a batch can stall or be abandoned in the Review UI. AFTER means
+    "processed", not "queued". Rows with `state="missing"` are skipped —
+    there's no file left to move.
+
+    `LOGS/moves-*.csv` is deliberately NOT consulted as a qualification
+    signal. It's proven unreliable for this: two test fixtures with
+    synthetic (non-UUID) `track_id`s and a since-removed destination live
+    in the real `LOGS/` dir, 13 `track_id`s repeat across more than one log
+    file, and every existing consumer (`cmd_undo` in cli.py, `unapply.py`)
+    only ever reads the single most recent log — there's no precedent in
+    this codebase for safely summing the whole history. `in_library`
+    (backed by acoustic fingerprints, already computed by
+    `match_source_index`) is a strictly stronger and already-available
+    signal for "this file was processed", so it's the only one used.
+
+    Default is a dry run: with `execute=False` the NAS is never touched —
+    only a plan (list of `{source_id, src, dest, size_bytes}`) and summary
+    counts are returned. Pass `execute=True` to actually move files. Each
+    move is independently gated (same pattern as `run_gig_cleanup` in
+    djlib/gig.py) — one bad file is logged and counted, the rest continue.
+
+    Collisions in AFTER are resolved with `_ensure_unique_path`
+    (djlib/cli.py — the only NFC/NFD-aware implementation); an existing
+    AFTER file is never overwritten.
+
+    On a successful move: `area` -> `"after"`, `rel_path` -> the
+    (possibly renamed) destination's path relative to AFTER, `state` ->
+    `"processed"`, and `source_id` is recomputed for the new (area,
+    rel_path) — `source_id` is defined as a function of those two fields
+    (see `make_source_id`), so leaving it stale would make a future
+    `original-scan` of AFTER create a duplicate row for the same file.
+    Checkpointed to `index_path` every `checkpoint_every` moves.
+    """
+    rows = load_source_index(index_path)
+    by_id: Dict[str, Dict[str, str]] = {r["source_id"]: r for r in rows}
+
+    qualified = [
+        r
+        for r in rows
+        if r.get("area") == "before"
+        and (r.get("in_library") or "").strip()
+        and r.get("state") != "missing"
+    ]
+
+    plan: List[Dict[str, object]] = []
+    planned_bytes = 0
+    for row in qualified:
+        rel_path = row.get("rel_path") or ""
+        size_bytes = int(row["size_bytes"]) if (row.get("size_bytes") or "").isdigit() else 0
+        plan.append(
+            {
+                "source_id": row["source_id"],
+                "src": root / "BEFORE" / rel_path,
+                "dest": root / "AFTER" / rel_path,
+                "size_bytes": size_bytes,
+            }
+        )
+        planned_bytes += size_bytes
+
+    if not execute:
+        return {
+            "execute": False,
+            "qualified": len(qualified),
+            "planned_bytes": planned_bytes,
+            "plan": plan,
+        }
+
+    from djlib.cli import _ensure_unique_path  # lazy: cli.py never imports original.py at module level
+
+    moved = errors = 0
+    since_checkpoint = 0
+    for item in plan:
+        row = by_id[item["source_id"]]
+        src = item["src"]
+        dest = item["dest"]
+        if not src.is_file():
+            row["notes"] = "source missing at archive time"
+            errors += 1
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest = _ensure_unique_path(dest)
+            shutil.move(str(src), str(dest))
+        except Exception as e:
+            row["notes"] = f"archive move failed: {e}"
+            errors += 1
+            continue
+
+        new_rel_path = normalize_rel_path(str(dest.relative_to(root / "AFTER")))
+        row["area"] = "after"
+        row["rel_path"] = new_rel_path
+        row["state"] = "processed"
+        row["source_id"] = make_source_id("after", new_rel_path)
+        moved += 1
+        since_checkpoint += 1
+        if since_checkpoint >= checkpoint_every:
+            save_source_index(index_path, list(by_id.values()))
+            since_checkpoint = 0
+
+    save_source_index(index_path, list(by_id.values()))
+
+    return {
+        "execute": True,
+        "qualified": len(qualified),
+        "moved": moved,
+        "errors": errors,
+        "planned_bytes": planned_bytes,
     }

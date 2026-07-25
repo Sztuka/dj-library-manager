@@ -1324,6 +1324,63 @@ def cmd_original_fingerprint(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_original_match(args: argparse.Namespace) -> None:
+    """Fill in_library/dup_of on data/source_index.csv from acoustic fingerprints.
+
+    Matches against library.csv and library-rejected.csv (in_library), and
+    groups exact fingerprint duplicates within source_index.csv itself
+    (dup_of). See djlib/original.py:match_source_index for the winner rule.
+    """
+    from djlib.config import CSV_PATH, REJECTED_CSV_PATH, SOURCE_INDEX_CSV
+    from djlib.original import match_source_index
+
+    dry_run = getattr(args, "dry_run", False)
+    result = match_source_index(SOURCE_INDEX_CSV, CSV_PATH, REJECTED_CSV_PATH, dry_run=dry_run)
+    gb = result["redundant_bytes"] / (1024 ** 3)
+    print(
+        f"{'[DRY-RUN] ' if dry_run else ''}✓ original-match done: "
+        f"total={result['total']} in_library={result['in_library']} rejected={result['rejected']} "
+        f"dup_groups={result['dup_groups']} redundant_files={result['redundant_files']} "
+        f"redundant={gb:.2f} GB"
+    )
+
+
+def cmd_original_archive(args: argparse.Namespace) -> None:
+    """Move BEFORE-area files that passed the pipeline into AFTER. Dry-run by default.
+
+    Run `original-match` first — qualification is based on `in_library`.
+    See djlib/original.py:archive_before_to_after for the qualification
+    rule and why LOGS/moves-*.csv is not used.
+    """
+    from djlib.config import SOURCE_INDEX_CSV, get_original_root
+    from djlib.original import archive_before_to_after
+
+    root = get_original_root()
+    if root is None:
+        print("❌ ORIGINAL_ROOT is not configured. Set it in config.local.yml.")
+        return
+    if not root.exists():
+        print(f"❌ ORIGINAL_ROOT does not exist: {root}")
+        return
+
+    execute = getattr(args, "execute", False)
+    result = archive_before_to_after(root, SOURCE_INDEX_CSV, execute=execute)
+    gb = result["planned_bytes"] / (1024 ** 3)
+
+    if not execute:
+        plan = result["plan"]
+        print(f"[DRY-RUN] {result['qualified']} file(s) qualified for archiving, {gb:.2f} GB — pass --execute to move them.")
+        for item in plan[:20]:
+            print(f"   {item['src']} -> {item['dest']}")
+        if len(plan) > 20:
+            print(f"   ... and {len(plan) - 20} more")
+    else:
+        print(
+            f"✓ original-archive done: qualified={result['qualified']} moved={result['moved']} "
+            f"errors={result['errors']} ({gb:.2f} GB planned)"
+        )
+
+
 def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
     """Napraw rekordy z pustym/niewłaściwym artist/title korzystając z nazwy pliku."""
     from djlib.filename import parse_from_filename
@@ -5441,6 +5498,20 @@ def build_parser() -> argparse.ArgumentParser:
     ofp.add_argument("--limit", type=int, default=None, help="Process at most N files (for testing)")
     ofp.add_argument("--dry-run", action="store_true", help="Compute without writing source_index.csv")
     ofp.set_defaults(func=cmd_original_fingerprint)
+
+    omp = sp.add_parser(
+        "original-match",
+        help="Fill in_library/dup_of in source_index.csv from acoustic fingerprints",
+    )
+    omp.add_argument("--dry-run", action="store_true", help="Report without writing source_index.csv")
+    omp.set_defaults(func=cmd_original_match)
+
+    oar = sp.add_parser(
+        "original-archive",
+        help="Move BEFORE-area files that passed the pipeline into AFTER (dry-run by default)",
+    )
+    oar.add_argument("--execute", action="store_true", help="Actually move files (default is a read-only dry-run)")
+    oar.set_defaults(func=cmd_original_archive)
 
     sp.add_parser("fix-filenames").set_defaults(func=cmd_fix_titles_from_filenames)
     ep = sp.add_parser("enrich-online")
