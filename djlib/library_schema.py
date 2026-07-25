@@ -41,6 +41,12 @@ Field ownership (who is source-of-truth after PR2b merge-by-track_id lands):
   from: `rekordbox` | `traktor` | `tag` | `beatport` | ``),
   `analysis_source` (BPM+Key provenance for the no-rekordbox workflow).
 
+- **`fingerprint`** — djlib-owned. Chromaprint acoustic fingerprint, computed
+  from audio content and robust to bitrate/format differences, so it catches
+  the same track re-encoded at a different quality. Used by `cmd_scan` to
+  reject acoustic duplicates against the existing library. Never comes from
+  RB/Traktor, so it must survive syncs untouched.
+
 Note: PR2a only defines the schema and the safe writer; it does NOT yet
 change how `sync-dj-libraries` populates fields. Merge-by-track_id lands
 in PR2b — without it, djlib-owned fields are still wiped on every sync.
@@ -63,7 +69,7 @@ from djlib.locks import csv_lock
 
 logger = logging.getLogger(__name__)
 
-LIBRARY_SCHEMA_VERSION = 1
+LIBRARY_SCHEMA_VERSION = 2
 
 # Canonical field order. New fields go AT THE END so column indexes stay
 # stable for any consumer parsing by position (there shouldn't be any, but
@@ -121,6 +127,8 @@ LIBRARY_FIELDNAMES: List[str] = [
     "artist_normalized",    # "yes" | "" — set after artist_normalizer merge; blocks DJ-software artist overwrite on sync
     # ── Playlists (djlib-owned, pipe-separated collection tags) ─────────────
     "playlists",            # e.g. "PornoStar|Ultimate BiA" — pushed to Rekordbox as playlists via push-playlists
+    # ── Acoustic fingerprint (djlib-owned) ──────────────────────────────
+    "fingerprint",           # Chromaprint fingerprint, used by `cmd_scan` for acoustic dedup
 ]
 
 # Default retention for the backup folder. Syncs can happen several times a
@@ -217,6 +225,10 @@ DJLIB_OWNED_FIELDS: List[str] = [
     "artist_normalized",
     # Playlists: djlib-owned collection tags, never overwritten by sync.
     "playlists",
+    # Acoustic fingerprint: RB/Traktor don't know it, so a sync must never
+    # wipe it out — this is what was silently broken before this field
+    # was declared in DJLIB_OWNED_FIELDS.
+    "fingerprint",
 ]
 
 
