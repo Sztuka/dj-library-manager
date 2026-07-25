@@ -137,6 +137,8 @@ def test_djlib_owned_fields_list_is_stable():
         "artist_normalized",
         # Playlists: djlib-owned collection tags, never overwritten by sync.
         "playlists",
+        # Acoustic fingerprint: RB/Traktor don't know it, must survive syncs.
+        "fingerprint",
     }
 
 

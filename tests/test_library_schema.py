@@ -261,3 +261,54 @@ def test_field_sources_round_trip_through_save(tmp_path: Path) -> None:
     save_library_csv(dest, rows)
     got = _read_csv(dest)
     assert got[0]["field_sources"] == payload
+
+
+# ── fingerprint carryover tests ──────────────────────────────────────────────
+
+
+def test_fingerprint_in_schema() -> None:
+    """fingerprint must be declared in LIBRARY_FIELDNAMES and DJLIB_OWNED_FIELDS."""
+    assert "fingerprint" in LIBRARY_FIELDNAMES
+    assert "fingerprint" in DJLIB_OWNED_FIELDS
+
+
+def test_schema_version_is_2() -> None:
+    assert LIBRARY_SCHEMA_VERSION == 2
+
+
+def test_fingerprint_round_trip_through_save(tmp_path: Path) -> None:
+    """fingerprint written via save_library_csv is readable back.
+
+    Regression guard: before `fingerprint` was declared in LIBRARY_FIELDNAMES,
+    save_library_csv silently dropped it on every write (extrasaction="ignore").
+    """
+    dest = tmp_path / "library.csv"
+    rows = [{"track_id": "t1", "fingerprint": "AQADtEmSREk"}]
+    save_library_csv(dest, rows)
+    got = _read_csv(dest)
+    assert got[0]["fingerprint"] == "AQADtEmSREk"
+
+
+def test_fingerprint_survives_merge() -> None:
+    """merge_with_existing_library carries fingerprint from existing row."""
+    existing = [
+        {
+            "track_id": "abc",
+            "artist": "Dixon",
+            "title": "Tranquilizer",
+            "fingerprint": "AQADtEmSREk",
+        }
+    ]
+    # Simulated fresh RB/Traktor snapshot: same track_id, no fingerprint
+    new_rows = [
+        {
+            "track_id": "abc",
+            "artist": "Dixon",
+            "title": "Tranquilizer",
+            "rekordbox_id": "1234",
+            "fingerprint": "",
+        }
+    ]
+    merged = merge_with_existing_library(new_rows, existing)
+    assert len(merged) == 1
+    assert merged[0]["fingerprint"] == "AQADtEmSREk"

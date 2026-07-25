@@ -1151,6 +1151,72 @@ def cmd_fix_fingerprints(_: argparse.Namespace) -> None:
     _write_status("done", "")
     print(f"🧩 Fix fingerprints: updated={updated}, errors={errors}")
 
+def cmd_backfill_fingerprints(args: argparse.Namespace) -> None:
+    """Compute missing `fingerprint` values in library.csv.
+
+    `fingerprint` was silently dropped by `save_library_csv` for years
+    (declared nowhere in LIBRARY_FIELDNAMES), so acoustic dedup in
+    `cmd_scan` never had anything to compare against. This backfills the
+    column on the existing library. Rows that already have a fingerprint
+    are skipped, so a crashed/interrupted run can just be re-run.
+    """
+    from djlib.library_schema import load_library_csv, save_library_csv
+
+    dry_run: bool = getattr(args, "dry_run", False)
+    limit: Optional[int] = getattr(args, "limit", None)
+
+    rows = load_library_csv(CSV_PATH)
+
+    targets = []
+    for r in rows:
+        if (r.get("fingerprint") or "").strip():
+            continue
+        targets.append(r)
+        if limit is not None and len(targets) >= limit:
+            break
+
+    total = len(targets)
+    print(f"{'[DRY-RUN] ' if dry_run else ''}backfill-fingerprints: {total} rows without a fingerprint")
+
+    processed = 0
+    updated = 0
+    errors = 0
+    missing = 0
+
+    for r in targets:
+        p = None
+        for field in ("file_path", "original_path", "old_full_path"):
+            candidate = (r.get(field) or "").strip()
+            if candidate and Path(candidate).exists():
+                p = Path(candidate)
+                break
+        if p is None:
+            missing += 1
+        else:
+            try:
+                _, fp = fingerprint_info(p)
+                if fp and not dry_run:
+                    r["fingerprint"] = fp
+                if fp:
+                    updated += 1
+            except Exception as e:
+                errors += 1
+                print(f"   ⚠ {p.name}: {e}")
+
+        processed += 1
+        if processed % 50 == 0:
+            print(f"   {processed}/{total}, updated={updated}, errors={errors}, missing={missing}")
+        if not dry_run and processed % 300 == 0:
+            save_library_csv(CSV_PATH, rows)
+
+    if not dry_run:
+        save_library_csv(CSV_PATH, rows)
+
+    print(
+        f"{'[DRY-RUN] ' if dry_run else ''}✅ backfill-fingerprints done: "
+        f"updated={updated}, errors={errors}, missing={missing}"
+    )
+
 def cmd_fix_titles_from_filenames(_: argparse.Namespace) -> None:
     """Napraw rekordy z pustym/niewłaściwym artist/title korzystając z nazwy pliku."""
     from djlib.filename import parse_from_filename
@@ -5246,6 +5312,10 @@ def build_parser() -> argparse.ArgumentParser:
     sap.add_argument("--write-tags", action="store_true", help="Zapisz metadane (BPM/Key) do plików audio")
     sap.set_defaults(func=cmd_sync_audio_metrics)
     sp.add_parser("fix-fingerprints").set_defaults(func=cmd_fix_fingerprints)
+    bfp = sp.add_parser("backfill-fingerprints", help="Compute missing fingerprint values in library.csv (acoustic dedup)")
+    bfp.add_argument("--dry-run", action="store_true", help="Report what would be computed without writing")
+    bfp.add_argument("--limit", type=int, default=None, help="Process at most N rows (for testing on a small sample)")
+    bfp.set_defaults(func=cmd_backfill_fingerprints)
     sp.add_parser("fix-filenames").set_defaults(func=cmd_fix_titles_from_filenames)
     ep = sp.add_parser("enrich-online")
     ep.add_argument("--force-genres", action="store_true", help="Nadpisz kolumny genres_musicbrainz/lastfm nawet jeśli już wypełnione")
